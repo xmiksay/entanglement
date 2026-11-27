@@ -148,3 +148,36 @@ fn a_prompt_fires_user_prompt_submit_with_its_text() {
     assert_eq!(f.payload["session"], "s");
     assert_eq!(f.payload["prompt"], "hello there");
 }
+
+/// A `/cd sub` session's relative path reaches `post_tool_use` joined onto
+/// the workdir, as the executor ran it (and as `pre_tool_use` graded it):
+/// the hook runs from the project root.
+#[test]
+fn a_workdir_call_carries_its_root_relative_paths() {
+    let root = std::path::PathBuf::from("/proj");
+    let tools = entanglement_runtime::host::host_tools(root.clone()).shared();
+    let mut t = Tracker {
+        paths: Some(CallPaths { tools, root }),
+        ..Tracker::default()
+    };
+    let mut ev = exec("s", "r1", "edit", r#"{"path":"a.rs","old":"x","new":"y"}"#);
+    if let OutEvent::ToolExec { workdir, .. } = &mut ev {
+        *workdir = Some("/proj/sub".into());
+    }
+    t.observe(&ev);
+    let f = t.observe(&output("s", "r1", "ok", false, None)).unwrap();
+    assert_eq!(f.payload["input"]["path"], "sub/a.rs");
+    assert_eq!(f.payload["input"]["old"], "x");
+
+    // No workdir (the root) and an absolute path both stay as emitted.
+    t.observe(&exec("s", "r2", "edit", r#"{"path":"a.rs"}"#));
+    let f = t.observe(&output("s", "r2", "ok", false, None)).unwrap();
+    assert_eq!(f.payload["input"]["path"], "a.rs");
+    let mut ev = exec("s", "r3", "write", r#"{"path":"/etc/x"}"#);
+    if let OutEvent::ToolExec { workdir, .. } = &mut ev {
+        *workdir = Some("/proj/sub".into());
+    }
+    t.observe(&ev);
+    let f = t.observe(&output("s", "r3", "ok", false, None)).unwrap();
+    assert_eq!(f.payload["input"]["path"], "/etc/x");
+}

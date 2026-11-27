@@ -151,7 +151,11 @@ pub(crate) fn start(
         true => mode_resolver,
         false => Arc::new(HookResolver::new(mode_resolver, hooks.clone())),
     };
-    let hooks_handle = crate::hooks::spawn(&holly, hooks);
+    let call_paths = crate::hooks::CallPaths {
+        tools: tools.clone(),
+        root: escape_root.root.clone(),
+    };
+    let hooks_handle = crate::hooks::spawn(&holly, hooks, call_paths);
     // The credentialed-`http()` gate (ADR-0227): `http_auth:` is user-layer
     // only (the config loader drops a project layer's); the builder registers
     // the script-only `http` tool over this same gate, after the advertised

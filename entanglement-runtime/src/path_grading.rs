@@ -33,8 +33,9 @@ pub use containment::{escaping_path, resolve_under_root};
 /// What `tool`'s input becomes for a session working in `workdir` (absolute)
 /// under `root`, or `None` when nothing changes — no workdir, a workdir equal
 /// to the root, a tool with no path argument (or not in `tools`), or only
-/// absolute paths.
-pub(crate) fn rewrite(
+/// absolute paths. Public so an embedder observing `ToolExec` (skutter's
+/// `post_tool_use` hook) sees the call's paths as the executor ran them.
+pub fn rewrite(
     tools: &ToolRegistry,
     root: &Path,
     workdir: Option<&Path>,

@@ -41,7 +41,7 @@ mod resolver;
 use invoke::invoke;
 #[cfg(test)]
 use invoke::Outcome;
-pub use lifecycle::spawn;
+pub use lifecycle::{spawn, CallPaths};
 pub use resolver::HookResolver;
 
 /// Default per-hook wall-clock timeout. A hook that hangs must not stall the turn

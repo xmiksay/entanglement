@@ -17,12 +17,14 @@
 //! within each while a slow hook never lags the subscription.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use entanglement_core::{AgentState, CompactionMode, InMsg, OutEvent, SessionId};
 use entanglement_runtime::tool_names::{
     AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL,
     LIST_SKILLS_TOOL, MCP_TOOLS_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL, RHAI_TOOL,
 };
+use entanglement_runtime::tools::SharedRegistry;
 use serde_json::{json, Value};
 
 use super::{parse_input, HookEvent, Hooks};
@@ -47,6 +49,7 @@ pub(super) const OBSERVED: [HookEvent; 8] = [
 /// Calls the executor answers on its own route, never through the host-tool
 /// execute step: 0.7 ran `post_tool_use` only from that step, so these never
 /// fired it — a sub-agent's answer or an `ask_user` reply is not a tool result.
+/// Mirrors the runtime's private `Intercept::classify` plus `request_mode`.
 const ROUTE_TOOLS: [&str; 12] = [
     AGENT_TOOL,
     AGENT_SEND_TOOL,
@@ -61,6 +64,25 @@ const ROUTE_TOOLS: [&str; 12] = [
     LIST_MCP_TOOL,
     MCP_TOOLS_TOOL,
 ];
+
+/// How the executor saw a call's paths: it joins a `/cd` session's relative
+/// path arguments onto the workdir before running the call (#764), so
+/// `post_tool_use` gets the same root-relative input `pre_tool_use` was
+/// graded on — the hook runs from the project root, not the workdir.
+#[derive(Clone)]
+pub struct CallPaths {
+    pub tools: SharedRegistry,
+    /// The canonical project root (the escape-root policy's root).
+    pub root: PathBuf,
+}
+
+impl std::fmt::Debug for CallPaths {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallPaths")
+            .field("root", &self.root)
+            .finish()
+    }
+}
 
 /// One hook point to run: its payload already carries `event` and `session`.
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +121,8 @@ pub(crate) struct Tracker {
     /// No `post_tool_use` command: keep no `execs`, so a long-lived session
     /// with only other points configured can't grow the map.
     skip_execs: bool,
+    /// `None` (unit tests): the input is kept as core emitted it.
+    paths: Option<CallPaths>,
 }
 
 impl Tracker {
@@ -219,10 +243,12 @@ impl Tracker {
                 request_id,
                 tool,
                 input,
+                workdir,
                 ..
             } if !self.skip_execs && !ROUTE_TOOLS.contains(&tool.as_str()) => {
                 let key = (session.clone(), request_id.clone());
-                self.execs.insert(key, (tool.clone(), input.clone()));
+                let input = self.as_run(tool, workdir.as_deref(), input);
+                self.execs.insert(key, (tool.clone(), input));
                 None
             }
             OutEvent::ToolOutput {
@@ -282,6 +308,18 @@ impl Tracker {
             }
             _ => None,
         }
+    }
+
+    /// `input` as the executor ran it: relative paths joined onto `workdir`.
+    fn as_run(&self, tool: &str, workdir: Option<&str>, input: &str) -> String {
+        let rewritten = self.paths.as_ref().and_then(|p| {
+            // A poisoned registry lock: keep the input as emitted rather than
+            // take the watcher down.
+            let tools = p.tools.read().ok()?;
+            let wd = workdir.map(Path::new);
+            entanglement_runtime::path_grading::rewrite(&tools, &p.root, wd, tool, input)
+        });
+        rewritten.unwrap_or_else(|| input.to_string())
     }
 
     /// After a broadcast lag the `Done`/`Status` pairing can't be trusted,

@@ -18,7 +18,7 @@ use entanglement_runtime::agents::built_in_registry;
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use serde_json::Value;
-use skutter::hooks::{HookSpec, Hooks};
+use skutter::hooks::{CallPaths, HookSpec, Hooks};
 use tokio::sync::broadcast::Receiver;
 
 /// Pops scripted replies, then answers `"ok"` forever.
@@ -145,11 +145,16 @@ fn rig(replies: Vec<LlmResponse>, base: Permission, hooks: impl Fn(&Path) -> Hoo
         agents: built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     });
-    let _exec = ToolExecutor::builder(&holly, tools.shared())
+    let tools = tools.shared();
+    let paths = CallPaths {
+        tools: tools.clone(),
+        root: dir.path().to_path_buf(),
+    };
+    let _exec = ToolExecutor::builder(&holly, tools)
         .agents(built_in_registry().expect("built-in agents must parse"))
         .base(PermissionProfile::new(base))
         .spawn();
-    let watcher = skutter::hooks::spawn(&holly, Arc::new(hooks(&log)));
+    let watcher = skutter::hooks::spawn(&holly, Arc::new(hooks(&log)), paths);
     Rig {
         holly,
         log,

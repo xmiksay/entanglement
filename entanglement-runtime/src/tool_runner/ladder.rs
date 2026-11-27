@@ -101,7 +101,9 @@ pub(super) enum Intercept {
 }
 
 impl Intercept {
-    /// Route an (already-unmasked) tool by name.
+    /// Route an (already-unmasked) tool by name. skutter's `post_tool_use`
+    /// skips exactly these routes plus `request_mode` (`hooks::lifecycle`'s
+    /// `ROUTE_TOOLS`): a new route here must be added there too.
     pub(super) fn classify(tool: &str) -> Self {
         match tool {
             AGENT_TOOL => Self::Spawn,
