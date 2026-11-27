@@ -110,7 +110,7 @@ the code, never as a description of current behaviour — that is
 | [0076](0076-per-session-dynamic-tool-specs.md) | Per-session dynamic tool specs (`EngineConfig.tool_spec_resolver`) | current; amended by 0190, 0204 | — |
 | [0077](0077-session-hibernation-evictable-resumable.md) | Session hibernation — evict in-memory state without tombstoning, resumable later | current; amended by 0168, 0208 (itself removed by #921), 0210 | — |
 | [0078](0078-per-turn-dynamic-system-prompt.md) | Per-turn dynamic system prompt (`EngineConfig.system_prompt_resolver`) | current | — |
-| [0079](0079-pluggable-permission-resolver-and-grant-store.md) | Pluggable `PermissionResolver` + `GrantStore` seams in the tool executor | current | — |
+| [0079](0079-pluggable-permission-resolver-and-grant-store.md) | Pluggable `PermissionResolver` + `GrantStore` seams in the tool executor | current; changed by #964 | — |
 | [0080](0080-mcp-streamable-http-transport.md) | MCP streamable-HTTP transport with per-server headers/auth | current; amended by 0128, 0153 | — |
 | [0081](0081-per-profile-model-pinning-and-rebind-on-set-agent.md) | Per-agent-profile provider/model pinning, and rebind on `SetAgent` | current | — |
 | [0082](0082-single-shot-session-ops-and-persisted-compaction.md) | Single-shot session ops (`InMsg::Oneshot`) and persisted compaction | partly superseded by 0101 (in-place compaction; `InMsg::Oneshot` and `Compacted` stay) | — |
@@ -258,7 +258,7 @@ the code, never as a description of current behaviour — that is
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923 | — |
 | [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923 | — |
-| [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920 | — |
+| [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920; changed by #964 | — |
 | [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 (itself removed by #926); changed by #920; changed by #923 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920; changed by #923 | — |
 | [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237; changed by #925 | — |
