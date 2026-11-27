@@ -241,7 +241,7 @@ the code, never as a description of current behaviour — that is
 | [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916; changed by #920; changed by #923; changed by #924 | — |
 | [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current; removed by #921 | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247; changed by #924 | — |
-| [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246; changed by #923 | — |
+| [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246; changed by #923; changed by #927 (`Refuse` removed) | — |
 | [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current | — |
 | [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236 | — |
 | [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918; changed by #919; changed by #920 | — |

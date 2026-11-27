@@ -69,12 +69,13 @@ addressed to an id with no live task goes through
 `EngineConfig.unknown_session` (`holly/supervisor/unknown.rs`):
 `SpawnBlank` (default) lazily creates a blank root under the default agent —
 the single-user convenience, still refusing a closed id and a known
-hibernated sub-agent child (#639); `Refuse` emits an `Error` naming the
-session (seq `0` for an id that never started; a retired id's continues its
-retired counter, ADR-0239) and spawns nothing; `Resume(Arc<dyn SessionLoader>)` asks the
+hibernated sub-agent child (#639); `Resume(Arc<dyn SessionLoader>)` asks the
 embedder's async loader for the records `Holly::resume` consumes and runs the
 ordinary resume path (sub-tree cascade included) before delivering, `None`
-refusing and `Err` erroring. The load runs on its own task and reports back
+emitting an `Error` naming the session (seq `0` for an id that never started;
+a retired id's continues its retired counter, ADR-0239) and spawning nothing,
+`Err` erroring. There is no refuse-only policy (#927): refusing ids it does
+not know is the embedder's job before it sends. The load runs on its own task and reports back
 over a supervisor-owned channel, so a slow store never stalls routing;
 `pending_loads[id]` queues every further message for that id behind the one
 in-flight load and replays them through the normal handler in arrival order;

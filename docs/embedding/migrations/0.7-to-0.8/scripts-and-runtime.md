@@ -29,3 +29,19 @@ a module. What changes:
   `=1.25.1`, pinned only for the module builder's use of Rhai internals).
 - **Instead:** put shared functions in a skill's `lib.rhai` and call them as
   `skill::<skill>::<fn>(…)`, or inline them in the script.
+
+## `UnknownSession::Refuse` removed (#927)
+
+`EngineConfig::unknown_session` is `SpawnBlank` (default) or
+`Resume(Arc<dyn SessionLoader>)`. Neither site nor nexial used `Refuse`
+(nexial installs `Resume`). What changes:
+
+- **Removed API:** the `UnknownSession::Refuse` variant. A `match` on
+  `UnknownSession` drops that arm; its `Debug` no longer prints `"Refuse"`.
+- **Behaviour kept:** a `SessionLoader` answering `Ok(None)` still emits
+  one `Error` naming the session per queued message (seq `0` for an id this
+  engine never ran) and spawns nothing — exactly what `Refuse` did, after
+  one load call.
+- **Instead:** refuse ids your head does not know before calling
+  `Holly::send`, or install a `Resume` loader whose `load` returns
+  `Ok(None)` for every id you want refused.

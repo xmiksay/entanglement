@@ -195,8 +195,8 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
     later replay of the log would. Events emitted before the `Hibernate` but
     after the head read its records are the head's concern.
   - **Seq `0` is the sentinel for an id with no sequence**: an `Error` the
-    supervisor emits for an id that **never started** (a refused spawn, an
-    `UnknownSession::Refuse` of an unknown id), or one whose unpinned counter
+    supervisor emits for an id that **never started** (a refused spawn, a
+    `SessionLoader` answering `None` for an unknown id), or one whose unpinned counter
     was evicted (ADR-0244), has no counter to draw from, so it carries
     `seq == 0` — a value no counter mints, so it can't collide with content —
     and a head renders it **unconditionally** (the seq-`0` bypass) rather than

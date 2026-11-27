@@ -155,9 +155,10 @@ let cfg = EngineConfig {
 
 `Some(records)` resumes the session (its spawn sub-tree too, ADR-0112, with
 its `user` intact) and then delivers the message; `None` refuses with an
-`Error` naming the session, as does `UnknownSession::Refuse` without asking a
-loader (seq `0` for an id this engine never ran; a retired id's error
-continues its seq, ADR-0239); `Err` surfaces as an `Error` and spawns nothing. Messages
+`Error` naming the session (seq `0` for an id this engine never ran; a retired
+id's error continues its seq, ADR-0239); `Err` surfaces as an `Error` and
+spawns nothing. A head that must refuse unknown ids outright does so itself
+before it sends — there is no refuse-only policy (#927). Messages
 that arrive while a load is in flight queue behind that one load and deliver
 in order. A load that finishes after the id itself, or one of its
 ancestors, was hibernated meanwhile (and is still down), or under a closed
