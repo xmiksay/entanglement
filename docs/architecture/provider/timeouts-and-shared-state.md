@@ -152,15 +152,17 @@ operator who wants genuinely separate per-instance budgets already gets that
 for free by giving each instance its own key/base URL, since the pool key
 itself isolates them.
 
-**The location is injected per client, resolved from env only by default**
-(#743): an `HttpClient` carries a `SharedStateLocation` (`Disabled` |
+**The location is injected per client, and sharing is opt-in** (#743,
+#929): an `HttpClient` carries a `SharedStateLocation` (`Disabled` |
 `Dir(path)`) fixed at construction and handed to every `Limiter` it
-creates. `HttpClient::new`/`with_config` resolve it once via
-`SharedStateLocation::from_env()` — `ENTANGLEMENT_DEBUG=no-shared-state` >
-`ENTANGLEMENT_SHARED_STATE_DIR` (an undocumented subprocess-test hook since
-ADR-0213) > `${data_dir}/entanglement/endpoints` > `Disabled` — so production behavior is unchanged; `HttpClient::with_shared_state(location,
-config)` pins it explicitly (a per-test temp dir, `Disabled`, or an embedder
-running several isolated pools in one process). Tests never mutate the
+creates. `HttpClient::new`/`with_config` use `Disabled`, so an embedded
+server never writes endpoint state to disk; only
+`HttpClient::with_shared_state(location, config)` with a `Dir` does. The
+`skutter` CLI (`boot.rs`) passes `SharedStateLocation::from_env()` —
+`ENTANGLEMENT_DEBUG=no-shared-state` > `ENTANGLEMENT_SHARED_STATE_DIR` (an
+undocumented subprocess-test hook since ADR-0213) >
+`${data_dir}/entanglement/endpoints` > `Disabled`; a test pins a per-test
+temp dir. Tests never mutate the
 process env to steer it: the precedence is unit-tested over an injected env
 lookup, and in the provider crate's own `cfg(test)` build the data-dir
 fallback panics, so a test that forgets to inject a location fails instead

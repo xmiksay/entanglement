@@ -12,8 +12,9 @@
 //! 50 rpm, 3 in flight).
 //! Permits are held for the whole request **and its streamed body**
 //! ([`StreamGuard`]), so concurrency counts open streams. Sibling processes
-//! sharing an endpoint + key also coordinate through a file-backed lease
-//! (`shared_state`, ADR-0144).
+//! sharing an endpoint + key can also coordinate through a file-backed lease
+//! (`shared_state`, ADR-0144) — only a client built with
+//! [`HttpClient::with_shared_state`] and a `Dir` location does.
 //!
 //! # Retries
 //! Transport faults (connect/timeout/request-send, dropped streams) and
@@ -193,7 +194,8 @@ pub struct StreamGuard(
 );
 
 impl HttpClient {
-    /// Create a shared HTTP client with the default [`RetryConfig`].
+    /// Create a shared HTTP client with the default [`RetryConfig`] and no
+    /// cross-process endpoint state — it never touches the disk (#929).
     ///
     /// Fails if the underlying `reqwest::Client` builder fails (TLS backend
     /// init, resolver issues) — an unusual host-environment condition, not a
@@ -203,19 +205,16 @@ impl HttpClient {
         Self::with_config(RetryConfig::default())
     }
 
-    /// Create a shared HTTP client with a custom per-endpoint [`RetryConfig`],
-    /// its cross-process endpoint state resolved from the environment
-    /// ([`SharedStateLocation::from_env`]).
-    ///
-    /// See [`HttpClient::new`] for why this is fallible.
+    /// Create a shared HTTP client with a custom per-endpoint [`RetryConfig`]
+    /// and no cross-process endpoint state, like [`HttpClient::new`].
     pub fn with_config(config: RetryConfig) -> anyhow::Result<Self> {
-        Self::with_shared_state(SharedStateLocation::from_env(), config)
+        Self::with_shared_state(SharedStateLocation::Disabled, config)
     }
 
-    /// Create a shared HTTP client whose cross-process endpoint state
-    /// (ADR-0144) lives at an explicit `shared` location instead of the
-    /// env-resolved one — a per-test temp dir, `Disabled`, or an embedder's
-    /// own directory (#743).
+    /// Create a shared HTTP client whose endpoint limits are also shared with
+    /// sibling processes through files at `shared` (ADR-0144) — opt-in, so
+    /// only a caller that runs as several processes against one key (the
+    /// `skutter` CLI, via [`SharedStateLocation::from_env`]) writes them.
     ///
     /// See [`HttpClient::new`] for why this is fallible.
     pub fn with_shared_state(

@@ -64,7 +64,8 @@ pub enum SharedStateLocation {
 }
 
 impl SharedStateLocation {
-    /// The production resolution every env-driven constructor uses:
+    /// The resolution the `skutter` CLI opts into (the default
+    /// constructors use [`Disabled`][Self::Disabled], #929):
     /// `ENTANGLEMENT_DEBUG=no-shared-state` > `ENTANGLEMENT_SHARED_STATE_DIR`
     /// > `${data_dir}/entanglement/endpoints` > disabled (no data dir).
     ///
@@ -373,6 +374,17 @@ mod tests {
     #[should_panic(expected = "real shared endpoint-state dir")]
     fn unit_tests_may_not_resolve_the_real_data_dir() {
         let _ = SharedStateLocation::resolve(env_of(&[]), default_state_dir);
+    }
+
+    /// #929: an embedder's plain constructors never write endpoint state to
+    /// disk — resolving the env (and so the data dir) would panic here.
+    #[test]
+    fn default_constructors_keep_shared_state_off_disk() {
+        let new = super::super::HttpClient::new().expect("client builds");
+        assert_eq!(new.pool.shared, SharedStateLocation::Disabled);
+        let custom = super::super::HttpClient::with_config(super::super::RetryConfig::default())
+            .expect("client builds");
+        assert_eq!(custom.pool.shared, SharedStateLocation::Disabled);
     }
 
     #[test]

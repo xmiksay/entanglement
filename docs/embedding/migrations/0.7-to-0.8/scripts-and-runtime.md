@@ -68,3 +68,27 @@ nor nexial installed a generator; both mint roots with
   `mint_id(kind, Some(&parent))`. An embedder that needs ids in its own
   scheme mints its root ids itself (`SessionId::new(..)`); ids the engine
   mints always use the built-in format.
+
+## Gemini explicit cache cut, `HttpClient` shared state opt-in (#929)
+
+`UserBudget` was already removed by #918. Of the other two items #929
+verified, one is cut and one changes its default:
+
+- **Gemini explicit `cachedContents` cache removed.** `GeminiLlm` no longer
+  creates (or deletes) a `cachedContents` resource per session; every
+  request inlines `systemInstruction` + `tools` again. Gemini 2.5+ caches
+  that stable leading prefix implicitly at the same cached-token discount,
+  without the extra create call per tool-set change or the hourly storage
+  bill. No public item changes; `Usage.cached_input_tokens` still reports
+  implicit cache hits (`cachedContentTokenCount`).
+- **`HttpClient::new()` / `with_config()` no longer write to disk.** They
+  build the client with `SharedStateLocation::Disabled` instead of
+  `SharedStateLocation::from_env()`, so the first request no longer creates
+  `${data_dir}/entanglement/endpoints/*.state` under the server user's
+  home. Limits are still enforced per process. Site (0.6) builds one
+  `HttpClient::new()` per provider row and `with_config` for its MCP pool;
+  both now stay off disk. Nexial already passes `Disabled`.
+- **Instead:** to keep sharing endpoint limits between several processes
+  on one key, build the client with
+  `HttpClient::with_shared_state(SharedStateLocation::from_env(), config)`
+  (what `skutter` does) or a `SharedStateLocation::Dir(path)` of your own.

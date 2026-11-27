@@ -175,7 +175,7 @@ the code, never as a description of current behaviour — that is
 | [0141](0141-wire-visible-throttle-transitions.md) | Wire-visible throttle transitions: `OutEvent::Throttle`, engine-global not per-session | current; changed by #918 | — |
 | [0142](0142-trusted-scratch-dir-and-plans-folder-carve-outs.md) | Trusted scratch dir + plans-folder carve-out | current | — |
 | [0143](0143-ask-user-draft-until-submit.md) | `ask_user` answers are drafts until an explicit Submit | current | — |
-| [0144](0144-file-backed-shared-endpoint-state-across-instances.md) | File-backed shared endpoint state across instances | current; amended by 0156, 0213; changed by #918 | — |
+| [0144](0144-file-backed-shared-endpoint-state-across-instances.md) | File-backed shared endpoint state across instances | current; amended by 0156, 0213; changed by #918; changed by #929 | — |
 | [0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) | One plan tool: file-backed plans, a staleness guard, and a blocking review loop | current; amended by 0172, 0173, 0207 | — |
 | [0146](0146-ask-user-list-retract-replace.md) | `ask_user` gains list/retract/replace of open questions | current; amended by 0245; changed by #922 | — |
 | [0147](0147-multi-user-mode-embedder-api.md) | Multi-user mode: session-scoped identity + embedder-API per-user seams | current; partly superseded by 0181 | — |

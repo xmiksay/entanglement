@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Context, Result};
 use entanglement_core::{AgentCatalog, Holly};
-use entanglement_provider::{Catalog, HttpClient, ModelInfo};
+use entanglement_provider::{Catalog, HttpClient, ModelInfo, RetryConfig, SharedStateLocation};
 
 use crate::engine_setup::build_config;
 use crate::factories::build_model_resolver;
@@ -101,8 +101,10 @@ pub(crate) async fn boot(
 
     // Per-endpoint limits come from each catalog entry's `limits:` (client
     // default 50 rpm / 3 in flight), so a sub-agent spawn-storm queues
-    // instead of 429-storming.
-    let http_client = HttpClient::new()?;
+    // instead of 429-storming. Sibling `skutter` processes on one key share
+    // those limits through the env-resolved state dir (ADR-0144).
+    let http_client =
+        HttpClient::with_shared_state(SharedStateLocation::from_env(), RetryConfig::default())?;
     // Per-write file backups (ADR-0212), kept beside the session logs in the
     // same store the persistence tap writes — a revert reads that log's turns.
     // Limits from `config.yml` `undo:` (#787); the watcher re-applies them.
