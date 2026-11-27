@@ -83,11 +83,6 @@ impl AuxModelStore {
         self.aux
             .insert(purpose, (provider.to_string(), model.to_string()));
     }
-
-    /// Every pin, in purpose order.
-    pub fn pins(&self) -> &BTreeMap<Purpose, (String, String)> {
-        &self.aux
-    }
 }
 
 #[cfg(test)]
@@ -122,6 +117,6 @@ mod tests {
             Some(("openai", "gpt-4o-mini"))
         );
         assert_eq!(store.get(Purpose::Narrate), Some(("ollama", "llama3.1")));
-        assert_eq!(store.pins().len(), 2);
+        assert_eq!(store.get(Purpose::SessionTitle), None);
     }
 }

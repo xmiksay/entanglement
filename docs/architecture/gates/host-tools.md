@@ -100,9 +100,11 @@ guessing again:
   the out-of-root target (the tool's `Tool::escape_target`, asked through
   `path_grading::escape_target`, + `path_grading::escaping_path`),
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
-  still wins), and records the grant in a shared `ExtraRootStore`
-  (`extra_roots.rs`; managed `extra-roots.yml` in the managed-state dir,
-  `ENTANGLEMENT_STATE_DIR`) keyed by `(tool, resolved-absolute-path)` —
+  still wins), and records the grant in a shared, in-memory `ExtraRootStore`
+  (`extra_roots.rs`), whose `Always` grants reach the embedder's
+  `extra_roots::AlwaysRoots` (`skutter`: `state::FileExtraRoots`, the managed
+  `extra-roots.yml`, `ENTANGLEMENT_STATE_DIR`, #967), keyed by
+  `(tool, resolved-absolute-path)` —
   **per tool** (a `read` grant never unlocks `write`) at `Once`/`Session`/`Always`
   scope. `Once` is additionally bound to the approving call's `request_id`
   (#449, [ADR-0120](../../adr/archive/0120-once-scoped-escape-root-grant-bound-to-request-id.md)):

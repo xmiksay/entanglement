@@ -4,11 +4,11 @@
 //! `apply_patch` — instead of only failing at the *next*
 //! `propose_plan(path=...)` call.
 //!
-//! Deliberately not folded into `watch.rs`'s #329 definitions watcher: that
-//! one reloads agent/skill/config *definitions*, a different reload action
-//! entirely — bolting a plans-folder watch onto it would conflate two
-//! unrelated semantics in one module. This reuses only its
-//! `spawn_debounced_watcher` primitive, which is already
+//! Deliberately not folded into `skutter::watch`'s #329 definitions watcher:
+//! that one reloads agent/skill/config *definitions*, a different reload
+//! action entirely — bolting a plans-folder watch onto it would conflate two
+//! unrelated semantics in one module. Both reuse only the library's
+//! `watch::spawn_debounced_watcher` primitive, which is
 //! definitions-decoupled.
 //!
 //! Detection reuses [`PlanFileRegistry`], the same registry `propose_plan`'s

@@ -53,9 +53,11 @@
   (`entanglement_runtime::skills::load_registry_in`) discovers them into a
   `SkillRegistry` — three layers, later wins on a `name` collision: embedded stock
   skills (single-file, `include_str!` `SKILL.md`, parsed through the *same* loader)
-  < user (`~/.claude/skills/**/SKILL.md` then
-  `${config_dir}/entanglement/skills/**/SKILL.md`, override
-  `ENTANGLEMENT_SKILLS_DIR` — replaces the whole user layer) < project
+  < user (the embedder's `layers::UserLayer`: `Home { home, config }` gives
+  `~/.claude/skills/**/SKILL.md` then
+  `${config_dir}/entanglement/skills/**/SKILL.md`; `skutter` maps
+  `ENTANGLEMENT_SKILLS_DIR` to `UserLayer::Dir`, which replaces the whole user
+  layer; the library reads no env var or user dir, #967) < project
   (`.claude/skills` then `.agents/skills` then
   `<root>/.entanglement/skills/**/SKILL.md`).
   Discovery is a recursive walk for `SKILL.md` markers; symlinked duplicates and

@@ -1,7 +1,7 @@
 //! Integration tests for file-based agent definitions (#112, ADR-0034).
 //!
 //! Covers discovery + precedence (project > user > built-in) via the real
-//! `load_registry`, and an end-to-end spawn under a purely file-defined profile
+//! `load_registry_in`, and an end-to-end spawn under a purely file-defined profile
 //! (the `subagent_spawn.rs` pattern): a parent spawns a child under a project
 //! agent loaded from disk.
 
@@ -22,11 +22,10 @@ use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 
-// Every loader call injects its user layer (`UserLayer::Dir`) instead of
-// steering the process-global `ENTANGLEMENT_AGENTS_DIR`, so these tests need
-// no env lock and never read the host's real user agents (#773).
+// Every loader call injects its user layer (`UserLayer::Dir`), so these tests
+// need no env lock and never read the host's real user agents (#773).
 
-/// Point the loader's user + project dirs at temp dirs and run `load_registry`.
+/// Point the loader's user + project dirs at temp dirs and run `load_registry_in`.
 fn load_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,

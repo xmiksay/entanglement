@@ -252,7 +252,7 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   `layers::UserLayer::Empty` (the default) and `UserLayer::Home { home,
   config }`; `layers::candidate_dirs(root, kind, &UserLayer)` is public;
   `watch::spawn_debounced_watcher` is public (the one watch primitive left);
-  `AuxModelStore::pins`; `mode::capability_class`, `mode::rule_tool_name`
+  `mode::capability_class`, `mode::rule_tool_name`
   and `mode::deserialize_grade` are public (for an embedder's own config
   checks).
 - **Serde rule:** a plain data type the embedder hands the library keeps
@@ -273,7 +273,10 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   `ENTANGLEMENT_AGENTS_DIR`/`ENTANGLEMENT_SKILLS_DIR` or `~/.claude/<kind>`
   and `${config_dir}/entanglement/<kind>`. The library reads none of
   `ENTANGLEMENT_CONFIG_FILE`, `ENTANGLEMENT_ENV_FILE`,
-  `ENTANGLEMENT_STATE_DIR`, `ENTANGLEMENT_*_DIR`.
+  `ENTANGLEMENT_STATE_DIR`, `ENTANGLEMENT_*_DIR`. It still reads the process
+  env for `ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE` (#975),
+  `ENTANGLEMENT_SANDBOX*` (#968) and an `http_auth` entry's `${VAR}`
+  secrets (#976); each is a follow-up.
 - **Changed behaviour (`skutter`):** every file, env var and reload works as
   in 0.7; the warning for an `ENTANGLEMENT_*_DIR` that points at a missing
   dir names the kind and the path, no longer the env var.
