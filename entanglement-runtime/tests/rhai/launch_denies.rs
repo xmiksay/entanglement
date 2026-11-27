@@ -1,7 +1,7 @@
 //! ADR-0228's explicit denies: a mode deny of `rhai` itself refuses even a
 //! trusted path (before the file is touched), and inside a trusted or
-//! **Run all** script a ceiling deny of a nested tool is a catchable error. Plus the never-hang
-//! posture of a script `path` naming a FIFO.
+//! **Run all** script a ceiling deny of a nested tool is a catchable error.
+//! Plus the never-hang posture of a script `path` naming a FIFO.
 
 use std::path::Path;
 

@@ -28,8 +28,8 @@ use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 
-// ADR-0227's unified binding path: hooks/FileChange from a script, the
-// generated `mcp::` namespace against a stub server, `http()` grading.
+// ADR-0227's unified binding path: FileChange from a script, the generated
+// `mcp::` namespace against a stub server, `http()` grading.
 #[path = "rhai/unified.rs"]
 mod unified;
 // #843: a per-tool mode deny refuses an `mcp` envelope call and a script's
@@ -49,7 +49,7 @@ mod connect_budget;
 #[path = "rhai/path_args.rs"]
 mod path_args;
 // The shared harness of the ADR-0228 launch tests, and the launch-gate
-// tests themselves (unattended, hooks, workdir, background).
+// tests themselves (unattended, workdir, background).
 #[path = "rhai/launch_gate.rs"]
 mod launch_gate;
 #[path = "rhai/launch_harness.rs"]

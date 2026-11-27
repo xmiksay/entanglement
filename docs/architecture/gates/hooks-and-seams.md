@@ -5,7 +5,7 @@
 ## 9. Lifecycle hooks — [ADR-0066](../../adr/archive/0066-lifecycle-hooks-as-runtime-interceptors.md) (#199)
 
 User-configured external commands run around tool execution and on prompt
-ingress, for policy, telemetry, and formatting side-effects. Hooks are
+ingress, for policy, telemetry and notifications. Hooks are
 **`skutter`'s** (`skutter::hooks`, #964): neither core nor the library
 executor runs or knows any hook. They hang off seams every embedder already
 has — the pluggable `PermissionResolver` (below) and the `InMsg`/`OutEvent`
@@ -54,7 +54,32 @@ pluggable decision every call passes.
   session in a call's ancestor chain (below), so a sub-agent's call runs the
   hooks once per ancestor, each payload naming that session; a veto from any
   of them denies. A `Control` tool that bypasses grading (the discovery
-  tools, `ask_user`, `update_tasks`, …) never reaches it.
+  tools, `ask_user`, `update_tasks`, …) never reaches it. The hook sees the
+  call's **grade identity**, not the raw call: `read_raw`/`glob_json`/
+  `grep_json` arrive as `read`/`glob`/`grep`, a `Tool::call_grading` override
+  as its target, a rhai launch with its root-rewritten graded input — so a
+  `tools:` filter (and `ENTANGLEMENT_TOOL_NAME`) must name the graded tool.
+- **`post_tool_use` is asynchronous.** It runs on the watcher after the
+  result folded back, so it races the agent's next call: a formatter
+  (`prettier --write` on `write`/`edit`) can run before or after the next
+  `read`/`edit` of the same file — in the same batch or the next turn — or
+  overwrite the agent's next write. A hook that changes the workspace makes
+  the loop non-deterministic; keep `post_tool_use` to telemetry, or format
+  at turn end (`stop`). A script's nested writes are not formatted at all
+  (they emit no `ToolExec`).
+- **Changed from 0.7 — awaiting the maintainer's confirmation on #964.**
+  Each follows from decision B (no hook seam in the executor):
+  (a) a `pre_tool_use` veto no longer returns the hook's reason to the model,
+  which instead gets the generic mode-deny text — including its misleading
+  `use /mode to switch` advice, though no mode caused the deny; changing that
+  text needs a library change. (b) A sub-agent's call runs `pre_tool_use`
+  once per ancestor, N sequential hook processes at depth N (each up to
+  `timeout_secs`), each with `ENTANGLEMENT_SESSION_ID` naming an ancestor
+  that did not make the call — an audit hook logs phantom calls.
+  (c) `post_tool_use` no longer fires for a rhai script's nested binding
+  calls. (d) `post_tool_use` also fires for refused calls, and runs after
+  the result folded back (the race above) instead of before. Plus the
+  graded-name matching above.
 - **Wiring (`services.rs`):** `skutter` builds the `ModeResolver` itself and
   hands the builder `HookResolver::new(mode_resolver, hooks)` via
   `.resolver(..)` when any `pre_tool_use` command exists. `hooks::spawn`

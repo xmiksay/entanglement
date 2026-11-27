@@ -24,10 +24,9 @@ The session's permission **mode** (`research` | `plan` | `build` | `auto`;
 `Allow | Ask | Deny` per tool, capability class, or argument-scoped rule) plus
 persisted "always allow" grants and a user-config ceiling govern every tool —
 an agent profile is identity only (prompt + model pin) and carries no
-authority (ADR-0207); lifecycle
-hooks (`pre_tool_use` / `post_tool_use` / `user_prompt_submit`) wrap dispatch,
-and observe-only lifecycle hooks (`session_start` / `session_end` / `stop` /
-`pre_compact` / `subagent_stop` / `notification`) follow the event stream.
+authority (ADR-0207). The library runs no lifecycle hooks: `skutter` runs
+them (#964), a blocking `pre_tool_use` as a `PermissionResolver` wrapper and
+every other point from a subscriber on the event stream.
 Every session advertises one surface, identical on every wire and pinned for
 the session (ADR-0226): the native kernel tools, the discovery tools
 (`list_agents` / `list_models` / `list_skills` / `load_skill` / `list_mcp` /

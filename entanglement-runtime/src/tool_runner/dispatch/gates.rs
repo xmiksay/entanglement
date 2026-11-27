@@ -1,7 +1,7 @@
 //! The gate ladder every call climbs, model-issued or script-issued
 //! (ADR-0227): resolve the tool (lazy MCP connect), the `Control` bypass,
-//! mode grade + grants, the escape-root gate (ADR-0109), the credentialed-`http` gate — then run,
-//! refuse, or park for approval.
+//! mode grade + grants, the escape-root gate (ADR-0109), the
+//! credentialed-`http` gate — then run, refuse, or park for approval.
 
 use std::path::PathBuf;
 

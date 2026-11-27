@@ -59,15 +59,21 @@ hook item. What changes:
   `serde_yaml::Value` (`Null` when absent), no longer a parsed `Hooks`: the
   library no longer validates it, so a typo in it is no longer a config
   load error in the library.
-- **Changed behaviour (`skutter`):** a `pre_tool_use` veto grades the call
-  `Deny` — the model sees the plain `denied by mode` text, the hook's own
-  output is logged instead of returned; the hooks run wherever the resolver
-  is asked (once per session in a sub-agent call's ancestor chain,
-  `propose_plan` and an in-call redirect hop included). `post_tool_use`
-  fires on the `ToolOutput` of every call the runtime was asked to run
-  (`ToolExec`) — a refused one included, a script's nested calls not — and
-  runs after the result folded back instead of before. `user_prompt_submit`
-  runs on the first event a prompt causes.
+- **Changed behaviour (`skutter`, awaiting the maintainer's confirmation
+  on #964):** a `pre_tool_use` veto grades the call `Deny` — the model sees
+  the plain `denied by mode … use /mode to switch` text, whose `/mode`
+  advice is misleading for a hook veto, and the hook's own output is logged
+  instead of returned. The hooks run wherever the resolver is asked (once
+  per session in a sub-agent call's ancestor chain, each run naming that
+  ancestor; `propose_plan` and an in-call redirect hop included) and match
+  the graded tool name (`read_raw` → `read`, `glob_json` → `glob`,
+  `grep_json` → `grep`, a `call_grading` target), so a `tools: [read_raw]`
+  filter never matches. `post_tool_use` fires on the `ToolOutput` of every
+  call the runtime was asked to run (`ToolExec`) — a refused one included, a
+  script's nested calls not — and runs asynchronously after the result
+  folded back instead of before, so a formatter hook races the agent's next
+  call on the same file. `user_prompt_submit` runs on the first event a
+  prompt causes. Details: [hooks §9](../../../architecture/gates/hooks-and-seams.md).
 - **Instead:** drop `Hooks::default()` from `spawn_tool_executor_with_policy`
   calls and any `.hooks(..)` builder call. An embedder that wants a veto
   wraps its resolver the way `HookResolver` does; one that wants to observe

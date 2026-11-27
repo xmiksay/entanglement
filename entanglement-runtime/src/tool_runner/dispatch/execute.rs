@@ -1,8 +1,8 @@
 //! The run-against-the-registry step (issue #451): reached by a straight
 //! `Allow`, an approval, and the `Control` bypass alike, so every path runs
 //! a call identically — state tools, pre-dispatch argument validation,
-//! `FileChange` capture, the loop-breaker, `load_skill` posture. A script's call additionally runs under the
-//! script's remaining budget (ADR-0227).
+//! `FileChange` capture, the loop-breaker, `load_skill` posture. A script's
+//! call additionally runs under the script's remaining budget (ADR-0227).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
