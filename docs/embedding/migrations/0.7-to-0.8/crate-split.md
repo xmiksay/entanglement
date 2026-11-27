@@ -18,7 +18,7 @@ names anything below. What changes:
   (`cargo install --path skutter --locked`).
 - **Removed features:** `cli`, `tui` and `serve`. The runtime's default
   features are now `provider`, `mcp-http`, `rhai` and `web-fetch` (#968
-  then drops `web-fetch`), and no
+  then drops `web-fetch`, #933 makes `rhai` native), and no
   feature pulls `clap`, `axum`, `crossterm`, `ratatui` or the TUI render
   stack (`make check-lean` gates the default build as well as
   `--no-default-features`).

@@ -59,9 +59,11 @@ and [ADR-0007](../adr/archive/0007-streaming-llm-and-provider-crate.md)): provid
   It stores no session log, loads no agent or skill file and runs no aux
   model (#932). No binary (#931). Features
   ([ADR-0025](../adr/archive/0025-runtime-cargo-feature-gates.md), changed by
-  #931, #968, #932): `default = ["provider", "mcp-http", "rhai"]`;
-  `--no-default-features` drops the throttle relay, the HTTP MCP transport
-  and `rhai`. Neither build pulls a CLI, TUI or
+  #931, #968, #932, #933): `default = ["provider", "mcp-http"]`;
+  `--no-default-features` drops the throttle relay and the HTTP MCP
+  transport. The `rhai` script tool is native in both (#933) and binds no
+  file or process function of its own — a registered tool declares its
+  script function (`Tool::script_binding`). Neither build pulls a CLI, TUI or
   web-server crate (`make check-lean` gates both, §7); `reqwest` rides in
   transitively via core → provider.
 - **skutter** — the coding CLI (#931, `publish = false`): every head (`run`/

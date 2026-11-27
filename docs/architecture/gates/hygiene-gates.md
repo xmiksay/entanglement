@@ -30,13 +30,11 @@ ride in via core → provider and are not flagged — ADR-0053). It then runs le
 `--no-default-features` — the load-bearing check). It joins `tree` in
 `make verify`.
 `rhai` is deliberately **not** in `LEAN_FORBIDDEN` — the sandboxed script tool
-lives behind its own default-on `rhai` feature (#502,
-[ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)
-amending ADR-0025; the tool itself is documented in §8, [host tools](host-tools.md)), so
-`--no-default-features` now excludes it (a
-lean embedder that never registers the tool sheds one of the heaviest
-always-compiled deps) while every default build — including `skutter` — is
-unaffected. Each crate's `tokio` dependency also
+is native in every library build, the lean one included (#933, changing
+[ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)'s
+optional `rhai`; the tool itself is documented in §8, [host tools](host-tools.md)):
+it is pure Rust and binds no file or process function of its own. Each
+crate's `tokio` dependency also
 dropped `features = ["full"]` for a per-crate minimal list grep-verified
 against its own API surface (ADR-0135); `syntect` (a `skutter` dep) trimmed
 `default-fancy` down to `parsing`/`default-syntaxes`/`default-themes`/

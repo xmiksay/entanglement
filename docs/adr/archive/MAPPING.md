@@ -56,7 +56,7 @@ the code, never as a description of current behaviour — that is
 | [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | current | — |
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | current; amended by 0138, 0207 | — |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | current; amended by 0137, 0138, 0207 | — |
-| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135; changed by #931; changed by #968; changed by #932 | — |
+| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135; changed by #931; changed by #968; changed by #932; changed by #933 | — |
 | [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | current; partly superseded by 0161 | — |
 | [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | current; amended by 0127, 0146 | — |
 | [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | current | — |
@@ -77,7 +77,7 @@ the code, never as a description of current behaviour — that is
 | [0043](0043-skill-preload-vs-access-independent-mechanisms.md) | Skill preload (`skills:`) vs access (`load_skill` mask) — independent mechanisms | current; partly superseded by 0229 | — |
 | [0044](0044-agents-skills-system-prompt-epic-synthesis.md) | Agents, skills & system prompt — epic synthesis (data-not-code subsystem) | current; partly superseded by 0229 | — |
 | [0045](0045-call-host-tool-argv-exec-tailed-output.md) | Host tool `call`: argv exec (no shell) with auto-tailed output | current; partly superseded by 0093; amended by 0161; removed by #916 | — |
-| [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool — embedded, capability-sandboxed script engine | current; amended by 0115, 0206, 0227, 0228, 0248 (itself removed by #926) | — |
+| [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool — embedded, capability-sandboxed script engine | current; amended by 0115, 0206, 0227, 0228, 0248 (itself removed by #926); changed by #933 | — |
 | [0047](0047-local-trust-boundary.md) | Local trust boundary — the repository is trusted; config precedence system < user < repo; inspection over enforcement | current | — |
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head — a local-only WebSocket protocol interface (Vue SPA primary, non-exclusive; browser surface out of scope) | current | — |
 | [0049](0049-plan-task-tools-as-runtime-state-tools.md) | `update_plan`/`update_tasks` as runtime state tools | current; partly superseded by 0145; amended by 0142, 0207 | — |
@@ -129,7 +129,7 @@ the code, never as a description of current behaviour — that is
 | [0095](0095-tui-set-show-generation-persist-on-confirmation.md) | TUI `/set`/`/show` for generation parameters + persist-on-confirmation | current | — |
 | [0096](0096-dynamic-toolregistry-sharedregistry.md) | Dynamic `ToolRegistry`: `SharedRegistry` replaces value-ownership in the executor | current | — |
 | [0097](0097-live-mcp-server-management.md) | Live MCP server management: wire ops, engine-global routing, config persistence | current; amended by 0124; changed by #966; changed by #932 | — |
-| [0098](0098-rhai-json-yaml-loader-and-read-raw.md) | `rhai` JSON/YAML loader (`parse_json`/`to_json`/`parse_yaml`/`to_yaml`) and the `read_raw` binding | current; amended by 0227; changed by #968 | — |
+| [0098](0098-rhai-json-yaml-loader-and-read-raw.md) | `rhai` JSON/YAML loader (`parse_json`/`to_json`/`parse_yaml`/`to_yaml`) and the `read_raw` binding | current; amended by 0227; changed by #968; changed by #933 | — |
 | [0099](0099-glob-grep-exclude-and-default-git-exclusion.md) | `glob`/`grep`: default `.git` exclusion + caller `exclude` patterns | current | — |
 | [0100](0100-tui-mcp-command.md) | TUI `/mcp` command — list, add, remove | current | — |
 | [0101](0101-compaction-forks-into-a-new-session-copy-on-write.md) | Compaction forks into a new session (copy-on-write) | current; amended by 0102, 0110, 0205 | — |
@@ -146,11 +146,11 @@ the code, never as a description of current behaviour — that is
 | [0112](0112-resume-cascades-over-the-spawn-subtree.md) | `Resume` cascades over the spawn sub-tree; the re-announced `SessionStarted` carries the replayed `predecessor` | current | — |
 | [0113](0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md) | Persistence synthesizes a spawned child's initiating prompt from the cached `Spawn` | current | — |
 | [0114](0114-capability-level-permission-keys.md) | Capability-level permission keys (`read`/`write`/`call`) | superseded by 0207 | — |
-| [0115](0115-rhai-exec-bindings-call-bash.md) | `rhai` exec bindings: `exec`/`bash`, gated by the Call capability | current; amended by 0130, 0227; changed by #916 | — |
+| [0115](0115-rhai-exec-bindings-call-bash.md) | `rhai` exec bindings: `exec`/`bash`, gated by the Call capability | current; amended by 0130, 0227; changed by #916; changed by #933 | — |
 | [0116](0116-workdir-scoped-permission-rules-for-bash-call.md) | Workdir-scoped permission rules for `bash`/`call` (`tool{pattern}`) | current; amended by 0130; changed by #916; changed by #962 | — |
 | [0117](0117-mcp-tool-capability-fan-out.md) | Config-side capability hints fan MCP tools into `read`/`write`/`call` | current | — |
 | [0118](0118-ambiguous-stop-reason-bounded-retry.md) | Bounded retry on an ambiguous LLM stop, instead of ending the turn | current | — |
-| [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227; changed by #916; changed by #968 | — |
+| [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227; changed by #916; changed by #968; changed by #933 | — |
 | [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) | `Once`-scoped escape-root grants are bound to the approving `request_id` | current; changed by #916; removed by #968 | — |
 | [0121](0121-prune-only-compact-stays-silent.md) | Prune-only `Context::compact` stays silent — accepted live/replay divergence | current; partly superseded by 0205 | — |
 | [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213; changed by #918 | — |
@@ -161,12 +161,12 @@ the code, never as a description of current behaviour — that is
 | [0127](0127-ask-user-v2-multi-question-envelope.md) | `ask_user` v2 — multi-question envelope, always-on free text, multi-select | current; amended by 0143, 0146 | — |
 | [0128](0128-mcp-http-var-header-expansion-leak-surface.md) | MCP HTTP `${VAR}` header expansion is a documented, consented leak surface | current | — |
 | [0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) | Thread the skill `allowed_tools` mask into `rhai` binding resolution | superseded by 0194 (binding snapshot by 0227) | — |
-| [0130](0130-rhai-exec-bindings-marshal-workdir.md) | `rhai` `exec`/`bash` bindings marshal `workdir` | current; amended by 0227; changed by #916 | — |
+| [0130](0130-rhai-exec-bindings-marshal-workdir.md) | `rhai` `exec`/`bash` bindings marshal `workdir` | current; amended by 0227; changed by #916; changed by #933 | — |
 | [0131](0131-web-search-post-mvp-follow-ups.md) | Web search post-MVP follow-ups — persisted results, `pause_turn` continuation, version flag | current; amended by 0171; removed by #919 | — |
 | [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current; changed by #968 | — |
 | [0133](0133-live-bash-enablement-graded-by-permission.md) | Live bash enablement, graded by the permission model | superseded by 0163 | — |
 | [0134](0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) | Per-profile sandbox scoping for `bash`/`call`, with a spawn-chain confinement clamp | superseded by 0207 | — |
-| [0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md) | Deferred build-speed trims: per-crate tokio features, optional `rhai`, trimmed `syntect` | current; amended by 0180; changed by #931 | — |
+| [0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md) | Deferred build-speed trims: per-crate tokio features, optional `rhai`, trimmed `syntect` | current; amended by 0180; changed by #931; changed by #933 | — |
 | [0136](0136-tui-attention-panel-signpost-and-jump.md) | TUI attention panel: a signpost + jump, not a second approval keymap | current | — |
 | [0137](0137-explore-ask-grade-shell-access.md) | `explore` gains `Ask`-grade shell access (`call`/`bash`/`rhai`) | superseded by 0207 (the `explore` agent is retired; previously unmarked) | — |
 | [0138](0138-sponsored-build-child-and-propose-plan-cycle.md) | Sponsored build child — plan acceptance spawns a clamp-exempt child | superseded by 0207 | — |
@@ -237,7 +237,7 @@ the code, never as a description of current behaviour — that is
 | [0203](0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md) | Catalog precision: effort tiers, thinking-required models, z.ai thinking control, dual z.ai endpoints | current; changed by #915; changed by #919 | — |
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
-| [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227; changed by #968 | — |
+| [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227; changed by #968; changed by #933 | — |
 | [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916; changed by #920; changed by #923; changed by #924 | — |
 | [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current; removed by #921 | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247; changed by #924 | — |
@@ -258,7 +258,7 @@ the code, never as a description of current behaviour — that is
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916; changed by #968 | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923; changed by #964 | — |
 | [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923; changed by #965; changed by #966 | — |
-| [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920; changed by #964 | — |
+| [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920; changed by #964; changed by #933 | — |
 | [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 (itself removed by #926); changed by #920; changed by #923; changed by #968 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920; changed by #923 | — |
 | [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237; changed by #925 | — |

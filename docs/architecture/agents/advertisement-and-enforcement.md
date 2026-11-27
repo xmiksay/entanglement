@@ -16,7 +16,7 @@
   The universal, session-stable surface is every registered tool that sets
   `Tool::advertised` plus the executor's own routes
   ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), #965; see [engine](../engine/turn-loop.md) §turn loop): `read`/`edit`/`write`/
-  `apply_patch`/`bash`/`web_fetch`, `rhai` when the feature is on,
+  `apply_patch`/`bash`/`web_fetch`, `rhai`,
   `update_tasks`, `ask_user`, `poll`, `propose_plan`, `request_mode`,
   `agent`/`agent_send`, the `mcp` envelope, and the six discovery tools
   `list_agents`/`list_models`/`list_skills`/`load_skill`/`list_mcp`/

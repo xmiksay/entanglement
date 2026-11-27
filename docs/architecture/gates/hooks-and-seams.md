@@ -179,8 +179,9 @@ owned snapshot before spawning its detached task — `std::sync::RwLock`, not
 0076's no-async contract. `skutter` (`boot.rs`) wires the resolver to read through the
 same `SharedRegistry` handle it hands the executor, reproducing
 `cfg.tool_specs`' composition: registry tools plus the executor's own route
-specs that aren't `ToolRegistry` entries (`discover::runtime_owned_specs` —
-`update_tasks`/`ask_user`/`poll`/`rhai`/discovery/`mcp`/… — and
+specs that aren't `ToolRegistry` entries (`discover::runtime_owned_specs(&registry)` —
+`update_tasks`/`ask_user`/`poll`/`rhai` (listing the registry's script
+bindings, #933)/discovery/`mcp`/… — and
 `subagent::agent_specs`), sorted by name and deduped.
 The resolver keeps the registry tools that set **`Tool::advertised`** (plus
 every route spec) and snapshots that one surface per session ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), §One advertised surface in [one surface](one-surface.md)) — dynamic

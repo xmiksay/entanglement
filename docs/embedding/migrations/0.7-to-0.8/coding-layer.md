@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: the coding layer moves to `skutter` (#932)
+# Migration notes — 0.7 → 0.8: the coding layer moves to `skutter` (#932, #933)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md).
 
@@ -72,3 +72,37 @@ unchanged.
   summary model; give MCP credentials through a `TokenStore` and per-user
   servers through `McpScopes`; set `EngineConfig::file_reverter` from your
   own backups if your file tools keep any.
+
+## `rhai` is native; its file and exec bindings move to `skutter` (#933)
+
+The library's script engine binds no file or process function of its own.
+The functions a 0.7 script called — `read`, `read_raw`, `glob`, `grep`,
+`glob_json`, `grep_json`, `edit`, `write`, `bash` — are now declared by
+`skutter`'s host tools, so a `skutter` script calls exactly what it called
+before. `http()`, the `mcp::`/`skill::`/host namespaces and the JSON/YAML
+converters stay in the library. Site and nexial build with
+`default-features = false` and register no `rhai` binding: the only change
+for them is that `rhai` is now compiled in.
+
+- **Removed API:** the `rhai` Cargo feature (`default` is
+  `["provider", "mcp-http"]`; `--no-default-features` keeps `rhai`);
+  `tool_names::BINDING_TOOLS`.
+- **New API:** `Tool::script_binding() -> Option<host_ns::ScriptBinding>`
+  (default `None`) and `host_ns::{ScriptBinding, ScriptArg}`. A tool that
+  returns one is a plain script function under its own name: one overload
+  per parameter list, each positional argument sent under its input key, an
+  optional JSON reply and an optional budget key (the run's remaining
+  seconds). Its `doc` line joins the `rhai` spec. A wrapping tool must
+  forward the method (`skutter`'s hook wrapper does).
+- **Changed API:** `discover::runtime_owned_specs(&ToolRegistry)` and
+  `script::rhai_spec(&ToolRegistry)` take the registry whose bindings the
+  `rhai` spec lists.
+- **Changed behaviour (library):** a script calling `read(...)`, `bash(...)`
+  or any other unbound name gets an unknown-function error, even when a tool
+  of that name is registered without a binding. The spec and the
+  unknown-name hint list only the functions the run binds.
+- **Changed behaviour (`skutter`):** none — `skutter::host::script_bindings`
+  declares the 0.7 set, `bash` with its budget-derived `timeout`.
+- **Instead:** to give scripts a file or command function, implement
+  `script_binding` on the tool that does the work; for a per-session
+  function set, register a host namespace (ADR-0249).

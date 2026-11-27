@@ -193,6 +193,11 @@ seam implementations over it. Per seam:
   surface backed by your registered tool, with `HostFnResolver` listing the
   callable function names per session. Each call dispatches as
   `{"tool": "<fn>", "args": {...}}`, graded by the tool's `call_grading`.
+- **Plain script functions** (#933) — the library's `rhai` binds no file or
+  process function. Return a `host_ns::ScriptBinding` from your tool's
+  `Tool::script_binding` and a script calls it by name with positional
+  arguments (`fetch_doc(path)`), each marshalled under its input key; its
+  `doc` line joins the `rhai` spec. A wrapping tool must forward it.
 - **Per-session skills** — build skills in code with
   `SkillMeta::new(name, description, body)` (and `.with_lib(source)` for a
   `lib.rhai`), collect them in a `SkillRegistry`, and serve each session its

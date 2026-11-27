@@ -68,7 +68,8 @@ has to change:
   - `RetainedOutputRegistry::register_file` is gone (only `call`'s
     `output_file` used it); `retained_output::Page::output_file` and
     `RetainedInfo::is_file` are removed with it. `register_text` is unchanged.
-  - `tool_names::BINDING_TOOLS` is `[&str; 6]` (no `"call"`).
+  - `tool_names::BINDING_TOOLS` is `[&str; 6]` (no `"call"`; removed
+    outright by #933).
   - `tool_names::is_recognized_mask_entry` no longer accepts the ADR-0114
     capability key `call` (it only named the removed tool's class).
 - **Rhai scripts:** `exec(command)`, `exec(command, args)` and

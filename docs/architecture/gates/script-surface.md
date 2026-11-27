@@ -70,6 +70,23 @@ entry and lists it as `no rhai name (collides with <winner>)`.
 `mcp_tools` renders each tool signature-first — `in rhai: mcp::…(#{…})`, the
 `mcp {…}` call line, then the schema.
 
+**Tool bindings** (#933, `host_ns::ScriptBinding`). The library's engine binds
+no file or process function of its own. A registered tool whose
+`Tool::script_binding` returns a `ScriptBinding` is a plain function under
+its own name: one overload per parameter list, each positional argument
+marshalled under its input key (`Str`/`Int`/`Bool`/`StrList`), a `json`
+reply parsed into a Rhai value (a non-JSON reply throws), and an optional
+`budget_key` set to the run's remaining whole seconds — the engine's
+interrupt cannot reach a call in flight, so a tool that bounds itself gets
+the bound in its input. Its `doc` line joins the `rhai` spec's host
+bindings, so the spec lists exactly what a run binds (`script::spec::reference`).
+A call climbs the same seam as every binding. `skutter`'s host tools declare
+theirs in `skutter::host::script_bindings` (`read`, `read_raw`, `glob`,
+`grep`, `glob_json`, `grep_json`, `edit`, `write`, `bash` with `timeout` as
+its budget key) — the script surface 0.7 had. Host namespaces (`<ns>::<fn>`,
+ADR-0249) cannot carry it: they take one argument map and dispatch to a
+single backing tool.
+
 **`http(method, url, #{headers?, body?})`** — the registered, never-advertised
 `http` tool (`http_tool`, beside its `http_gate`; `Capability::Exec`). Permission argument
 `"{METHOD} {url}"` (normalized as sent): `http(GET https://api.github.com/*)`
