@@ -14,8 +14,9 @@ matching `load()` — else the `#KEY=`/`# KEY=` placeholder, else append; other
 lines byte-for-byte preserved; idempotent) plus `set_key(key, value) ->
 Result<PathBuf>` (loud error with no managed path; create from `template` when
 missing; atomic temp-file-in-dir + rename; `0o600` on unix; reject empty/`\n`
-values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the `keys`
-handler (rpassword + catalog) is feature-gated behind `cli`+`provider`.
+values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the
+`config set-key` handler (rpassword + catalog) lives in `skutter`
+(`config_keys`, #931).
 `set_key_at(path, …)` is the same write against an explicit path.
 
 **First-run onboarding** (✅ #732,

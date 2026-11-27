@@ -1,26 +1,14 @@
 # entanglement-runtime
 
-The **head crate** of [entanglement](https://github.com/xmiksay/entanglement)
-— ships the `skutter` binary and the runtime half of the engine seam: the
-`Tool` trait + `ToolRegistry`, host tools, tool execution, permission dispatch
-+ approval, user config, event-sourced persistence, and every transport.
-
-```bash
-cargo install entanglement-runtime   # installs the `skutter` binary
-```
-
-## Four heads, one engine
-
-| Head | Command | What it is |
-| --- | --- | --- |
-| stdio | `skutter run` / `skutter pipe` | one-shot run (text or `--format json` NDJSON) and bidirectional NDJSON pipe |
-| TUI | `skutter tui` | terminal UI: streaming output, tool-approval prompts, plan/task panels, `/model` picker, `/inspect` overlay |
-| WebSocket | `skutter serve --port <N>` | loopback-bound axum HTTP+WS (`/ws`, `/healthz`), JSON frames, local single-user |
-| ABI | (library) | hold a `Holly`, call `send()` / `subscribe()` directly |
-
-Plus `skutter sessions` (list past sessions) and `skutter inspect
-prompt|agents|skills|modes|config|…` (re-run load-time discovery with no
-engine, show the resolved state and which layer won each override).
+The **embeddable runtime library** of
+[entanglement](https://github.com/xmiksay/entanglement) — the runtime half of
+the engine seam: the `Tool` trait + `ToolRegistry`, host tools, tool
+execution, permission dispatch + approval, sub-agents, user config and
+event-sourced persistence. Hold a `Holly`, call `send()` / `subscribe()`, and
+wire the executor around it. No binary and no CLI/TUI/web-server deps: the
+`skutter` coding CLI (stdio `run`/`pipe`, the TUI, the WebSocket `serve`
+head) is a separate, unpublished crate in the same repository, built on this
+library's public API.
 
 ## Host tools
 
@@ -51,7 +39,7 @@ advertised.
 
 Set `ENTANGLEMENT_PROVIDER` (`zai` | `zai_paas` | `openai` | `ollama` |
 `anthropic` | `gemini` | any catalog entry) or let key auto-detection pick. With
-no key, the TUI opens a first-run setup dialog and `run`/`pipe`/`serve` print a
+no key, `skutter`'s TUI opens a first-run setup dialog and `run`/`pipe`/`serve` print a
 hint and exit 2; the offline `EchoLlm` stub is explicit-only
 (`ENTANGLEMENT_PROVIDER=echo`). The
 provider/model list is YAML data — see
@@ -61,23 +49,20 @@ provider/model list is YAML data — see
 
 | Feature | Adds |
 | --- | --- |
-| `cli` | clap arg parsing + log init |
-| `provider` | real LLM backends (via `entanglement-provider`) |
-| `tui` | the terminal UI (ratatui/crossterm) |
-| `serve` | the WebSocket head (axum; implies `cli` + `provider`) |
+| `provider` | the aux-LLM helpers that drain an `entanglement-provider` stream (session titles, the action narrator, the throttle relay) |
 | `mcp-http` | the streamable-HTTP MCP transport + its OAuth flow |
 | `rhai` | the sandboxed `rhai` scripting tool |
 | `web-fetch` | the SSRF-guarded `web_fetch` tool + its HTML→Markdown converter (`htmd`) |
 
-`default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]` builds the full binary. With
-`--no-default-features` the crate is a **lean embeddable library** — tool
-execution, permission dispatch, spawn, persistence — with no CLI/TUI/transport
-deps.
+All four are default. With `--no-default-features` the crate is the **lean
+library** — tool execution, permission dispatch, spawn, persistence. No feature
+set pulls a CLI, TUI or web-server crate.
 
 ## Docs
 
 Architecture: [docs/architecture.md](https://github.com/xmiksay/entanglement/blob/master/docs/architecture.md)
-([heads & persistence](https://github.com/xmiksay/entanglement/blob/master/docs/architecture/heads-and-persistence.md)
+([embedding](https://github.com/xmiksay/entanglement/blob/master/docs/embedding.md)
+· [heads & persistence](https://github.com/xmiksay/entanglement/blob/master/docs/architecture/heads-and-persistence.md)
 · [agents & permissions](https://github.com/xmiksay/entanglement/blob/master/docs/architecture/agents-and-permissions.md)
 · [gates & host tools](https://github.com/xmiksay/entanglement/blob/master/docs/architecture/gates-and-host-tools.md))
 

@@ -141,7 +141,7 @@
   the next `/model` switch — no restart (startup auto-detect still needs one). A
   status line (never the key) is recorded into the transcript; `Esc` wipes the
   buffer. The CLI twin is `skutter config set-key <provider> [--key V]`
-  (`config::keys`, a pre-engine fast path like `inspect`): it resolves the catalog
+  (`skutter`'s `config_keys`, a pre-engine fast path like `inspect`): it resolves the catalog
   `key_env` (keyless Ollama → clean error), sources the value from `--key`, a
   hidden `rpassword` prompt, or piped stdin — never echoed — and warns when the
   process env already carries a *different* value (env > file). **Session

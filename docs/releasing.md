@@ -75,9 +75,11 @@ The `publish` job authenticates via **OIDC Trusted Publishing**
 30-minute crates.io publish token. No `CARGO_REGISTRY_TOKEN` secret lives in
 this repo.
 
-It publishes all three crates **leaf-first** — `entanglement-provider` →
+It publishes all three library crates **leaf-first** — `entanglement-provider` →
 `entanglement-core` → `entanglement-runtime` (the dependency order from
-`.claude/CLAUDE.md`'s crate table) — waiting after each for the crate to land
+`.claude/CLAUDE.md`'s crate table; the fourth workspace crate, the `skutter`
+CLI, is `publish = false` and installed from a checkout with `make install`,
+#931) — waiting after each for the crate to land
 on the crates.io sparse index (`scripts/wait-for-crate.sh`) before packaging
 the crate that depends on it; skipping the wait makes the dependent's
 `cargo publish` fail resolving the just-published version (confirmed locally:

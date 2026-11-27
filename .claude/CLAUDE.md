@@ -20,12 +20,11 @@ Intentional deferrals and docs-drift findings live as GitHub issues, one each
 - **Rust** (stable, `../rust-toolchain.toml`; MSRV is the workspace `Cargo.toml` `rust-version`, CI-tested by `make msrv`).
 - Async: **Tokio** (`mpsc` inbox, `broadcast` outbox). Errors: `anyhow` + `thiserror`.
 - Logging: `tracing`. Serde everywhere (the wire protocol).
-- No web framework in core; the runtime's `serve` subcommand brings `axum`
-  (behind its own `serve` feature).
+- No web framework in core or the runtime; `skutter serve` brings `axum`.
 
 ## Workspace
 
-Three crates, dependency direction `provider (leaf) ← core ← runtime`
+Four crates, dependency direction `provider (leaf) ← core ← runtime ← skutter`
 ([ADR-0053](../docs/adr/archive/0053-invert-core-provider-seam.md)); layering detail in
 [layers & ABI](../docs/architecture/layers-and-abi.md).
 
@@ -33,7 +32,8 @@ Three crates, dependency direction `provider (leaf) ← core ← runtime`
 | --- | --- | --- |
 | `entanglement-provider` | leaf: the `Llm` trait + DTOs, all LLM clients (OpenAI-compat, Anthropic, Gemini, Responses), per-endpoint pool/retry/rate-limit, the YAML catalog, the MCP client mechanism (HTTP transport + OAuth). [provider](../docs/architecture/provider.md) | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, turn loop, `Context`. Advertises tool *schemas* only — no executable tools, no policy. Re-exports the provider ABI. [engine](../docs/architecture/engine.md) | no UI/web-server deps (`clap`/`axum`/`crossterm`/`ratatui`); `make tree` enforces. |
-| `entanglement-runtime` | head crate (binary `skutter`): `Tool`/`ToolRegistry`, host tools, permission dispatch, `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config`; also a lean embedder library. Features `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai`/`web-fetch`, default `tui`+`serve`+`mcp-http`+`rhai`+`web-fetch` ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md)). [heads & persistence](../docs/architecture/heads-and-persistence.md), [gates & host tools](../docs/architecture/gates-and-host-tools.md) | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
+| `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, host tools, permission dispatch, sub-agents, config, persistence, the definitions watcher. No binary. Features `provider`/`mcp-http`/`rhai`/`web-fetch`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
+| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, user slash commands, log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
 
 ## Commands — drive through `make`
 
@@ -54,10 +54,10 @@ make lint          # clippy, warnings = errors
 make fmt | check-fmt
 make verify        # check-fmt + tree + check-lean + file-cap + doc-cap + userid + lint + test  (CI-equivalent gate)
 make tree          # entanglement-core dep hygiene gate (fails on UI/web-server crates)
-make check-lean    # lean runtime (--no-default-features) stays CLI/TUI-free (ADR-0025)
+make check-lean    # runtime (default + --no-default-features) stays CLI/TUI/web-server-free (ADR-0025)
 make file-cap      # 400-line file cap gate (grandfathered debt in scripts/file-cap-allowlist.txt)
 make doc-cap       # 400-line cap on docs/**/*.md outside docs/adr/ (split a module into a sub-page dir; the module file stays its index)
-make userid        # UserId-free entanglement-runtime gate (ADR-0181)
+make userid        # UserId-free entanglement-runtime + skutter gate (ADR-0181)
 make test-gates    # dep-gate + userid + file-cap + doc-cap + test-isolated self-tests, default + strict POSIX (scripts/dep-gate.test.sh)
 make msrv          # cargo check (full + lean runtime) on the MSRV toolchain; msrv-version prints it
 make coverage      # workspace line coverage via llvm-cov, fail under COV_MIN%
@@ -256,7 +256,7 @@ doc, never here**:
 - **Reasoning has two rails** — `ReasoningDelta` renders, `ReasoningBlock`
   replays ([provider §extended thinking](../docs/architecture/provider/thinking-and-selection.md#extended-thinking-capture-and-replay), [ADR-0160](../docs/adr/archive/0160-extended-thinking-round-trip.md)).
 - **Multi-user is an embedder library API** — `UserId` never appears in
-  `entanglement-runtime` (`make userid`); no in-tree head is multi-user
+  `entanglement-runtime` or `skutter` (`make userid`); no in-tree head is multi-user
   ([embedding §7](../docs/embedding/approvals-mcp-multi-user.md), [ADR-0147](../docs/adr/archive/0147-multi-user-mode-embedder-api.md)/[ADR-0181](../docs/adr/archive/0181-userid-leaves-the-runtime-crate.md)).
 
 | Topic | Module |

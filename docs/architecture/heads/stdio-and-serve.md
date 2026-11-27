@@ -4,26 +4,20 @@
 
 ## 6. Heads — ADRs [0005](../../adr/archive/0005-ndjson-stdio-head.md) (stdio), 0001 (ABI), [0010](../../adr/archive/0010-single-head-crate-and-bash-opt-in.md) (packaging), [0011](../../adr/archive/0011-tui-head-ratatui-crossterm.md)–[0015](../../adr/archive/0015-rich-text-pipeline-syntect.md) (TUI)
 
-All heads live in one crate, **`entanglement-runtime`** (✅ #56; binary
-`skutter`), as subcommands. The "four interfaces"
-(in-process ABI + three transports) are a design concept, not a packaging
-boundary — the real seam is `entanglement-core` ↔ everything else (ADR-0006,
-ADR-0010).
+All heads live in one crate, **`skutter`** (binary `skutter`, #931), as
+subcommands. The "four interfaces" (in-process ABI + three transports) are a
+design concept, not a packaging boundary — the real seam is the
+`entanglement-runtime` library ↔ the CLI built on it (ADR-0006, ADR-0010,
+changed by #931).
 
-The heads (and the `skutter` binary that carries them) need the crate's
-**default features** — `default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]` pulls
-clap + the providers + the render stack + the axum WS server + the
-streamable-HTTP MCP transport (ADR-0080) + the sandboxed script tool
-([ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md))
-+ the `web_fetch` tool ([ADR-0220](../../adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)),
-and `[[bin]] skutter` declares
-`required-features = ["cli","provider","tui"]` (the `provider` feature was split
-out of `cli` in #208 so the `ws` `serve` head — added in #153 behind its own
-`serve` feature, `serve = ["cli","provider","dep:axum","dep:futures"]` — pulls
-providers without dragging in clap or the TUI stack).
-Building the crate with `default-features = false` yields an **embeddable
-library** — the tool-execution loop, permission dispatch, sub-agent spawn, and
-persistence machinery with none of the CLI/TUI/transport weight
+`skutter` has no features: it always carries clap, the providers, the render
+stack, the axum WS server and the runtime's default features (the
+streamable-HTTP MCP transport, ADR-0080; the sandboxed script tool,
+[ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md);
+the `web_fetch` tool, [ADR-0220](../../adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)).
+`entanglement-runtime` is the **embeddable library** under it — the
+tool-execution loop, permission dispatch, sub-agent spawn, and persistence
+machinery with none of the CLI/TUI/web-server weight in any feature set
 ([ADR-0025](../../adr/archive/0025-runtime-cargo-feature-gates.md), §7). Wiring a custom,
 multi-tenant head on top of this library (session namespacing, the trust
 split, pluggable persistence/policy, approval-across-restart) is covered in
@@ -161,8 +155,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   grows beyond loopback. The wire hygiene it consumes (`seq`
   uniqueness #157, protocol warts #160) was frozen first, per the pre-`serve`
   hardening epic ([ADR-0048](../../adr/archive/0048-serve-head-local-trust-model.md)). Lives
-  behind the `serve` feature (implies `cli` + `provider`) so axum stays out of
-  the lean library / `--no-default-features` build (ADR-0025). **Per-connection
+  in `skutter` (`skutter::serve`), so axum never reaches the runtime library
+  (#931). **Per-connection
   approval ownership** (#402, [ADR-0107](../../adr/archive/0107-ws-per-connection-approval-ownership.md)):
   a `SessionOwners` map on `ServeState` claims a session for the first
   connection to send any frame referencing it (first-writer-wins); a later

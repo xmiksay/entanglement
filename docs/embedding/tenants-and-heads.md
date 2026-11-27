@@ -111,9 +111,9 @@ built after checking the caller's identity/tenant, `send` it. If it's bytes a
 client sent that merely deserialize into an `InMsg`, always go through
 `send_from_wire` — even in a trusted-tenant, authenticated-client setup, because
 the split isn't about trusting the *user*, it's about not letting a client
-socket masquerade as your own executor. `entanglement-runtime`'s own `pipe`
+socket masquerade as your own executor. `skutter`'s own `pipe`
 head is the reference: every stdin line that parses as an `InMsg` goes through
-`send_from_wire` (`entanglement-runtime/src/pipe.rs`) — only the fallback case,
+`send_from_wire` (`skutter/src/pipe.rs`) — only the fallback case,
 where `pipe` itself decides to wrap an unparsable line as a `Prompt` it
 constructed, uses plain `send`. Same discipline applies even though `pipe` is a
 trusted local process; it's what keeps a `serve`-style head safe once its input

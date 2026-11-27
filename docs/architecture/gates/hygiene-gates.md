@@ -20,23 +20,25 @@ tools, §8) and `diffy` moved out with the host-tool implementations to
 backends live in `entanglement-provider`, the leaf crate — see ADR-0053.
 
 A second gate, **`make check-lean`** (ADR-0025, amended by ADR-0053), protects the
-runtime's lean library surface: it runs `cargo tree -e normal -p
-entanglement-runtime --no-default-features` and **fails** if `clap`/`ratatui`/
-`crossterm`/`syntect`/`pulldown-cmark`/`diffy`/`tracing-subscriber` leak into the
-no-default-features build (`reqwest`/`hyper` now ride in via core → provider and
-are no longer flagged — ADR-0053), then runs lean `clippy --all-targets` (which
-type-checks the lib + the integration tests with the bin auto-skipped via
-`required-features` — the load-bearing check). It joins `tree` in `make verify`.
+runtime library: it runs `cargo tree -e normal -p entanglement-runtime` with its
+default features **and** with `--no-default-features`, and **fails** if
+`clap`/`ratatui`/`crossterm`/`syntect`/`pulldown-cmark`/`diffy`/
+`tracing-subscriber`/`axum` leak into either build — since #931 every head lives
+in the `skutter` crate, so no runtime feature may carry one (`reqwest`/`hyper`
+ride in via core → provider and are not flagged — ADR-0053). It then runs lean
+`clippy --all-targets` (which type-checks the lib + the integration tests under
+`--no-default-features` — the load-bearing check). It joins `tree` in
+`make verify`.
 `rhai` is deliberately **not** in `LEAN_FORBIDDEN` — the sandboxed script tool
 lives behind its own default-on `rhai` feature (#502,
 [ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md)
 amending ADR-0025; the tool itself is documented in §8, [host tools](host-tools.md)), so
 `--no-default-features` now excludes it (a
 lean embedder that never registers the tool sheds one of the heaviest
-always-compiled deps) while every default build — including the `skutter`
-binary — is unaffected. Each of the three crates' `tokio` dependency also
+always-compiled deps) while every default build — including `skutter` — is
+unaffected. Each crate's `tokio` dependency also
 dropped `features = ["full"]` for a per-crate minimal list grep-verified
-against its own API surface (ADR-0135); `syntect` (behind `tui`) trimmed
+against its own API surface (ADR-0135); `syntect` (a `skutter` dep) trimmed
 `default-fancy` down to `parsing`/`default-syntaxes`/`default-themes`/
 `regex-fancy` (drops `html`/`plist-load`/`yaml-load`/`dump-create`, none used
 by `tui/markdown.rs`) — neither trim touches this gate's forbidden-crate set.
@@ -64,9 +66,9 @@ target directory with no `.rs` files fails too, #779).
 `cargo-deny` bans (ADR-0006's stated
 future) were considered but **not** adopted: they evaluate the whole workspace
 graph and can't scope a rule to one crate's subtree, so they cannot express
-"forbidden in core but fine in runtime" (`clap`/`crossterm`/`ratatui` live
-legitimately in the full runtime graph, and `axum` is reserved for the future
-`serve` head) — the per-crate `cargo tree -p` subgraph is exactly what they lack.
+"forbidden in core and the runtime but fine in `skutter`" (`clap`/`crossterm`/
+`ratatui`/`axum` live legitimately in the CLI's graph) — the per-crate
+`cargo tree -p` subgraph is exactly what they lack.
 
 **Doc cap (#848).** `make doc-cap` ([`scripts/doc-cap-gate.sh`](../../../scripts/doc-cap-gate.sh),
 in `make verify`) holds the prose docs to the same 400-line cap as source:

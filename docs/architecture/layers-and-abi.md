@@ -2,22 +2,27 @@
 
 > Part of the [architecture overview](../architecture.md). The *why* behind each choice is in the [decision log](../adr/README.md).
 
-## 0. Layers: core / provider / runtime — [ADR-0006](../adr/archive/0006-core-dependency-hygiene-gate.md), [ADR-0053](../adr/archive/0053-invert-core-provider-seam.md)
+## 0. Layers: core / provider / runtime / skutter — [ADR-0006](../adr/archive/0006-core-dependency-hygiene-gate.md), [ADR-0053](../adr/archive/0053-invert-core-provider-seam.md)
 
-Three crates, two seams. Dependency direction is `provider (leaf) ← core ←
-runtime`: **provider** is a leaf crate (no `entanglement-*` deps), **core**
-depends on provider, and the head depends on both. Heads depend on core; core
-never depends on a head. The core↔provider seam was inverted in
+Four crates, three seams. Dependency direction is `provider (leaf) ← core ←
+runtime ← skutter`: **provider** is a leaf crate (no `entanglement-*` deps),
+**core** depends on provider, the **runtime** library on both, and the
+**skutter** CLI on all three. Heads depend on core; core never depends on a
+head. The core↔provider seam was inverted in
 [ADR-0053](../adr/archive/0053-invert-core-provider-seam.md) (superseding the
 dependency-direction decisions of [ADR-0006](../adr/archive/0006-core-dependency-hygiene-gate.md)
 and [ADR-0007](../adr/archive/0007-streaming-llm-and-provider-crate.md)): provider now
 **owns** the LLM ABI and core consumes it.
 
 ```
-┌──────────── entanglement-runtime (head, binary `skutter`) ─────────────┐
+┌──────────────── skutter (CLI, binary `skutter`) ────────────────────────┐
+│ heads: stdio `run`/`pipe` · TUI · WebSocket `serve` · slash commands    │
+│ `inspect` · `sessions` · `config set-key` · provider selection · wiring │
+└─────────▲───────────────────────────────────────────────────────────────┘
+          │ public API only
+┌─────────┴──────────── entanglement-runtime (library) ──────────────────┐
 │ user sessions · `Tool` trait + `ToolRegistry` · host tools · tool exec │
-│ permission dispatch · approval UX · persistence · transports           │
-│ (stdio ✅, TUI ✅, WS ✅) · selects the concrete provider · glues core   │
+│ permission dispatch · approval · persistence · config · watcher        │
 └─────────▲──────────────────────────────────────────────▲───────────────┘
           │ send()/subscribe() (ABI)      tool exec + approval (protocol)
 ┌─────────┴──────────────── entanglement-core (engine) ───┴───────────────┐
@@ -45,27 +50,23 @@ and [ADR-0007](../adr/archive/0007-streaming-llm-and-provider-crate.md)): provid
 - **provider** — a **leaf crate** (no `entanglement-*` deps) that owns the LLM
   ABI *and* all LLM I/O behind the `Llm` trait (§5b). Usable standalone for raw
   LLM queries with no engine.
-- **runtime** — the head: the `Tool` trait + `ToolRegistry`
+- **runtime** — the embeddable library: the `Tool` trait + `ToolRegistry`
   ([ADR-0059](../adr/archive/0059-tool-trait-and-registry-live-in-the-runtime.md), #206),
-  host tools + their execution, permission dispatch +
-  approval, user sessions, every transport (§6, §8). Feature-gated
-  ([ADR-0025](../adr/archive/0025-runtime-cargo-feature-gates.md)): `default = ["tui",
-  "serve", "mcp-http", "rhai", "web-fetch"]` is
-  the full `skutter` binary, while `--no-default-features` is a **lean library**
-  — `host` + `tool_runner` + `permission` + `subagent` + `persistence` +
-  `session_store` (+ `config` + `inspect`, #208) over core + tokio + glob/regex,
-  with no CLI/TUI deps (`make check-lean` enforces, §7). Since
-  [ADR-0053](../adr/archive/0053-invert-core-provider-seam.md)
-  the lean library is CLI/TUI-free rather than transport-free — `reqwest` rides
-  in transitively via core → provider. The `cli` feature (clap + log init) and
-  the `provider` feature (the LLM providers, split out of `cli` in #208) sit
-  between the two; the WebSocket sibling they left room for shipped as
-  `serve = ["cli", "provider", …]` (#153, ADR-0048), keeping `axum` behind its
-  own gate. `main.rs` now imports the library modules from the lib
-  crate instead of re-declaring `mod`, so only bin-specific code lives in the
-  binary (#208): the heads (`pipe`/`run`/`tui`, dispatched by `heads`), the
-  clap surface (`args`), and the startup wiring (`providers`/`factories` →
-  `engine_setup` → `boot` → `services`, #737).
+  host tools + their execution, permission dispatch + approval, sub-agents,
+  user config, sessions + persistence, the definitions watcher (§8). No binary
+  (#931). Features ([ADR-0025](../adr/archive/0025-runtime-cargo-feature-gates.md),
+  changed by #931): `default = ["provider", "mcp-http", "rhai", "web-fetch"]`;
+  `--no-default-features` drops the provider-backed aux-LLM helpers, the HTTP
+  MCP transport, `rhai` and `web_fetch`. Neither build pulls a CLI, TUI or
+  web-server crate (`make check-lean` gates both, §7); `reqwest` rides in
+  transitively via core → provider.
+- **skutter** — the coding CLI (#931, `publish = false`): every head (`run`/
+  `pipe`/`tui`/`serve`), user slash commands, `inspect`, the log setup and
+  `config set-key`, built on the runtime's public API only. Its library
+  (`serve`, `slash_commands`, `inspect`, `logging`) is what its integration
+  tests drive; the binary holds the heads (`pipe`/`run`/`tui`, dispatched by
+  `heads`), the clap surface (`args`) and the startup wiring (`providers`/
+  `factories` → `engine_setup` → `boot` → `services`, #737).
 
 **Responsibility relocation is mostly landed:** the host-tool *implementations*
 now live in `entanglement-runtime` (✅ #57, §8) — as does the `Tool` trait +

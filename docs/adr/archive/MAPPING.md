@@ -41,8 +41,8 @@ the code, never as a description of current behaviour — that is
 | [0007](0007-streaming-llm-and-provider-crate.md) | `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning | current; partly superseded by 0053 | — |
 | [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | current; partly superseded by 0054, 0091, 0170; amended by 0161 | — |
 | [0009](0009-edit-and-bash-host-tools.md) | Host tools: `edit` (search/replace) and `bash` (subprocess + timeout) | current; partly superseded by 0054 | — |
-| [0010](0010-single-head-crate-and-bash-opt-in.md) | `entanglement-runtime`: the head crate — tools, execution, permissions, sessions | current; partly superseded by 0093 (itself removed by #916), 0195 (§3 `bash` opt-in retired); amended by 0176 | — |
-| [0011](0011-tui-head-ratatui-crossterm.md) | TUI head: ratatui + crossterm in `entanglement-runtime` | current | — |
+| [0010](0010-single-head-crate-and-bash-opt-in.md) | `entanglement-runtime`: the head crate — tools, execution, permissions, sessions | current; partly superseded by 0093 (itself removed by #916), 0195 (§3 `bash` opt-in retired); amended by 0176; changed by #931 | — |
+| [0011](0011-tui-head-ratatui-crossterm.md) | TUI head: ratatui + crossterm in `entanglement-runtime` | current; changed by #931 | — |
 | [0012](0012-tui-event-buffering-rendering.md) | TUI event-buffering & rendering model | current | — |
 | [0013](0013-keybinding-leader-which-key.md) | Keybinding scheme: leader key + which-key | current | — |
 | [0014](0014-tool-approval-inline-modal.md) | Tool approval UX: inline card vs modal | current | — |
@@ -56,7 +56,7 @@ the code, never as a description of current behaviour — that is
 | [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | current | — |
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | current; amended by 0138, 0207 | — |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | current; amended by 0137, 0138, 0207 | — |
-| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135 | — |
+| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135; changed by #931 | — |
 | [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | current; partly superseded by 0161 | — |
 | [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | current; amended by 0127, 0146 | — |
 | [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | current | — |

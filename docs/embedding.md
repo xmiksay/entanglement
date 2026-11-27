@@ -2,10 +2,12 @@
 
 How to build a **custom head** on top of the engine: one process serving many
 users, each isolated, without forking anything. This is the path
-`entanglement-runtime --no-default-features` exists for
-([ADR-0025](adr/archive/0025-runtime-cargo-feature-gates.md)) — the lean library gives
+the `entanglement-runtime` library exists for — the `skutter` CLI is one such
+head (#931). With `--no-default-features`
+([ADR-0025](adr/archive/0025-runtime-cargo-feature-gates.md)) the lean library gives
 you the tool-execution loop, permission dispatch, sub-agent spawn, and
-persistence machinery with zero CLI/TUI/transport weight. Everything below is exercised by compiling, runnable examples — the
+persistence machinery with zero CLI/TUI/web-server weight (no feature set
+carries any). Everything below is exercised by compiling, runnable examples — the
 multi-tenant policy seam in
 [`entanglement-runtime/examples/embedded.rs`](../entanglement-runtime/examples/embedded.rs)
 (`cargo run -p entanglement-runtime --example embedded --no-default-features`),
@@ -21,7 +23,7 @@ change (`mcp_http.rs` only under `lint`, since `mcp-http` is compiled out of
 the lean `--no-default-features` build the other two target — see [§6](embedding/approvals-mcp-multi-user.md)),
 so the snippets quoted here can't silently drift from the real API.
 
-Until this guide, the only wiring reference was `main.rs`/`run.rs` — written
+Until this guide, the only wiring reference was `skutter`'s `main.rs`/`run.rs` — written
 for a single-user CLI. Multi-tenancy is not a separate mode the engine knows
 about; it falls out of five ordinary decisions an embedder makes about its own
 process, covered in order below. Part of #307/#315.

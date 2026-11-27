@@ -191,12 +191,12 @@
   every wire; a stale `tool_advertising:` is an unknown-field `config.yml`
   parse error (#920).
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../../adr/archive/0084-runtime-live-reload-and-managed-file-locking.md)):**
-  a runtime-side `watch.rs` watches every resolvable agent/skill dir plus
+  a runtime-side `watch.rs` watches every resolvable agent/skill/command dir plus
   `${config_dir}/entanglement/`, the managed-state dir (`ENTANGLEMENT_STATE_DIR`)
   and `<root>/.entanglement/` (`notify`, debounced
   500ms so a burst of edits collapses into one reload) and, on change, re-runs the
   skill + agent loaders and swaps the result into **runtime-held mirrors**
-  (`watch::LiveDefinitions { agents, skills, commands, agent_models, grants,
+  (`watch::LiveDefinitions { agents, skills, agent_models, grants,
   mcp_capabilities, file_backups }`, built via `LiveDefinitions::new` +
   `with_file_backups`; the config's `undo:` block is re-applied onto
   `file_backups` on every change, #787) — never

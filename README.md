@@ -200,20 +200,24 @@ catalog entry sets `supports_vision`.
 
 ## Crates
 
-Three crates, two seams (core ↔ provider, core ↔ runtime). Dependency direction
-is `provider (leaf) ← core ← runtime` ([ADR-0053](docs/adr/archive/0053-invert-core-provider-seam.md)).
+Four crates, three seams (core ↔ provider, core ↔ runtime, runtime ↔ skutter).
+Dependency direction is `provider (leaf) ← core ← runtime ← skutter`
+([ADR-0053](docs/adr/archive/0053-invert-core-provider-seam.md)).
 
 | Crate | Role | Hard rule |
 | --- | --- | --- |
 | `entanglement-provider` | **leaf** crate owning the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`/`ToolSpec`) + wire `Message`; z.ai/OpenAI/Ollama + Anthropic + native Gemini clients (#309); connection pool, retry, rate-limit, reasoning stream. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, `Context`. Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider (ADR-0053). Enforced via `make tree`. |
-| `entanglement-runtime` | the head crate (binary `skutter`): the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, user sessions, all transports (stdio ✅, TUI ✅, WS ✅ #153). Selects the concrete provider + glues it to core. Feature-gated `cli`/`provider`/`tui`/`serve`/`mcp-http`/`rhai`/`web-fetch` (`default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]`, #502, #736); `--no-default-features` is a lean embeddable library (ADR-0025). | `--no-default-features` stays CLI/TUI/transport-free; `make check-lean` enforces. |
+| `entanglement-runtime` | the embeddable library: the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, sub-agents, user config, sessions + persistence. No binary (#931). Feature-gated `provider`/`mcp-http`/`rhai`/`web-fetch` (all default); `--no-default-features` is the lean build (ADR-0025). | no CLI/TUI/web-server deps in the default or the lean build; `make check-lean` enforces. |
+| `skutter` | the coding CLI (binary `skutter`, not published): every head (stdio ✅, TUI ✅, WS ✅ #153), user slash commands, `inspect`, `sessions`, `config set-key`. Selects the concrete provider + glues it to core (#931). | built on the runtime's public API only. |
 
 ## Install
 
 ```bash
-cargo install entanglement-runtime   # installs the `skutter` binary
+make install   # from a checkout: cargo install --path skutter → `skutter` in $CARGO_HOME/bin
 ```
+
+`skutter` is not published to crates.io; the three library crates are.
 
 ## Set a provider key
 
@@ -361,10 +365,10 @@ make test-live-matrix # opt-in live z.ai tool-use matrix across GLM models (need
 make lint         # clippy --all-targets -D warnings
 make verify       # check-fmt + tree + check-lean + file-cap + doc-cap + userid + lint + test (CI-equivalent)
 make tree         # cargo tree -p entanglement-core (UI/web-server dep hygiene gate)
-make check-lean   # runtime --no-default-features stays CLI/TUI-free (ADR-0025 + ADR-0053)
+make check-lean   # runtime (default + --no-default-features) stays CLI/TUI/web-server-free (ADR-0025 + ADR-0053)
 make msrv         # cargo check (full + lean runtime) on the declared MSRV (rust-version)
 make coverage     # cargo llvm-cov --workspace, fails under COV_MIN% (release gate)
-make install      # cargo install --path entanglement-runtime → `skutter` in $CARGO_HOME/bin
+make install      # cargo install --path skutter → `skutter` in $CARGO_HOME/bin
 make build | check | fmt | clean
 ```
 

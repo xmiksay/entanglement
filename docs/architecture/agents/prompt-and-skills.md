@@ -184,7 +184,7 @@
   grade its effects in the mode (a `prompt:`/`deny:` rule on what it does) or
   remove it from the discovered skill dirs.
 - **User slash commands — prompt templates (✅ #733, [ADR-0221](../../adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)):**
-  `entanglement_runtime::slash_commands` discovers every `*.md` under the
+  `skutter::slash_commands` (head-side, #931) discovers every `*.md` under the
   layered `commands` dirs through the same `layers::candidate_dirs` as skills —
   user `~/.claude/commands`, `${config_dir}/opencode/command` and `…/commands`
   (lenient) < `${config_dir}/entanglement/commands` (strict; the whole user
@@ -211,8 +211,10 @@
   never see a command; `pipe`/`serve` carry frames, not typed text, and do
   not expand. A user command named like a built-in TUI command
   (`RESERVED_NAMES`, pinned to the TUI roster by a unit test) is dropped with
-  a load warning in every head. The definitions watcher reloads the registry
-  live; `skutter inspect commands [name]` lists name, layer, source and
+  a load warning in every head. The runtime's definitions watcher fingerprints
+  the command dirs and the TUI reloads the registry on each of its notices
+  (`slash_commands::reload_on`; a malformed command file keeps the previous
+  registry and turns the notice into a failure); `skutter inspect commands [name]` lists name, layer, source and
   description (or one command's provenance and raw template).
 - **Where dispatch runs (✅ #59):** the `Agent` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a
