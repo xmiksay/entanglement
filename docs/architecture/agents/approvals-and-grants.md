@@ -64,12 +64,13 @@
   `${config_dir}/entanglement` unless `ENTANGLEMENT_STATE_DIR` relocates all
   seven managed files, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `{mode, rule}` entries with
   `tool(arg)` rule keys, merged under the file lock on each new grant and
-  re-read on every check, so another instance's grant (or a deleted line)
-  counts at once (`FileGrantStore::at` takes an explicit path, or `None` for
+  re-read on a check whenever its `(mtime, size)` moved, so another
+  instance's grant (or a deleted line) counts at once (`FileGrantStore::at` takes an explicit path, or `None` for
   memory only). Like the provider-key env file
   (#220) it sits *beside* `config.yml`, not inside it: `skutter` rewrites it
   freely, so it never clobbers the hand-edited, commented config. A missing/malformed
-  file reads empty — fail *closed* (ask again), the safe direction; a write
+  file reads empty — fail *closed* (ask again), the safe direction, warned
+  once per file version; a write
   failure is logged and the grant kept in memory for this process. The TUI modal offers `y` once / `s` session / `a` always /
   `n` reject / `e` edit-reason / `Esc` interrupt.
 - **Per-user permission ceiling + grants (#522, [ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md);

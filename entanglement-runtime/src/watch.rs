@@ -137,12 +137,17 @@ struct Fingerprint(BTreeMap<PathBuf, FileStamp>);
 
 /// Whether a path is a definition/config file worth hashing. Agent/skill
 /// sources are `*.md`; of the `*.rhai` files only a skill's `lib.rhai` — a
-/// scratch or trusted script feeds no loader; the managed catalog/config/grants files are
+/// scratch or trusted script feeds no loader; the managed catalog/config files are
 /// `*.yml` (`.yaml` tolerated); the managed key file is `.env` (no extension).
 fn is_definition_file(path: &Path) -> bool {
-    // The last-seen MCP tool cache feeds no loader and is rewritten on every
-    // MCP connect; reloading every definition for it would be pure churn.
-    if path.file_name().and_then(|n| n.to_str()) == Some(crate::config::state_dir::MCP_TOOLS_FILE) {
+    // The last-seen MCP tool cache and the grants file feed no loader (a head
+    // reads grants itself, per check) and are rewritten on every MCP connect /
+    // `Always` approval; reloading every definition for them is pure churn.
+    use crate::config::state_dir::{GRANTS_FILE, MCP_TOOLS_FILE};
+    if matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some(MCP_TOOLS_FILE | GRANTS_FILE)
+    ) {
         return false;
     }
     match path.extension().and_then(|e| e.to_str()) {
@@ -295,9 +300,8 @@ pub(crate) fn spawn_debounced_watcher(
 
 /// The resolved set of paths to watch: every candidate agent/skill/command dir
 /// `layers.rs` would read, plus `${config_dir}/entanglement/` (covers
-/// providers.yml, config.yml, grants.yml, agent-models.yml,
-/// agent-generation.yml, aux-models.yml, mcp-tokens.yml, extra-roots.yml, .env
-/// in one recursive watch), `<root>/.entanglement/` (covers the project
+/// providers.yml, config.yml, agent-models.yml, agent-generation.yml,
+/// aux-models.yml, extra-roots.yml, .env in one recursive watch), `<root>/.entanglement/` (covers the project
 /// config.yml), the managed-state dir (`ENTANGLEMENT_STATE_DIR`, ADR-0213),
 /// and the parent dir of any `ENTANGLEMENT_*_FILE` override so a non-default
 /// location is still watched (#558). Deduplicated (a `BTreeSet` — several of these overlap
@@ -448,6 +452,19 @@ mod tests {
             "/c/entanglement/rhai/modules/a/b.rhai"
         )));
         assert!(!is_definition_file(Path::new("/p/rhai/x.rhai")));
+    }
+
+    /// Neither the grants file nor the last-seen MCP tool cache feeds a
+    /// loader (#966): an `Always` approval or an MCP connect must not reload.
+    #[test]
+    fn managed_files_no_loader_reads_are_not_definitions() {
+        assert!(!is_definition_file(Path::new("/c/entanglement/grants.yml")));
+        assert!(!is_definition_file(Path::new(
+            "/c/entanglement/mcp-tools.yml"
+        )));
+        assert!(is_definition_file(Path::new(
+            "/c/entanglement/aux-models.yml"
+        )));
     }
 
     /// The core of #1: a write to a non-definition file under a watched tree

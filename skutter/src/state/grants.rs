@@ -26,12 +26,17 @@
 //! - **Always** — persisted to the **managed** grants file
 //!   (`<state dir>/grants.yml`, relocated by `ENTANGLEMENT_STATE_DIR`), a
 //!   sibling of the provider-key env file (#220) rather than a section of the
-//!   hand-edited `config.yml`. Every check re-reads the file, so a grant
-//!   another `skutter` instance recorded — or a line the user deleted — counts
-//!   at once (#329). Best-effort: a write failure is logged and the grant kept
-//!   in memory for this process only.
+//!   hand-edited `config.yml`. A check re-reads the file whenever its
+//!   `(mtime, size)` moved, so a grant another `skutter` instance recorded —
+//!   or a line the user deleted — counts at once (#329), while an unchanged
+//!   file costs one `stat` and a malformed one warns once per version.
+//!   Best-effort: a write failure is logged and the grant kept in memory for
+//!   this process only.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use entanglement_core::{ApprovalScope, SessionId};
@@ -91,6 +96,16 @@ pub struct FileGrantStore {
     /// write failed.
     memory: InMemoryGrantStore,
     path: Option<PathBuf>,
+    /// The file's grants as last parsed, keyed by the stat they were read at.
+    on_disk: Mutex<Option<(FileStamp, HashSet<GrantKey>)>>,
+}
+
+/// `(mtime, size)` of the grants file; `None` when it cannot be stat'ed.
+type FileStamp = Option<(Option<SystemTime>, u64)>;
+
+fn stamp(path: &Path) -> FileStamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok(), meta.len()))
 }
 
 impl FileGrantStore {
@@ -108,6 +123,22 @@ impl FileGrantStore {
         Self {
             memory: InMemoryGrantStore::new(),
             path,
+            on_disk: Mutex::new(None),
+        }
+    }
+
+    fn on_disk_contains(&self, path: &Path, key: &GrantKey) -> bool {
+        let now = stamp(path);
+        // A poisoned cache only ever holds a complete earlier parse.
+        let mut cache = self.on_disk.lock().unwrap_or_else(PoisonError::into_inner);
+        match cache.as_ref() {
+            Some((seen, grants)) if *seen == now => grants.contains(key),
+            _ => {
+                let grants = read_grants(path);
+                let hit = grants.contains(key);
+                *cache = Some((now, grants));
+                hit
+            }
         }
     }
 }
@@ -119,7 +150,7 @@ impl GrantStore for FileGrantStore {
             || self
                 .path
                 .as_deref()
-                .is_some_and(|path| read_grants(path).contains(&GrantKey::new(tool, arg, mode)))
+                .is_some_and(|path| self.on_disk_contains(path, &GrantKey::new(tool, arg, mode)))
     }
 
     async fn record(
@@ -149,7 +180,7 @@ impl GrantStore for FileGrantStore {
 /// Add `key` to the managed file, merged against whatever is on disk under an
 /// exclusive lock (#329) — a concurrent instance's own `Always` grant must
 /// survive rather than being clobbered.
-fn persist(path: &std::path::Path, key: GrantKey) -> anyhow::Result<()> {
+fn persist(path: &Path, key: GrantKey) -> anyhow::Result<()> {
     entanglement_runtime::config::lock::with_locked_file(path, || {
         let mut merged = read_grants(path);
         if merged.insert(key) {
