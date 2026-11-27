@@ -194,6 +194,7 @@ async fn loader_none_errors_naming_the_session_and_spawns_nothing() {
     let sid = SessionId::new("missing");
     holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
     let ev = recv_until(&mut sub, |e| matches!(e, OutEvent::Error { .. })).await;
+    assert_eq!(ev.session(), Some(&sid));
     assert!(error_text(ev).contains("missing"));
     assert_eq!(loader.calls.load(Ordering::SeqCst), 1);
     assert_nothing_spawned(&holly, &mut sub, &sid).await;
