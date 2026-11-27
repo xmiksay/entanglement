@@ -8,9 +8,10 @@ Concrete filesystem + shell tools, dispatched under the active permission
 profile ([ADR-0003](../../adr/archive/0003-agent-and-permission-profiles.md)). The
 `Tool` **trait** and `ToolRegistry` live in **`entanglement-runtime`**
 (`entanglement-runtime::tools`, ✅ #206, [ADR-0059](../../adr/archive/0059-tool-trait-and-registry-live-in-the-runtime.md)) —
-core holds no executable tools, only advertises schemas (§tool round-trip);
-the implementations live in **`entanglement-runtime::host`**
-(✅ #57) and are assembled by `host_tools(root: PathBuf) -> ToolRegistry`.
+core holds no executable tools, only advertises schemas (§tool round-trip).
+The library ships **no host tool** (#968): the implementations below live in
+**`skutter::host`** and are assembled by `host_tools(root: PathBuf) ->
+ToolRegistry`; an embedder registers its own tools the same way.
 Execution *and* permission dispatch now run in the runtime (✅ #58, #59):
 `entanglement-runtime::tool_runner` subscribes to the engine, resolves each
 `ToolExec`'s `Allow|Ask|Deny` against the session's active profile (§3), runs the
@@ -80,125 +81,94 @@ guessing again:
 | `grep` | `{pattern, path?, exclude?, case_insensitive?}` | matches as `path:lineno:line` over files matched by `path` — a **directory (searched recursively)** or a glob filter, brace sets included (default `**/*`, [ADR-0150](../../adr/archive/0150-search-tool-cli-ergonomics.md)) — minus `exclude`, the always-on `.git` exclusion, and `.gitignore` ([ADR-0099](../../adr/archive/0099-glob-grep-exclude-and-default-git-exclusion.md), [ADR-0170](../../adr/archive/0170-gitignore-aware-glob-grep-walk.md)); `case_insensitive` (serde alias `"-i"`) complements the inline `(?i)`; unknown input fields are refused; a zero-match call names its cause (*"path filter matched no files — nothing was searched"* vs *"no matches for `X` in N file(s) scanned"*); a file over the 1 MiB **scan** cap (independent of the 32 KiB output cap, [ADR-0091](../../adr/archive/0091-grep-file-scan-size-cap-decoupled-from-output-cap.md)) or sniffed as binary (a NUL byte in its content) is skipped and named in a labeled notice appended to the result — regardless of match count |
 | `edit` | `{path, oldString, newString, replaceAll?}` | exact-string replace; empty `oldString` creates (refused if exists → hints `write`); non-unique match errors unless `replaceAll` |
 | `write` | `{path, content}` | whole-file create/overwrite; missing parent dirs created; `created <path> (N lines)` / `overwrote <path> (N lines, was M)` — confirmation only, never echoes content (ADR-0031) |
-| `apply_patch` | `{path, patch}` | apply a unified diff (one or more `@@ -oldStart,oldLen +newStart,newLen @@` hunks) against the current file; each hunk's context/deleted lines are matched **exactly** at the position its header declares (offset by the net line-count delta of hunks already applied in the same patch) — no fuzzy alternate-position search, a mismatch hard-errors before any write and leaves the file untouched; emits `FileChangeKind::ApplyDiff` (#455, the first producer of that previously-reserved variant). Parsing/applying is a small hand-rolled module (`host::unified_diff`), not the `diffy` crate — `diffy` is `tui`-feature-gated and named in `LEAN_FORBIDDEN` ([hygiene gates](hygiene-gates.md)), and `apply_patch` is unconditional lean-library code alongside `edit`/`write` |
-| `bash` ⚠ | `{command, timeout?, workdir?, background?, tail?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Output is tailed to the last `tail` lines per stream (default 30; `tail=0` = full, byte-cap still applies, #622), then the exit/killed status line plus that body is byte-capped **head + tail** (¼ head / ¾ tail on the body, status line always kept in full — `bounded_result`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `background: true` (renamed from `run_in_background`, #606, [ADR-0161](../../adr/archive/0161-unified-async-work-background-flag-and-one-poll.md) §1) spawns the command **detached** and returns a job id instead of blocking — wait on it with the runtime-owned `poll` tool (#605, described in [host-tools contracts](host-tools-contracts.md)); **`timeout` still applies** to a backgrounded job ([ADR-0165](../../adr/archive/0165-background-bash-jobs-are-bounded-by-timeout.md), #617) — a deadline task kills the job's process group once it outlives the same default-120s/600s-cap bound a foreground call uses, so backgrounding no longer means unbounded. Stdin is always closed (`Stdio::null()`), never inherited from the engine, applying uniformly to both the foreground and `background` paths since both share the one command builder (#389); use shell-native `< file` redirection if a command needs input. Its spec description is the **single home of the exec-tool decision rule** (#740) — `bash` for shell commands, `rhai` for multi-step/structured-data logic (that sentence compiled in only with the `rhai` feature), all graded by the same mode — because `bash` is the advertised shell tool and its description rides the cached tools block every session sees; no shipped agent body repeats it (`built_in_bodies_leave_the_exec_rule_to_the_bash_spec`) |
-| `rhai` | `{script` XOR `path, args?, timeout?, background?}` | behind the crate's default-on `rhai` feature (#502, [ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md) amending ADR-0025). The **model-facing spec is self-sufficient**: it inlines the full binding signature list plus a chained-call example (`script/spec.rs`'s `BINDING_REFERENCE`, pinned to the registration code by `spec_description_lists_every_registered_binding`; #826 measured that GLM models only chain calls inside one script when shown how); the embedded `rhai` skill (`skills/rhai.md`) keeps the long-form prose and worked examples, and the same reference is appended to an unknown-name script error (`spec::binding_hint`). Exactly one of inline `script` or a script file `path` ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md), §`rhai(path)` in [script surface](script-surface.md) — the launch is graded like any tool on its `path`; a `rhai.trusted` script runs with no card, an `Ask` grade gets one Run all / Ask per command / Reject card); `args` (an object) is the constant map `args` in either. A **capability-sandboxed** engine — no fs/network/process/env access beyond what is bound. **Every binding call goes through the executor's dispatch seam** (`Dispatcher::run` with `Via::Script`, [ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)): mode grade, ceiling, grants, escape-root (ADR-0109/[0119](../../adr/archive/0119-rhai-bindings-route-through-the-escape-root-gate.md)), pre-dispatch arg validation, lazy MCP connect (bounded by the script's remaining budget, #831), `FileChange` capture, the in-call grader — so a binding grades, runs and is observed exactly like a direct call; the nested call's approval card is `ApprovalKind::Rhai`, tool `<tool> (rhai)`, request id `<rhai id>:rhai:<tool>`. Bindings: `read`/`read_raw` (exact content; grades as `read`)/`glob`/`grep`/`glob_json`/`grep_json` (structured, ADR-0206; grade as `glob`/`grep` via `grade::graded_name`)/`edit`/`write`; `bash(command[, workdir])` (bound only when `bash` is registered, the one exec binding since #916), with a `timeout` derived from the script's remaining budget (#419) and an explicit `workdir` ([ADR-0130](../../adr/archive/0130-rhai-exec-bindings-marshal-workdir.md)); `http(method, url[, #{headers, body}])` (§`http()` in [script surface](script-surface.md)); the generated `mcp::<server>::<tool>(#{…})` and `skill::<skill>::<fn>(…)` namespaces (§[Script surface](script-surface.md)); pure `parse_json`/`to_json`/`parse_yaml`/`to_yaml`. The seam's context is captured at script launch (the `Dispatcher` is a per-run snapshot: registry, chain), except that before every nested call the run re-reads its session's mode and limits, and a mode change forgets the per-run approvals ([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)). The per-run approval cache keys on **tool + full input** for every binding; every other nested call — except the file-mutating `write`/`edit`/`apply_patch` — runs under a bridge timeout clamped to the remaining budget less a short grace, and a cut call reports its outcome as unknown (`Outcome::TimedOut`), never "never ran"; a refusal throws (catchable), a run returns its text — `http()`/MCP failures throw too. Nested `rhai`, the `mcp` envelope and every runtime-owned/`Control` tool are unreachable (`dispatch::script::unreachable`). Last-expression value serialized + captured `print(...)`; bounded by op/string/array/map caps + wall-clock (default 5 s, max 30). `background: true` (#637, [ADR-0185](../../adr/archive/0185-rhai-joins-background-and-poll.md)) detaches after the launch gate and returns an `x-` handle to `poll`: the `bash` background regime (default 120 s, cap 600), live `print` streaming into the `ScriptRegistry`, survives a session `Stop`, keeps mid-run binding `Ask`s with session-state transitions suppressed; `poll kill=true` is cooperative — [ADR-0046](../../adr/archive/0046-rhai-sandboxed-script-tool.md) (amended by [ADR-0115](../../adr/archive/0115-rhai-exec-bindings-call-bash.md), [ADR-0130](../../adr/archive/0130-rhai-exec-bindings-marshal-workdir.md), [ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md), [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)), [ADR-0098](../../adr/archive/0098-rhai-json-yaml-loader-and-read-raw.md) |
+| `apply_patch` | `{path, patch}` | apply a unified diff (one or more `@@ -oldStart,oldLen +newStart,newLen @@` hunks) against the current file; each hunk's context/deleted lines are matched **exactly** at the position its header declares (offset by the net line-count delta of hunks already applied in the same patch) — no fuzzy alternate-position search, a mismatch hard-errors before any write and leaves the file untouched; emits `FileChangeKind::ApplyDiff` (#455, the first producer of that previously-reserved variant). Parsing/applying is a small hand-rolled module (`host::unified_diff`), not the `diffy` crate the TUI renders diffs with |
+| `bash` ⚠ | `{command, timeout?, workdir?, background?, tail?}` | `sh -c` rooted at root (or at `workdir`, a subdir validated under root by the same symlink-safe containment as the fs tools, #170); `[exit N]` + stdout + `[stderr]`; default 120 s timeout, capped at 600; spawned in its **own process group** (`process_group(0)`) so an expiry SIGKILLs the whole tree — grandchildren (a launched server/pipeline) can't orphan (#168); a `Stop`-driven task abort drops the wait future, whose group-kill guard SIGKILLs the same group so cancellation matches the timeout's containment rather than orphaning under bare `kill_on_drop` (#167). Output is drained incrementally, so a timeout returns the **partial output buffered before the kill** under a `[killed: timed out after Ns]` header instead of discarding it (#169). Output is tailed to the last `tail` lines per stream (default 30; `tail=0` = full, byte-cap still applies, #622), then the exit/killed status line plus that body is byte-capped **head + tail** (¼ head / ¾ tail on the body, status line always kept in full — `bounded_result`) so the trailing error survives — head-only truncation dropped exactly what a failing build needs (#170). `background: true` (renamed from `run_in_background`, #606, [ADR-0161](../../adr/archive/0161-unified-async-work-background-flag-and-one-poll.md) §1) spawns the command **detached** and returns a job id instead of blocking — wait on it with the runtime-owned `poll` tool (#605, described in [host-tools contracts](host-tools-contracts.md)); **`timeout` still applies** to a backgrounded job ([ADR-0165](../../adr/archive/0165-background-bash-jobs-are-bounded-by-timeout.md), #617) — a deadline task kills the job's process group once it outlives the same default-120s/600s-cap bound a foreground call uses, so backgrounding no longer means unbounded. Stdin is always closed (`Stdio::null()`), never inherited from the engine, applying uniformly to both the foreground and `background` paths since both share the one command builder (#389); use shell-native `< file` redirection if a command needs input. Its spec description is the **single home of the exec-tool decision rule** (#740) — `bash` for shell commands, `rhai` for multi-step/structured-data logic, all graded by the same mode — because `bash` is the advertised shell tool and its description rides the cached tools block every session sees; no shipped agent body repeats it (`built_in_bodies_leave_the_exec_rule_to_the_bash_spec`) |
+| `rhai` | `{script` XOR `path, args?, timeout?, background?}` | behind the crate's default-on `rhai` feature (#502, [ADR-0135](../../adr/archive/0135-deferred-build-speed-trims-tokio-rhai-syntect.md) amending ADR-0025). The **model-facing spec is self-sufficient**: it inlines the full binding signature list plus a chained-call example (`script/spec.rs`'s `BINDING_REFERENCE`, pinned to the registration code by `spec_description_lists_every_registered_binding`; #826 measured that GLM models only chain calls inside one script when shown how); the embedded `rhai` skill (`skills/rhai.md`) keeps the long-form prose and worked examples, and the same reference is appended to an unknown-name script error (`spec::binding_hint`). Exactly one of inline `script` or a script file `path` ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md), §`rhai(path)` in [script surface](script-surface.md) — the launch is graded like any tool on its `path`; a `rhai.trusted` script runs with no card, an `Ask` grade gets one Run all / Ask per command / Reject card); `args` (an object) is the constant map `args` in either. A **capability-sandboxed** engine — no fs/network/process/env access beyond what is bound. **Every binding call goes through the executor's dispatch seam** (`Dispatcher::run` with `Via::Script`, [ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)): mode grade, ceiling, grants (the resolver's grade — `skutter`'s escape-root check included, ADR-0109/[0119](../../adr/archive/0119-rhai-bindings-route-through-the-escape-root-gate.md), #968), pre-dispatch arg validation, lazy MCP connect (bounded by the script's remaining budget, #831), `FileChange` capture, the in-call grader — so a binding grades, runs and is observed exactly like a direct call; the nested call's approval card is `ApprovalKind::Rhai`, tool `<tool> (rhai)`, request id `<rhai id>:rhai:<tool>`. Bindings: `read`/`read_raw` (exact content; grades as `read`)/`glob`/`grep`/`glob_json`/`grep_json` (structured, ADR-0206; grade as `glob`/`grep` through their `Tool::call_grading`, #968)/`edit`/`write`; `bash(command[, workdir])` (bound only when `bash` is registered, the one exec binding since #916), with a `timeout` derived from the script's remaining budget (#419) and an explicit `workdir` ([ADR-0130](../../adr/archive/0130-rhai-exec-bindings-marshal-workdir.md)); `http(method, url[, #{headers, body}])` (§`http()` in [script surface](script-surface.md)); the generated `mcp::<server>::<tool>(#{…})` and `skill::<skill>::<fn>(…)` namespaces (§[Script surface](script-surface.md)); pure `parse_json`/`to_json`/`parse_yaml`/`to_yaml`. The seam's context is captured at script launch (the `Dispatcher` is a per-run snapshot: registry, chain), except that before every nested call the run re-reads its session's mode and limits, and a mode change forgets the per-run approvals ([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)). The per-run approval cache keys on **tool + full input** for every binding; every other nested call — except a tool that declares `Tool::script_unbounded` (`bash`, `write`/`edit`/`apply_patch`, #968) — runs under a bridge timeout clamped to the remaining budget less a short grace, and a cut call reports its outcome as unknown (`Outcome::TimedOut`), never "never ran"; a refusal throws (catchable), a run returns its text — `http()`/MCP failures throw too. Nested `rhai`, the `mcp` envelope and every runtime-owned/`Control` tool are unreachable (`dispatch::script::unreachable`). Last-expression value serialized + captured `print(...)`; bounded by op/string/array/map caps + wall-clock (default 5 s, max 30). `background: true` (#637, [ADR-0185](../../adr/archive/0185-rhai-joins-background-and-poll.md)) detaches after the launch gate and returns an `x-` handle to `poll`: the `bash` background regime (default 120 s, cap 600), live `print` streaming into the `ScriptRegistry`, survives a session `Stop`, keeps mid-run binding `Ask`s with session-state transitions suppressed; `poll kill=true` is cooperative — [ADR-0046](../../adr/archive/0046-rhai-sandboxed-script-tool.md) (amended by [ADR-0115](../../adr/archive/0115-rhai-exec-bindings-call-bash.md), [ADR-0130](../../adr/archive/0130-rhai-exec-bindings-marshal-workdir.md), [ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md), [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)), [ADR-0098](../../adr/archive/0098-rhai-json-yaml-loader-and-read-raw.md) |
 
 - **Working directory:** each tool holds a `root` (the cwd, **canonicalized once
-  at startup**); model-supplied paths resolve against it and are rejected on `..`
-  escape **and on symlink escape** — `resolve_under_root` canonicalizes the
-  resolved target's deepest existing ancestor and requires it under the canonical
-  root, so a `root/link -> /etc` symlink can't be followed out of tree by
-  `read`/`edit`/`write`/`apply_patch` (the create path still works: only the existing ancestor
-  is canonicalized), and `glob`/`grep` (`list_files`) drop any match whose
-  canonical path escapes — ADR-0008 upgraded by [ADR-0054](../../adr/archive/0054-canonicalizing-symlink-safe-root-containment.md)
-  (#163), unless a durable escape-root grant widens it (#482, below). Not
-  TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is deferred).
-- **Approval-gated escape (ADR-0109):** containment is no longer absolute — a
-  `read`/`edit`/`write`/`apply_patch` path, a `rhai` script `path` (ADR-0228) or a `bash` `workdir` that resolves *outside*
-  root can be reached after the user explicitly approves it. The executor detects
-  the out-of-root target (the tool's `Tool::escape_target`, asked through
-  `path_grading::escape_target`, + `path_grading::escaping_path`),
-  forces an approval prompt even when the profile would `Allow` (a `Deny` floor
-  still wins), and records the grant in a shared, in-memory `ExtraRootStore`
-  (`extra_roots.rs`), whose `Always` grants reach the embedder's
-  `extra_roots::AlwaysRoots` (`skutter`: `state::FileExtraRoots`, the managed
-  `extra-roots.yml`, `ENTANGLEMENT_STATE_DIR`, #967), keyed by
-  `(tool, resolved-absolute-path)` —
-  **per tool** (a `read` grant never unlocks `write`) at `Once`/`Session`/`Always`
-  scope. `Once` is additionally bound to the approving call's `request_id`
-  (#449, [ADR-0120](../../adr/archive/0120-once-scoped-escape-root-grant-bound-to-request-id.md)):
-  per-call executor tasks are detached and run concurrently, so without that
-  binding a single-use token approved for one call could be spent by a
-  different in-flight call to the same `(tool, path)`; `Session`/`Always`
-  still match `(tool, path)` alone, since a durable grant is meant to cover
-  every later call. `Tool::run_for_session` carries the `request_id` (the
-  `ToolCall.id` `ToolRegistry::execute` already had) into the six
-  escape-root-capable host tools for this. The host tools consult the store via
-  `resolve_under_root_or_grant` to relax containment for the approved path
-  (checked against the symlink-resolved target). No store wired (`None`) is
-  byte-identical to strict containment. **`glob`/`grep` reach outside root
-  through a distinct, narrower mechanism** (#482,
-  [ADR-0132](../../adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md)
-  amending ADR-0109): unlike the six-tool path above, a search never forces
-  its own `Ask` — `glob`/`grep` declare no `escape_target`, so a search
-  never trips the gate at all. Instead
-  `list_files_with_extra_roots` widens its containment check per match: a
-  match whose canonical path escapes root is admitted anyway when it (or an
-  ancestor of it) already carries a **durable** (`Session`/`Always`) `read`
-  grant (`ExtraRootStore::is_durably_allowed_under`, an ancestor walk over the
-  existing per-tool grant set — no new store, no enumeration API). A `Once`
-  grant never widens a search, only `read`/`edit`/etc.'s own exact-path check
-  — a search's match count is unbounded ahead of time, so treating it as
-  consuming a single-use token would let one approval cover arbitrarily many
-  reads. `GlobTool`/`GrepTool` gained the same `with_extra_roots` builder the
-  other four escape-root tools have; `host/mod.rs`'s `list_files`/`FileList`
-  moved into `host/walk.rs` to stay under the 400-line file cap. `rhai`'s file/exec bindings route through the identical (six-tool) gate
-  (#446, [ADR-0119](../../adr/archive/0119-rhai-bindings-route-through-the-escape-root-gate.md)):
-  `service_binding` forces the same approval + warning for a first-time
-  out-of-root binding call and records the grant into the same
-  `ExtraRootStore` — keyed by the binding's own `bind_rid`, threaded into the
-  delegated call so a script-obtained `Once` grant is redeemed by that exact
-  binding invocation too — so a script is no more (and no less) able to escape
-  root than an equivalent direct tool call. See
-  [ADR-0109](../../adr/archive/0109-escape-root-access-via-approval.md). `bash` sets only the **cwd** (root, or `workdir` if given,
-  through the shared `resolve_workdir` helper) and runs with the engine's full
-  privileges **by default** — unsandboxed unless opted in (ADR-0009); the
-  permission mode gates whether it runs at all.
+  at startup**); model-supplied paths resolve against it symlink-safely —
+  `host::containment` canonicalizes the resolved target's deepest existing
+  ancestor (ADR-0008 upgraded by [ADR-0054](../../adr/archive/0054-canonicalizing-symlink-safe-root-containment.md),
+  #163), so a `root/link -> /etc` symlink is judged by `/etc`. Each tool names
+  the path a call touches (`Tool::escape_target`): `path` for `read`/`edit`/
+  `write`/`apply_patch`, `workdir` for `bash`, the joined pattern for `glob`
+  and the `path` filter for `grep`. `glob`/`grep` (`list_files`) drop any
+  match whose canonical path escapes their walk — the root, or the approved
+  external directory the walk started in. Not TOCTOU-tight (an OS sandbox
+  via `openat2(RESOLVE_BENEATH)` is deferred).
+- **Approval-gated escape (ADR-0109, moved to `skutter` by #968):** the
+  library keeps no filesystem-root logic. `skutter` wraps its resolver in
+  `host::EscapeResolver` (outermost, over the `pre_tool_use` hook resolver
+  and `ModeResolver`): when the inner grade is not `Deny` and the call's
+  `escape_target` — or a `rhai` script `path` (ADR-0228) — resolves outside
+  the root (`containment::escaping_path`), the grade becomes
+  `Grade::Ask(Some(AskReason))` with `CardReason::RootEscape` (a launch:
+  `LaunchEscape`) and the text `accesses a path outside the project root:
+  <abs>`, even where the mode would `Allow`. The executor treats it like any
+  `Ask` ([approvals & grants](../agents/approvals-and-grants.md)): a
+  mode-scoped grant on the call's `(tool, graded argument)` answers it, an
+  approval wider than `Once` records one (for `bash` its command, not its
+  `workdir`), unattended it follows the collapse-then-park ladder, and the
+  card shows the reason. The tools then run whatever path the check cleared
+  (`host::resolve_path`) — there is no per-call token any more, so a
+  symlink swapped between the check and the run is not caught (0.7's
+  request-id binding, #449/[ADR-0120](../../adr/archive/0120-once-scoped-escape-root-grant-bound-to-request-id.md),
+  is gone). A durable entry in `skutter`'s `state::ExtraRootStore` skips
+  the ask: a `/cd` grant, the trusted scratch dir, and the `Always` entries
+  earlier releases persisted in `extra-roots.yml`. `glob`/`grep` ask for an
+  out-of-root search base like any path tool and then walk it
+  ([ADR-0132](../../adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md)'s
+  ride-a-`read`-grant widening is gone). `rhai`'s file/exec bindings call
+  the same tools through the same seam (#446,
+  [ADR-0119](../../adr/archive/0119-rhai-bindings-route-through-the-escape-root-gate.md)),
+  so a script is no more able to escape root than a direct call. `bash`
+  sets only the **cwd** (root, or `workdir` if given, `host::resolve_workdir`)
+  and runs with the engine's full privileges **by default** — unsandboxed
+  unless opted in (ADR-0009); the permission mode gates whether it runs at
+  all.
 - **Session working directory** (#764,
-  [ADR-0224](../../adr/archive/0224-session-working-directory.md), `workdir.rs` +
-  `path_grading.rs`): a
+  [ADR-0224](../../adr/archive/0224-session-working-directory.md), the library's
+  `path_grading.rs` + `skutter`'s `host::workdir`): a
   session's `/cd` directory (core's `ToolExec.workdir`) is the default cwd of
   `bash`/`rhai` exec and the base of relative path arguments. The
   executor applies it as a **rewrite of the call's input** on each `ToolExec`,
-  before grading, the escape-root gate and execution
-  (`path_grading::rewrite`, public so `skutter`'s `post_tool_use` payload
-  shows the same paths, §9; a rhai binding on the script bridge before it
-  enters the seam). Which argument is a path is the tool's own answer —
-  `Tool::join_workdir`, a defaulted trait method the host tools implement
-  (#930), so the executor names no host tool; `rhai`'s script `path` is
-  answered in `path_grading` itself:
-  `read`/`read_raw`/`edit`/`write`/`apply_patch` and `rhai`'s script `path`
-  ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)) join a relative `path`;
+  before grading and execution (`path_grading::rewrite`; a rhai binding on
+  the script bridge before it enters the seam), so the tool — and a
+  `post_tool_use` hook inside it (§9) — sees the rewritten paths. Which
+  argument is a path is the tool's own answer — `Tool::join_workdir`, a
+  defaulted trait method the host tools implement (#930), so the executor
+  names no host tool; `rhai`'s script `path` is answered in `path_grading`
+  itself: `read`/`read_raw`/`edit`/`write`/`apply_patch` and `rhai`'s
+  script `path` ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)) join a relative `path`;
   `glob`/`grep` (+ `_json`) join `path` or default it to the workdir;
   `bash` joins or defaults `workdir`. Inside the root the result is root-relative, outside it
-  absolute — so ADR-0125 normalization, argument- and workdir-scoped rules,
-  grants and containment see exactly what they would without a workdir
-  (which argument those rules match, and whether it is a path or a workdir,
-  is the tool's answer too: `Tool::permission_scope` + `permission_arg`,
-  #962), and
-  containment is re-checked at every use (a workdir later swapped for a
-  symlink out of the root trips the escape-root gate). `glob`/`grep` list
-  matches relative to the workdir (absolute outside it) via the shared
-  `path_grading::SessionWorkdirs` view the executor fills from each
-  `ToolExec`. The
-  runtime's `workdir::resolver` (core's `workdir_resolver` seam) canonicalizes
-  a `/cd` target, requires a directory inside the root, or — outside it — a
-  durable `bash` grant in the `ExtraRootStore`, which a
-  `Session`/`Always` approval on `SetWorkdir` records (`Once` is refused).
-  That grant is process-wide (ADR-0109): any session, model-spawned
-  children included, may then run `bash` there unasked.
-  File tools keep their per-path escape-root rules outside the root.
+  absolute — so ADR-0125 normalization (against the builder's `.root`),
+  argument- and workdir-scoped rules, grants and the escape-root check see
+  exactly what they would without a workdir (which argument those rules
+  match, and whether it is a path or a workdir, is the tool's answer too:
+  `Tool::permission_scope` + `permission_arg`, #962), and the check runs at
+  every use (a workdir later swapped for a symlink out of the root asks).
+  `glob`/`grep` list matches relative to the workdir (absolute outside it)
+  via the shared `path_grading::SessionWorkdirs` view the executor fills
+  from each `ToolExec`. `skutter`'s `host::workdir::resolver` (core's
+  `workdir_resolver` seam) canonicalizes a `/cd` target, requires a
+  directory inside the root, or — outside it — a durable `bash` entry in
+  the `ExtraRootStore`, which a `Session`/`Always` approval on `SetWorkdir`
+  records (`Once` is refused). That entry is process-wide (ADR-0109): any
+  session, model-spawned children included, may then run `bash` there
+  unasked. File tools still ask per path outside the root.
 - **The trusted scratch dir is exempt from the escape-root prompt** (#524,
   [ADR-0142](../../adr/archive/0142-trusted-scratch-dir-and-plans-folder-carve-outs.md),
-  amends ADR-0109): the runtime-owned per-project scratch dir
-  (`SessionStore::scratch_dir`)
-  needs no approval and no prior grant, for `read`/`edit`/`write`/
-  `apply_patch`, `glob`/`grep`, and a `bash` `workdir` — in every
-  profile. `ExtraRootStore` gains an optional `scratch: Option<PathBuf>`
-  (`.with_scratch`, set once at startup), consulted by `is_durably_allowed`
-  and `take_allowance` **before** the ordinary per-`(tool, path)` grant
-  lookup: a `starts_with` check against the canonicalized scratch path, not
-  the exact-match key every other grant in the store uses, so every file
-  under it is covered with no per-file approval. It composes for free with
-  the `is_durably_allowed_under` search-widening above (ADR-0132) — no
-  separate wiring for `glob`/`grep`. Not per-tool (a trusted *location*, not a
-  one-off tool approval) and never persisted (re-derived from the cwd at
-  every startup, nothing to revoke). Only the escape-root tax disappears — the
-  session mode's own grade for the call (e.g. `research` mode's `default:
-  prompt` for a `bash` command outside its spliced read-only exec allow list,
-  such as `cargo build`) is untouched, since the scratch dir being the
-  `workdir` says nothing about the command being run there. The generated `<env>` system-prompt block
+  amends ADR-0109): the per-project scratch dir
+  (`SessionStore::scratch_dir`) needs no approval, for every tool, in every
+  mode. `skutter`'s `ExtraRootStore::with_scratch` records it once at
+  startup and `is_durably_allowed` checks it first — a `starts_with` against
+  the canonicalized scratch path, so every file under it is covered. Not
+  per-tool (a trusted *location*) and never persisted (re-derived from the
+  cwd at every startup). Only the escape-root ask disappears — the session
+  mode's own grade for the call (e.g. `research` mode's `default: prompt`
+  for a `bash` command outside its read-only exec allow list) is
+  untouched. The generated `<env>` system-prompt block
   (`system_prompt::EnvBlock`) names the scratch dir and steers the model to
   prefer it over `/tmp`.
 - **The trust boundary for exec, stated plainly:** root containment applies to
@@ -208,16 +178,16 @@ guessing again:
   included. The layers that actually bound an exec tool are the session's
   permission mode (whether/what it may run), the config ceiling (#172), and
   the opt-in bubblewrap sandbox below — not filesystem containment, which
-  governs only the six path-arg tools.
+  governs only the path-arg tools.
 - **OS sandbox, opt-in and now a mode fact (#399/#479,
   [ADR-0104](../../adr/archive/0104-bubblewrap-sandbox-for-bash-call.md), scoping
   superseded by
   [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §6):**
-  `ENTANGLEMENT_SANDBOX=bwrap` confines every `bash` spawn under
+  `skutter`'s `host::sandbox` (#968): `ENTANGLEMENT_SANDBOX=bwrap` confines every `bash` spawn under
   bubblewrap by default — `--ro-bind / /` plus the project
-  root re-bound read-write at the same path (so `resolve_under_root`'s
-  containment above keeps working unmodified inside the sandbox), a fresh
+  root re-bound read-write at the same path (so the paths the tools resolve
+  above stay valid inside the sandbox), a fresh
   `/tmp`/`/dev`/`/proc`, and its own pid/ipc/uts/cgroup namespaces.
   `--unshare-net` cuts network by default; `ENTANGLEMENT_SANDBOX_NETWORK=1`
   shares the host network namespace back in. **Fail-closed by omission**: there

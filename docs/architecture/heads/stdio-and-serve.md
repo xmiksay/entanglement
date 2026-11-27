@@ -74,7 +74,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   vocabulary the old `inspect agents` view used, now attached to the mode
   rather than the agent. Engine-free means no registry there either: the
   roster is the compile-time built-in vocabulary plus the runtime-owned
-  pseudo-tools (`capability::static_capability_of`), and MCP tools
+  pseudo-tools (`tool_vocab::static_capability_of`, #968), and MCP tools
   are necessarily absent — a dynamic, environment-dependent surface out of
   scope for a static report.
   `skutter inspect commands [name]` (#733, [ADR-0221](../../adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)) lists the

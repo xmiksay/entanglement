@@ -5,7 +5,8 @@
 ### `web_fetch` — SSRF-guarded page fetch — [ADR-0220](../../adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) (#736), [ADR-0225](../../adr/archive/0225-web-fetch-grades-redirect-hops.md) (redirect grading, #808)
 
 `web_fetch { url, format?: markdown|text|raw, max_bytes?, offset? }`
-(`host::web_fetch`, behind the default-on `web-fetch` feature) fetches one
+(`skutter::host::web_fetch`, #968; the fetch mechanism is
+`entanglement-provider`'s) fetches one
 http(s) URL. HTML becomes Markdown (`htmd`; script/style/head/svg dropped),
 `text` also strips link/image targets, `raw` is verbatim. Output is paged at
 the 32 KiB host-tool cap with an `offset=` pointer. A non-text body is never
@@ -98,8 +99,9 @@ The code is in `host/web_fetch/html.rs`.
 
 `write`, `edit` and `apply_patch` — and therefore the `rhai` `write`/`edit`
 bindings, which run those same registry tools — back up what they replace
-when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptions::backups`;
-`skutter` always wires it, an embedder opts in). Only a session's run
+when built `with_backups(FileBackups)` (`skutter::host::host_tools_with` +
+`HostToolOptions::backups`; `skutter` always wires it — an embedder's own
+file tools record into the library's `FileBackups` the same way). Only a session's run
 (`run_for_session`) is recorded; a bare `run` is not.
 
 - **Storage** (`file_backup.rs`): under the root session's
@@ -202,7 +204,7 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   left untouched, and marked `attempted` (still revertable, but undo steps
   past it); a change with no backup is reported once and marked `reverted`.
   A failed marker append is only logged. Out-of-root writes (an approved
-  escape-root grant) are covered the same way — the manifest holds the
+  escape-root ask) are covered the same way — the manifest holds the
   resolved absolute path.
 - **Not covered**: anything `bash` or a `rhai` `bash` binding
   does to the filesystem, plan files written by `propose_plan`, and

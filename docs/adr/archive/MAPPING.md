@@ -39,8 +39,8 @@ the code, never as a description of current behaviour — that is
 | [0005](0005-ndjson-stdio-head.md) | NDJSON stdio head (`run` + `pipe`) | current | — |
 | [0006](0006-core-dependency-hygiene-gate.md) | Layering: core / provider / runtime, and the core hygiene gate | current; partly superseded by 0053; amended by 0176; changed by #931 | — |
 | [0007](0007-streaming-llm-and-provider-crate.md) | `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning | current; partly superseded by 0053 | — |
-| [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | current; partly superseded by 0054, 0091, 0170; amended by 0161 | — |
-| [0009](0009-edit-and-bash-host-tools.md) | Host tools: `edit` (search/replace) and `bash` (subprocess + timeout) | current; partly superseded by 0054 | — |
+| [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | current; partly superseded by 0054, 0091, 0170; amended by 0161; changed by #968 | — |
+| [0009](0009-edit-and-bash-host-tools.md) | Host tools: `edit` (search/replace) and `bash` (subprocess + timeout) | current; partly superseded by 0054; changed by #968 | — |
 | [0010](0010-single-head-crate-and-bash-opt-in.md) | `entanglement-runtime`: the head crate — tools, execution, permissions, sessions | current; partly superseded by 0093 (itself removed by #916), 0195 (§3 `bash` opt-in retired); amended by 0176; changed by #931 | — |
 | [0011](0011-tui-head-ratatui-crossterm.md) | TUI head: ratatui + crossterm in `entanglement-runtime` | current; changed by #931 | — |
 | [0012](0012-tui-event-buffering-rendering.md) | TUI event-buffering & rendering model | current | — |
@@ -56,13 +56,13 @@ the code, never as a description of current behaviour — that is
 | [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | current | — |
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | current; amended by 0138, 0207 | — |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | current; amended by 0137, 0138, 0207 | — |
-| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135; changed by #931 | — |
+| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135; changed by #931; changed by #968 | — |
 | [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | current; partly superseded by 0161 | — |
 | [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | current; amended by 0127, 0146 | — |
 | [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | current | — |
 | [0029](0029-external-editor-and-markdown-export.md) | External `$EDITOR` compose + Markdown transcript export | current | — |
 | [0030](0030-tui-file-mentions-and-bash-passthrough.md) | TUI `@file` mention completion + `!bash` passthrough | current | — |
-| [0031](0031-write-host-tool-whole-file.md) | Host tool `write`: whole-file create/overwrite (quartet → quintet) | current; partly superseded by 0054 | — |
+| [0031](0031-write-host-tool-whole-file.md) | Host tool `write`: whole-file create/overwrite (quartet → quintet) | current; partly superseded by 0054; changed by #968 | — |
 | [0032](0032-yaml-provider-model-catalog.md) | YAML provider/model catalog: embedded defaults + user override | current | — |
 | [0033](0033-agent-tool-family-and-blocking-agent.md) | `agent_*` tool family — rename `spawn_agent` → `agent_spawn`, add blocking `agent` | current; partly superseded by 0161 | — |
 | [0034](0034-file-based-agent-definitions.md) | File-based agent definitions — discovery, frontmatter, registry | current | — |
@@ -85,7 +85,7 @@ the code, never as a description of current behaviour — that is
 | [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys (`tool(pattern)`) | current; changed by #916; changed by #962 | — |
 | [0052](0052-approval-scope-and-persisted-grants.md) | Approval scope (`Once \| Session \| Always`) + persisted tool grants | current; changed by #966 | — |
 | [0053](0053-invert-core-provider-seam.md) | Invert the core↔provider seam: provider owns the LLM ABI as a leaf crate | current | — |
-| [0054](0054-canonicalizing-symlink-safe-root-containment.md) | Canonicalizing, symlink-safe host-tool root containment | current | — |
+| [0054](0054-canonicalizing-symlink-safe-root-containment.md) | Canonicalizing, symlink-safe host-tool root containment | current; changed by #968 | — |
 | [0055](0055-usage-cost-and-stop-reason-surfacing.md) | Usage/cost surfacing + normalized stop reason (`OutEvent::Usage`) | current | — |
 | [0056](0056-closesession-cascades-over-spawn-subtree.md) | `CloseSession` cascades over the spawn sub-tree | current | — |
 | [0057](0057-mid-stream-error-partial-commit-and-retry.md) | Mid-stream error: commit the partial, retry once before output | current | — |
@@ -97,7 +97,7 @@ the code, never as a description of current behaviour — that is
 | [0063](0063-realtime-model-provider-switch.md) | Realtime model/provider switch without engine restart | current; amended by 0207 | — |
 | [0064](0064-message-content-blocks.md) | `Message`/`Prompt` carry multimodal content blocks | current | — |
 | [0065](0065-read-emits-image-content-blocks.md) | `read` emits image files as image content blocks | current | — |
-| [0066](0066-lifecycle-hooks-as-runtime-interceptors.md) | Lifecycle hooks are runtime interceptors around tool dispatch and prompt ingress | current; changed by #964 | — |
+| [0066](0066-lifecycle-hooks-as-runtime-interceptors.md) | Lifecycle hooks are runtime interceptors around tool dispatch and prompt ingress | current; changed by #964; changed by #968 | — |
 | [0067](0067-mcp-client-as-runtime-tool-provider.md) | MCP client is a runtime-side tool provider | current; amended by 0193 | — |
 | [0068](0068-shared-per-session-seq-counter.md) | Shared per-session `seq` counter: runtime mints fresh seqs via `Holly::emit_for_session` | current; amended by 0239, 0244 | — |
 | [0069](0069-trusted-untrusted-wire-frame-split.md) | Trusted/untrusted wire-frame split: privileged in-process `ToolResult`/`Spawn` | current; amended by 0124 | — |
@@ -129,18 +129,18 @@ the code, never as a description of current behaviour — that is
 | [0095](0095-tui-set-show-generation-persist-on-confirmation.md) | TUI `/set`/`/show` for generation parameters + persist-on-confirmation | current | — |
 | [0096](0096-dynamic-toolregistry-sharedregistry.md) | Dynamic `ToolRegistry`: `SharedRegistry` replaces value-ownership in the executor | current | — |
 | [0097](0097-live-mcp-server-management.md) | Live MCP server management: wire ops, engine-global routing, config persistence | current; amended by 0124; changed by #966 | — |
-| [0098](0098-rhai-json-yaml-loader-and-read-raw.md) | `rhai` JSON/YAML loader (`parse_json`/`to_json`/`parse_yaml`/`to_yaml`) and the `read_raw` binding | current; amended by 0227 | — |
+| [0098](0098-rhai-json-yaml-loader-and-read-raw.md) | `rhai` JSON/YAML loader (`parse_json`/`to_json`/`parse_yaml`/`to_yaml`) and the `read_raw` binding | current; amended by 0227; changed by #968 | — |
 | [0099](0099-glob-grep-exclude-and-default-git-exclusion.md) | `glob`/`grep`: default `.git` exclusion + caller `exclude` patterns | current | — |
 | [0100](0100-tui-mcp-command.md) | TUI `/mcp` command — list, add, remove | current | — |
 | [0101](0101-compaction-forks-into-a-new-session-copy-on-write.md) | Compaction forks into a new session (copy-on-write) | current; amended by 0102, 0110, 0205 | — |
 | [0102](0102-compact-keep-tail-verbatim-in-the-fork-prompt.md) | `/compact` keep-tail: a verbatim tail composed into the fork prompt | current | — |
 | [0103](0103-auto-summarize-on-context-overflow.md) | Auto-summarize on context overflow, in place — distinct from `/compact`'s copy-on-write | current; amended by 0205 | — |
-| [0104](0104-bubblewrap-sandbox-for-bash-call.md) | OS-level process confinement for `bash`/`call` via bubblewrap — opt-in, fail-closed | current; amended by 0134; changed by #916 | — |
+| [0104](0104-bubblewrap-sandbox-for-bash-call.md) | OS-level process confinement for `bash`/`call` via bubblewrap — opt-in, fail-closed | current; amended by 0134; changed by #916; changed by #968 | — |
 | [0105](0105-expose-idle-ttl-via-runtime-config.md) | Expose `EngineConfig.idle_ttl` via `config.yml` — an engine-global setting, not a `serve`-only flag | current; changed by #967 | — |
 | [0106](0106-skill-scoped-allowed-tools-enforcement.md) | Skill-scoped `allowed_tools` enforcement — a session-local runtime mask layered after the #116 agent mask | superseded by 0194 | — |
 | [0107](0107-ws-per-connection-approval-ownership.md) | WS per-connection approval ownership — session-scoped, first-writer-wins | current | — |
 | 0108 | _(number skipped, no record)_ | — | — |
-| [0109](0109-escape-root-access-via-approval.md) | Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant | current; amended by 0119, 0120, 0132, 0142, 0228; changed by #916; changed by #967 | — |
+| [0109](0109-escape-root-access-via-approval.md) | Access outside the project root via per-tool approval — containment becomes subordinate to an explicit grant | current; amended by 0119, 0120, 0132, 0142, 0228; changed by #916; changed by #967; changed by #968 | — |
 | [0110](0110-compaction-successor-closes-predecessor.md) | `/compact` forks a *successor* and retires the source — and each session tracks its lineage | current; amended by 0234, 0243 | — |
 | [0111](0111-adaptive-endpoint-pacing-and-429-retry-until-clear.md) | Per-endpoint concurrency cap, adaptive pacing, and bounded 429 retry | current; partly superseded by 0122; amended by 0141, 0155; changed by #918 | — |
 | [0112](0112-resume-cascades-over-the-spawn-subtree.md) | `Resume` cascades over the spawn sub-tree; the re-announced `SessionStarted` carries the replayed `predecessor` | current | — |
@@ -156,14 +156,14 @@ the code, never as a description of current behaviour — that is
 | [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213; changed by #918 | — |
 | [0123](0123-agent-poll-zero-timeout-waits-for-notification.md) | `agent_poll` `timeout_secs: 0` waits for the child's notification | current; amended by 0155, 0161 | — |
 | [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current; changed by #916 | — |
-| [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916; changed by #962 | — |
+| [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916; changed by #962; changed by #968 | — |
 | [0126](0126-session-scoped-directory-grants.md) | Session-scoped directory grants via `ApprovalScope::SessionDir` and TUI `/allow` | current; changed by #916; removed by #925 | — |
 | [0127](0127-ask-user-v2-multi-question-envelope.md) | `ask_user` v2 — multi-question envelope, always-on free text, multi-select | current; amended by 0143, 0146 | — |
 | [0128](0128-mcp-http-var-header-expansion-leak-surface.md) | MCP HTTP `${VAR}` header expansion is a documented, consented leak surface | current | — |
 | [0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) | Thread the skill `allowed_tools` mask into `rhai` binding resolution | superseded by 0194 (binding snapshot by 0227) | — |
 | [0130](0130-rhai-exec-bindings-marshal-workdir.md) | `rhai` `exec`/`bash` bindings marshal `workdir` | current; amended by 0227; changed by #916 | — |
 | [0131](0131-web-search-post-mvp-follow-ups.md) | Web search post-MVP follow-ups — persisted results, `pause_turn` continuation, version flag | current; amended by 0171; removed by #919 | — |
-| [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current | — |
+| [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current; removed by #968 | — |
 | [0133](0133-live-bash-enablement-graded-by-permission.md) | Live bash enablement, graded by the permission model | superseded by 0163 | — |
 | [0134](0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) | Per-profile sandbox scoping for `bash`/`call`, with a spawn-chain confinement clamp | superseded by 0207 | — |
 | [0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md) | Deferred build-speed trims: per-crate tokio features, optional `rhai`, trimmed `syntect` | current; amended by 0180; changed by #931 | — |
@@ -173,7 +173,7 @@ the code, never as a description of current behaviour — that is
 | [0139](0139-visible-session-states-working-and-waitingagent.md) | Visible session states — `Working` + `WaitingAgent`, and `Done` as the resting state | current; amended by 0208 (itself removed by #921) | — |
 | [0140](0140-per-model-concurrency-cap-layered-on-endpoint-cap.md) | Per-model concurrency cap, layered on the endpoint cap | current; changed by #918 | — |
 | [0141](0141-wire-visible-throttle-transitions.md) | Wire-visible throttle transitions: `OutEvent::Throttle`, engine-global not per-session | current; changed by #918 | — |
-| [0142](0142-trusted-scratch-dir-and-plans-folder-carve-outs.md) | Trusted scratch dir + plans-folder carve-out | current | — |
+| [0142](0142-trusted-scratch-dir-and-plans-folder-carve-outs.md) | Trusted scratch dir + plans-folder carve-out | current; changed by #968 | — |
 | [0143](0143-ask-user-draft-until-submit.md) | `ask_user` answers are drafts until an explicit Submit | current | — |
 | [0144](0144-file-backed-shared-endpoint-state-across-instances.md) | File-backed shared endpoint state across instances | current; amended by 0156, 0213; changed by #918; changed by #929 | — |
 | [0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) | One plan tool: file-backed plans, a staleness guard, and a blocking review loop | current; amended by 0172, 0173, 0207 | — |
@@ -228,7 +228,7 @@ the code, never as a description of current behaviour — that is
 | [0194](0194-skills-are-additive-only.md) | Skills are additive-only — the `allowed_tools` mask is removed | current; partly superseded by 0196, 0228; amended by 0193; changed by #920 | — |
 | [0195](0195-bash-is-the-default-exec-and-curated-read-only-rules.md) | `bash` is the default exec + curated read-only Allow rules | current; partly superseded by 0196; amended by 0193; changed by #916; changed by #923 | — |
 | [0196](0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) | Tool search and lazy discovery replace the invoke envelope | current; §1–§4 superseded by 0226; amended by 0202, 0204, 0207, 0213 | — |
-| [0197](0197-compound-bash-commands-grade-per-segment.md) | Compound bash commands grade per segment, shell escape constructs fail closed | current; changed by #916; changed by #923 | — |
+| [0197](0197-compound-bash-commands-grade-per-segment.md) | Compound bash commands grade per segment, shell escape constructs fail closed | current; changed by #916; changed by #923; changed by #968 | — |
 | [0198](0198-out-of-mask-tool-calls-are-approvable.md) | Out-of-mask tool calls are approvable | superseded by 0207 | — |
 | [0199](0199-session-tool-listing-and-enablement-drive-advertisement.md) | Session tool listing and enablement drive advertisement | current; partly superseded by 0204, 0226; changed by #923 | — |
 | [0200](0200-fields-reasoning-capture-and-advertise-discovered.md) | Fields-format reasoning round-trip and transcript-only discovery | current; partly superseded by 0204 | — |
@@ -237,7 +237,7 @@ the code, never as a description of current behaviour — that is
 | [0203](0203-catalog-precision-effort-tiers-zai-thinking-control-dual-endpoints.md) | Catalog precision: effort tiers, thinking-required models, z.ai thinking control, dual z.ai endpoints | current; changed by #915; changed by #919 | — |
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
-| [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227 | — |
+| [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227; changed by #968 | — |
 | [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916; changed by #920; changed by #923; changed by #924 | — |
 | [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current; removed by #921 | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247; changed by #924 | — |
@@ -251,15 +251,15 @@ the code, never as a description of current behaviour — that is
 | [0217](0217-list-pending-query-for-parked-approvals.md) | `ListPending`: a correlation-id query for parked approvals | current; amended by 0230, 0237; changed by #925 | — |
 | [0218](0218-agent-default-mode-is-a-starting-hint.md) | An agent's `default_mode` is a starting hint, not authority | current; amended by 0246 | — |
 | [0219](0219-tui-themes-and-keybindings.md) | TUI themes and keybindings are named slots and validated action maps | current | — |
-| [0220](0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) | `web_fetch` is an Exec-graded, SSRF-guarded host tool; the TUI pastes clipboard images for vision models | current; amended by 0225 | — |
+| [0220](0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) | `web_fetch` is an Exec-graded, SSRF-guarded host tool; the TUI pastes clipboard images for vision models | current; amended by 0225; changed by #968 | — |
 | [0221](0221-user-slash-commands-are-head-side-prompt-templates.md) | User slash commands are head-side prompt templates | current; changed by #931 | — |
 | [0222](0222-no-silent-echo-first-run-onboarding-and-init.md) | No silent echo: first-run onboarding and `/init` | current; changed by #917 | — |
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current; changed by #923 | — |
-| [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
+| [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916; changed by #968 | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923; changed by #964 | — |
 | [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923; changed by #965; changed by #966 | — |
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920; changed by #964 | — |
-| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 (itself removed by #926); changed by #920; changed by #923 | — |
+| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 (itself removed by #926); changed by #920; changed by #923; changed by #968 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920; changed by #923 | — |
 | [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237; changed by #925 | — |
 | [0231](0231-compaction-successor-inherits-background-work.md) | A compaction successor inherits its predecessor's background work | current; amended by 0234, 0238, 0241, 0242 | — |

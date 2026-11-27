@@ -32,8 +32,8 @@ Four crates, dependency direction `provider (leaf) ← core ← runtime ← skut
 | --- | --- | --- |
 | `entanglement-provider` | leaf: the `Llm` trait + DTOs, all LLM clients (OpenAI-compat, Anthropic, Gemini, Responses), per-endpoint pool/retry/rate-limit, the YAML catalog, the MCP client mechanism (HTTP transport + OAuth). [provider](../docs/architecture/provider.md) | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, turn loop, `Context`. Advertises tool *schemas* only — no executable tools, no policy. Re-exports the provider ABI. [engine](../docs/architecture/engine.md) | no UI/web-server deps (`clap`/`axum`/`crossterm`/`ratatui`); `make tree` enforces. |
-| `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, host tools, permission dispatch, sub-agents, persistence. Reads no config/env file and resolves no user dir — the embedder hands it plain values (#967). No binary. Features `provider`/`mcp-http`/`rhai`/`web-fetch`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
-| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, user slash commands, lifecycle hooks (#964), the file-backed grants/MCP/escape-root stores (#966), the layered `config.yml` + managed pin files + definitions watcher + key writer (#967), log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
+| `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, permission dispatch, sub-agents, persistence. Ships no host tool and keeps no filesystem-root logic (#968). Reads no config/env file and resolves no user dir — the embedder hands it plain values (#967). No binary. Features `provider`/`mcp-http`/`rhai`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931, #968). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
+| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, the host tools with their containment, escape-root check, `/cd` and bwrap sandbox (#968), user slash commands, lifecycle hooks (#964), the file-backed grants/MCP/escape-root stores (#966), the layered `config.yml` + managed pin files + definitions watcher + key writer (#967), log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
 
 ## Commands — drive through `make`
 
@@ -192,8 +192,10 @@ doc, never here**:
 - **A session has a working directory** — relative path args are rewritten
   onto it *before* grading; the model learns it from the per-round notice
   ([gates §8 session working directory](../docs/architecture/gates/host-tools.md), [engine](../docs/architecture/engine.md), [ADR-0224](../docs/adr/archive/0224-session-working-directory.md)).
-- **Filesystem containment** — symlink-safe root containment, approval-gated
-  escape hatch, optional bubblewrap sandbox as a mode fact
+- **Filesystem containment is `skutter`'s** — symlink-safe path resolution
+  in its host tools, an escape-root `PermissionResolver` wrapper that asks
+  (a reasoned `Grade::Ask`) before a path outside the root, optional
+  bubblewrap sandbox as a mode fact; the library keeps none (#968)
   ([gates §8](../docs/architecture/gates/host-tools.md), [ADR-0054](../docs/adr/archive/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/archive/0109-escape-root-access-via-approval.md)/[ADR-0104](../docs/adr/archive/0104-bubblewrap-sandbox-for-bash-call.md)).
 - **Undo/rewind is per-write backups, not git** — exec changes are never
   tracked; replay never touches the disk; each change records the live tree

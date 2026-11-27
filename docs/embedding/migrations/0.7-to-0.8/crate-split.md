@@ -274,9 +274,9 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   and `${config_dir}/entanglement/<kind>`. The library reads none of
   `ENTANGLEMENT_CONFIG_FILE`, `ENTANGLEMENT_ENV_FILE`,
   `ENTANGLEMENT_STATE_DIR`, `ENTANGLEMENT_*_DIR`. It still reads the process
-  env for `ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE` (#975),
-  `ENTANGLEMENT_SANDBOX*` (#968) and an `http_auth` entry's `${VAR}`
-  secrets (#976); each is a follow-up.
+  env for `ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE` (#975) and
+  an `http_auth` entry's `${VAR}` secrets (#976); each is a follow-up.
+  (`ENTANGLEMENT_SANDBOX*` left with the sandbox, #968.)
 - **Changed behaviour (`skutter`):** every file, env var and reload works as
   in 0.7; the warning for an `ENTANGLEMENT_*_DIR` that points at a missing
   dir names the kind and the path, no longer the env var.
@@ -288,3 +288,69 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   `BackupLimits`, `HttpAuth` and `TrustedFolders` from your own config; call
   `watch::spawn_debounced_watcher` for your own reloads. The scope warnings
   of the previous section are `skutter::config::Config`'s now.
+
+## Host tools, sandbox and escape-root move to `skutter` (#968)
+
+The library ships no host tool and keeps no filesystem-root logic: the
+file, search, shell and fetch tools, their containment, the bubblewrap
+sandbox, the `/cd` resolver and the escape-root check are `skutter`'s
+(`skutter::host`, `skutter::state::ExtraRootStore`). The grading pipeline
+names no host tool. Site and nexial use none of the moved items; nexial's
+`Mode::resolve` calls gain the argument kind.
+
+- **Removed API:** the `host` module (`ReadTool`…`WebFetchTool`,
+  `host_tools`/`host_tools_with`/`host_tools_with_extra_roots`,
+  `HostToolOptions`, `sandbox::*`, `list_files`/`list_files_with_extra_roots`,
+  `FileList`, `resolve_under_root_or_grant`, `resolve_workdir*`,
+  `unified_diff`), the `extra_roots` module (`ExtraRootStore`, the
+  `AlwaysRoots` seam #967 added), the `workdir` module (`resolver`,
+  `resolve`), `path_grading::{escape_target, escaping_path,
+  resolve_under_root, resolve_and_contained}`, `tool_runner::EscapeRoot`
+  and `ToolExecutorBuilder::escape_root`, `capability::static_capability_of`,
+  `tool_names::{known_tool_names, is_recognized_mask_entry}`,
+  `tool_state::static_roster`, and the `web-fetch` feature (with the
+  `glob`, `ignore`, `base64` and HTML-converter dependencies).
+- **New API:** `ToolExecutorBuilder::root(PathBuf)` — the project root a
+  path argument grades relative to and plans live under;
+  `policy::AskReason { text, card }` and `Grade::ask(text, card)`;
+  `Tool::script_unbounded()` (default `false`: a script's nested call is
+  cut at the script's budget); `tool_names::LIBRARY_TOOL_NAMES`;
+  `tools::text_parts` is public.
+- **Changed API:** `Grade::Ask` carries `Option<AskReason>` (match
+  `Grade::Ask(_)`); `Mode::resolve`, `mode::rules::resolve` and
+  `permission::clamp_to_base` take the call's `ArgKind` after the argument;
+  the deprecated `spawn_tool_executor_with_policy` takes `root:
+  Option<PathBuf>` where it took an `EscapeRoot`; `NON_MASKABLE_TOOLS`
+  drops `read_raw`/`glob_json`/`grep_json`.
+- **Changed behaviour (library):** a command argument splits per compound
+  segment when the tool declares `ArgKind::Command` (0.7: when it was named
+  `bash`). The trusted-script write floor covers any registered tool with
+  `Capability::Write` and a path argument (0.7: `write`/`edit`/
+  `apply_patch`). A tool's `call_grading` name is what grants are recorded
+  under. A resolver's reasoned `Ask` shows its text and `CardReason` on the
+  card, a timed-out reasoned `rhai` launch is refused, and a mode grant on
+  the call's `(tool, argument)` answers it like any `Ask`.
+- **Changed behaviour (`skutter`):** an out-of-root call asks through
+  `host::EscapeResolver`, the outermost resolver wrapper. Its approval is a
+  mode-scoped grant on `(tool, graded argument)` — `bash`'s is its
+  command, not its `workdir` — not a mode-independent `(tool, path)` entry
+  in `extra-roots.yml`, and a `Once` approval is no longer bound to its
+  request id: the tools run whatever path the check cleared, so a symlink
+  swapped between the check and the run is not caught (#449's guard is
+  gone). Unattended, an escape follows the `Ask` ladder (the first collapses
+  to a refusal, a repeat parks) instead of always parking. `extra-roots.yml`
+  now holds `/cd --always` grants; entries earlier releases wrote are still
+  honoured. `glob`/`grep` ask for an out-of-root pattern or `path` and then
+  search there (0.7: they dropped such matches unless a durable `read`
+  grant covered them). `post_tool_use` runs inside `skutter`'s own tools,
+  before their result returns, a script's calls included; an MCP tool's
+  still fires from the event stream.
+- **Instead:** register your own tools (the library ships none); confine
+  them in the tool or in a `PermissionResolver` wrapper that returns
+  `Grade::ask(..)`, as `skutter`'s `EscapeResolver` does; pass
+  `.root(path)` for root-relative grading; implement `script_unbounded`,
+  `call_grading` and a `Write` + `ArgKind::Path` declaration where your
+  tool needs the clock exemption, a base tool's grade or the write floor.
+  `skutter`: `FileExtraRoots` is folded into `state::ExtraRootStore`
+  (`managed`/`at`); `hooks::CallPaths` is gone and `hooks::spawn` takes
+  `(holly, hooks)` — call `hooks::wrap_host_tools` on the registry first.

@@ -78,8 +78,7 @@ any file is touched): that, not the Control path, keeps it in `plan` mode.
 **Non-maskable names** (#843, `tool_names::NON_MASKABLE_TOOLS`) — the six
 discovery tools, the `mcp` envelope (core unwraps it to
 `mcp__<server>__<tool>` before dispatch, so the gates never see `mcp`),
-the script-only `read_raw`/`glob_json`/`grep_json` (graded as
-`read`/`glob`/`grep`, `grade::graded_name`) and the bookkeeping Control
+and the bookkeeping Control
 tools `poll`/`ask_user`/`update_tasks`/`request_mode`/`propose_plan`
 (#849): a mode/ceiling rule may spell one but can
 never match it. For `propose_plan`, the one member that is graded at all,
@@ -87,8 +86,11 @@ this is enforced by the matcher: `mode::rules::best_match` skips a rule
 naming a non-maskable tool, so only its class or a `*` rule decides, and the
 built-in `deny: [plan]` class rule never warns. The runtime says so
 instead of accepting a silent no-op: a `modes:`/`permissions:` rule naming
-one warns at config load with `tool_names::non_maskable_reason`
-(`config::mode_warn`, alongside the stale-name check).
+one warns at config load with `skutter`'s `tool_vocab::non_maskable_reason`
+(`config::mode_warn`, alongside the stale-name check) — the library's
+reasons plus `skutter`'s script-only `read_raw`/`glob_json`/`grep_json`,
+which grade as `read`/`glob`/`grep` through their `Tool::call_grading`
+(#968), so a rule naming one never matches either.
 Per-tool MCP control is a `mcp__<server>__<tool>` rule (rule keys match
 the tool part exactly, so a mode/ceiling rule spelling a name glob such as
 `mcp__<server>__*` warns as never matching): it grades an envelope call and a script's

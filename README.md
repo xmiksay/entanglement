@@ -194,8 +194,7 @@ visible to the model; the first use per host is always approved,
 [ADR-0227](docs/adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)). `web_fetch` reads a public http(s) page as
 Markdown behind an SSRF guard: private, loopback, link-local and metadata
 addresses are refused, DNS answers are pinned, and every redirect is checked
-again. It is graded like `curl` (allowed in `build` and `auto`, prompted in `research`/`plan`) and
-can be dropped with the `web-fetch` feature
+again. It is graded like `curl` (allowed in `build` and `auto`, prompted in `research`/`plan`)
 ([ADR-0220](docs/adr/archive/0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md)).
 In the TUI, `Ctrl+V` pastes a clipboard image into the prompt when the model's
 catalog entry sets `supports_vision`.
@@ -210,8 +209,8 @@ Dependency direction is `provider (leaf) ← core ← runtime ← skutter`
 | --- | --- | --- |
 | `entanglement-provider` | **leaf** crate owning the LLM ABI: the `Llm` **trait** + DTOs (`LlmRequest`/`Event`/`Stream`, `LlmFactory`, `ToolCall`/`ToolSpec`) + wire `Message`; z.ai/OpenAI/Ollama + Anthropic + native Gemini clients (#309); connection pool, retry, rate-limit, reasoning stream. Usable **standalone** for raw LLM queries. | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, `InMsg`/`OutEvent`, agent turn loop, `Context`. Advertises tool *schemas* (`ToolSpec`) only — holds no executable tools. Depends on provider, drives `dyn Llm`, re-exports the ABI. | **No UI/web-server deps** (`clap`/`axum`/`crossterm`/`ratatui` forbidden); `reqwest` is transitive via provider (ADR-0053). Enforced via `make tree`. |
-| `entanglement-runtime` | the embeddable library: the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), host-tool impls, tool execution + permission dispatch (✅ #58/#59/#206), approval, sub-agents, sessions + persistence; reads no config or env file — the embedder hands it plain values (#967). No binary (#931). Feature-gated `provider`/`mcp-http`/`rhai`/`web-fetch` (all default); `--no-default-features` is the lean build (ADR-0025). | no CLI/TUI/web-server deps in the default or the lean build; `make check-lean` enforces. |
-| `skutter` | the coding CLI (binary `skutter`, not published): every head (stdio ✅, TUI ✅, WS ✅ #153), user slash commands, lifecycle hooks (#964), the file-backed grants, MCP token/tool-name and escape-root stores (#966), the layered `config.yml`, managed pin files, definitions watcher and key writer (#967), `inspect`, `sessions`, `config set-key`. Selects the concrete provider + glues it to core (#931). | built on the runtime's public API only. |
+| `entanglement-runtime` | the embeddable library: the `Tool` **trait** + `ToolRegistry` (moved from core, ADR-0059), tool execution + permission dispatch (✅ #58/#59/#206), approval, sub-agents, sessions + persistence; ships no host tool and keeps no filesystem-root logic (#968); reads no config or env file — the embedder hands it plain values (#967). No binary (#931). Feature-gated `provider`/`mcp-http`/`rhai` (all default); `--no-default-features` is the lean build (ADR-0025). | no CLI/TUI/web-server deps in the default or the lean build; `make check-lean` enforces. |
+| `skutter` | the coding CLI (binary `skutter`, not published): every head (stdio ✅, TUI ✅, WS ✅ #153), the host tools with their containment, escape-root check, `/cd` and bubblewrap sandbox (#968), user slash commands, lifecycle hooks (#964), the file-backed grants, MCP token/tool-name and escape-root stores (#966), the layered `config.yml`, managed pin files, definitions watcher and key writer (#967), `inspect`, `sessions`, `config set-key`. Selects the concrete provider + glues it to core (#931). | built on the runtime's public API only. |
 
 ## Install
 

@@ -2,39 +2,38 @@
 
 The **embeddable runtime library** of
 [entanglement](https://github.com/xmiksay/entanglement) — the runtime half of
-the engine seam: the `Tool` trait + `ToolRegistry`, host tools, tool
-execution, permission dispatch + approval, sub-agents, user config and
-event-sourced persistence. Hold a `Holly`, call `send()` / `subscribe()`, and
+the engine seam: the `Tool` trait + `ToolRegistry`, tool execution,
+permission dispatch + approval, sub-agents and event-sourced persistence. Hold a `Holly`, call `send()` / `subscribe()`, and
 wire the executor around it. No binary and no CLI/TUI/web-server deps: the
 `skutter` coding CLI (stdio `run`/`pipe`, the TUI, the WebSocket `serve`
 head) is a separate, unpublished crate in the same repository, built on this
 library's public API.
 
-## Host tools
+## Tools
 
-The root-contained sextet `read` / `write` / `edit` / `glob` / `grep` /
-`apply_patch` (canonicalizing, symlink-safe containment; `read` emits images
-as content blocks), plus `bash` (always registered; own process group,
-timeout returns partial output) — a background `bash` job
-(`background=true`) is joined with
-the runtime-owned `poll` tool — and the sandboxed `rhai` scripting tool.
-External **MCP servers**
-declared in the user config attach their tools as `mcp__<server>__<tool>`.
+The library ships **no host tool** and keeps no filesystem-root logic: an
+embedder registers its own tools, and each declares what the permission
+pipeline needs through the `Tool` trait — its capabilities, its permission
+argument, the path it touches, whether it is advertised. The `skutter` CLI's
+file, search, shell and fetch tools (with their containment, escape-root
+check and bubblewrap sandbox) are the worked example. The library's own
+routes are the sandboxed `rhai` scripting tool, `poll`, the orchestration
+and discovery tools and the `mcp` tool. External **MCP servers** attach
+their tools as `mcp__<server>__<tool>`.
 The session's permission **mode** (`research` | `plan` | `build` | `auto`;
 `Allow | Ask | Deny` per tool, capability class, or argument-scoped rule) plus
-persisted "always allow" grants and a user-config ceiling govern every tool —
-an agent profile is identity only (prompt + model pin) and carries no
-authority (ADR-0207). The library runs no lifecycle hooks: `skutter` runs
-them (#964), a blocking `pre_tool_use` as a `PermissionResolver` wrapper and
-every other point from a subscriber on the event stream.
+"always allow" grants, a ceiling and the embedder's `PermissionResolver`
+govern every tool — an agent profile is identity only (prompt + model pin)
+and carries no authority (ADR-0207). A resolver may deny or ask for its own
+reason (`Grade::deny`, `Grade::ask`), which the model or the approval card
+then shows. The library runs no lifecycle hooks (#964).
 Every session advertises one surface, identical on every wire and pinned for
 the session (ADR-0226): the registered tools that set `Tool::advertised`
-(`read` / `edit` / `write` / `apply_patch` / `bash` / `web_fetch` /
-`load_skill`) plus the executor's own routes — the other discovery tools
-(`list_agents` / `list_models` / `list_skills` / `list_mcp` / `mcp_tools`),
-`rhai`, the orchestration tools, and the `mcp` tool. Every MCP tool is called
-through `mcp` with `{server, tool, args}`, its schema read with `mcp_tools`,
-never advertised. A registered tool without the flag stays registered and
+plus the executor's own routes — the discovery tools (`list_agents` /
+`list_models` / `list_skills` / `list_mcp` / `mcp_tools`), `rhai`, the
+orchestration tools, and the `mcp` tool. Every MCP tool is called through
+`mcp` with `{server, tool, args}`, its schema read with `mcp_tools`, never
+advertised. A registered tool without the flag stays registered and
 dispatchable but is not on the surface.
 
 ## Providers
@@ -54,9 +53,8 @@ provider/model list is YAML data — see
 | `provider` | the aux-LLM helpers that drain an `entanglement-provider` stream (session titles, the action narrator, the throttle relay) |
 | `mcp-http` | the streamable-HTTP MCP transport + its OAuth flow |
 | `rhai` | the sandboxed `rhai` scripting tool |
-| `web-fetch` | the SSRF-guarded `web_fetch` tool + its HTML→Markdown converter (`htmd`) |
 
-All four are default. With `--no-default-features` the crate is the **lean
+All three are default. With `--no-default-features` the crate is the **lean
 library** — tool execution, permission dispatch, spawn, persistence. No feature
 set pulls a CLI, TUI or web-server crate.
 

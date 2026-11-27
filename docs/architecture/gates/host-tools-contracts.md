@@ -47,7 +47,7 @@
 - **Schema advertisement:** `Tool::schema()` feeds `ToolRegistry::specs()`, so
   the model sees a real `input_schema` per host tool (not an empty object).
 - **Wiring (ADR-0010; bash posture superseded by [ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
-  `host_tools(root)` registers the **root-contained sextet**
+  `skutter::host::host_tools(root)` registers the **root-contained sextet**
   (`read`/`glob`/`grep`/`edit`/`write`/`apply_patch`; `write` added in
   ADR-0031, `apply_patch` in #455). The
   `skutter` binary registers **`BashTool` unconditionally** at startup —
@@ -61,7 +61,8 @@
   `bash` like any tool. `bash` shares its long-lived `JobRegistry`
   with the `poll` tool (#605; one registry, never minted fresh —
   ADR-0163 §3). `EngineConfig::default()` ships an
-  empty registry (embedders opt in via `host_tools`).
+  empty registry, and the library ships no host tool (#968): an embedder
+  registers its own.
   **Curated read-only Allow rules (ADR-0195, relocated by ADR-0207)** ship
   as the shared read-only exec set spliced into the `research`/`plan`/`auto`
   modes (`mode/builtin/readonly_exec.yml` — `bash(pattern)` keys; `build` needs none

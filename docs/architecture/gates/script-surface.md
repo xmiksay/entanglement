@@ -14,8 +14,8 @@ tool (`dispatch/resolve.rs`: scoped MCP overlay, lazy connect — a script waits
 on it no longer than its budget, §Dispatch-time lazy connect) → `Control` bypass
 (every Control-only tool but `agent`/`agent_send`, ADR-0232) →
 grade + grants (an embedder's resolver runs inside the grade — `skutter`'s
-`pre_tool_use` veto, [§9](hooks-and-seams.md)) → mode deny → escape-root →
-credentialed-`http` gate → run / unattended collapse / park
+`pre_tool_use` veto, [§9](hooks-and-seams.md), and its escape-root check,
+[§8](host-tools.md), #968) → resolver deny → credentialed-`http` gate → run / unattended collapse / park
 (`dispatch/decision.rs`; "unattended" is the mode's `question_timeout` and
 no head watching the call's ancestor chain, and an attended park has no
 deadline — `run_limits::unattended`/`expiry`,
@@ -149,7 +149,7 @@ root-relative inside the root and absolute outside it (`permission_arg` +
 `permission_path::rooted_script`, which canonicalizes — a plain path
 argument goes through the lexical `rooted_path`; the
 gate rewrites the input's `path` to that form before grading, against the
-escape-root policy's root or, with none wired, the launch's project root), so
+builder's `.root` or, with none wired, the launch's project root), so
 `rhai(scripts/deploy/*)` matches and a link in `scripts/deploy/` grades as
 where it points; the file read must be the file graded. An inline script
 matches only a bare `rhai` rule. Then:
@@ -169,7 +169,9 @@ approval is once only, and `run_all` is never recorded. Built-in grades:
 allows, [agents & permissions](../agents-and-permissions.md)), `research`/`plan`
 deny (class `write` deny), `auto` allows. **No answerer**: an `Ask` card
 waits for the head unless the mode has `question_timeout` and no head
-watches the session (ADR-0247); on that timeout it runs Ask per command (an out-of-root launch is refused instead).
+watches the session (ADR-0247); on that timeout it runs Ask per command —
+unless the resolver gave a reason for asking (`skutter`'s out-of-root
+launch, #968), which silence never approves: that launch is refused.
 `skutter run` answers a launch card at once with Ask per command and rejects
 every nested card. It decides on the card's `reason`, never its text
 (`pending::headless_starts`, [ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)):
@@ -179,8 +181,8 @@ only `script_launch`/`inline_launch` start, so an out-of-root launch
 *Force-allowed* is a branch of the shared seam (`Dispatcher::clear` with a
 `run_all` script): a mode/ceiling/resolver
 `Deny` still refuses (a catchable exception), and every later gate passes — a
-graded `Ask`, the escape-root gate (a single-use token the host tool
-spends), the credentialed-`http` per-host approval — except a **floored
+graded `Ask` (a resolver's reasoned one included, such as `skutter`'s
+escape-root check), the credentialed-`http` per-host approval — except a **floored
 write** under Run all, which gets its own nested card (below).
 `rhai.trusted` (`config::rhai_trusted` → `rhai_trust::TrustedFolders`) is
 read from the user **and** project layers — the lists add up, project
@@ -192,11 +194,11 @@ when the project's `permissions:` ceiling has a `prompt` list or
 `default: prompt`. The whole script is then graded and carded like any
 other. Project-layer trust always applies, and a folder both layers list is the project's. Read at
 startup only. This deliberately lets a repository unlock credentialed
-`http()` for its trusted scripts (amends ADR-0227 §4). A non-trusted `path`
-outside the root shows the escape-root warning on the same launch card (no
-second prompt; an Allow grade then asks too). With no escape-root policy
-wired, **every** out-of-root `path` is refused outright — a trusted one
-too. A trusted / Run-all script's in-call grader (`CallGrader::run_all`)
+`http()` for its trusted scripts (amends ADR-0227 §4). In `skutter` a
+non-trusted `path` outside the root asks through the escape-root check
+(#968): the launch card carries `launch_escape` and the warning (an Allow
+grade then asks too). The library itself keeps no containment: with no
+such check wired, an out-of-root `path` grades like any other. A trusted / Run-all script's in-call grader (`CallGrader::run_all`)
 passes an `Ask`-graded `http()` redirect hop the way the call itself
 passed; a `Deny` hop still stops it. `skutter inspect config` lists each
 trusted folder with the layer that listed it, and the modes where the
@@ -205,21 +207,23 @@ user layer's trust is suppressed.
 **Trusted folders must not be agent-writable.** A script inside one runs
 force-allowed, and a skill's `SKILL.md`/`lib.rhai` is loaded by every later
 session, so writing one is as good as running it: a `write`/`edit`/
-`apply_patch` whose target is a `*.rhai` file inside a trusted folder, or a
+`apply_patch` (or any other path-writing tool) whose target is a `*.rhai` file inside a trusted folder, or a
 `SKILL.md`/`lib.rhai` inside any user or project skill layer dir
 (`skills::skill_dirs` — `.entanglement/skills`, `.claude/skills`,
 `.agents/skills`, the user dirs or `ENTANGLEMENT_SKILLS_DIR`; wired by
 `ToolExecutorBuilder::skill_dirs`) — canonical comparison, a missing file
 by its nearest existing ancestor, a symlink by where the write lands — is
-graded at least `Ask`: never auto-allowed by a mode rule or a grant, and
+graded at least `Ask` — the write is a call to any registered tool that
+declares `Capability::Write` and a path argument (#968): never auto-allowed by a mode rule or a grant, and
 no wider grant is recorded for it; an explicit `Deny`
 stays `Deny`; unattended, the `Ask` collapses per the mode
 (`rhai_trust::floored_write` in `grade_call`). The floor holds inside a
 **Run-all** script (its own nested card) but not for a **trusted** script's
 own writes, and it applies in every mode, `auto` included (unattended it
 collapses to a refusal, then parks up to `question_timeout` on a repeat). Other files in the folder grade normally — safe because a
-non-`.rhai` file can never run by `path`. When the escape-root card is what
-parks a floored write, its reason names the floor too. A floored card
+non-`.rhai` file can never run by `path`. When a resolver's reason (the
+escape-root check) is what parks a floored write, its reason names the floor
+too. A floored card
 carries `reason: floored_write` (which outranks `root_escape`) and
 `scopes: [once]`, because a wider approval would never be consulted
 ([ADR-0230](../../adr/archive/0230-structured-card-reason-and-honest-scopes-on-tool-request.md)). A `bash` command

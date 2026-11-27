@@ -52,23 +52,27 @@ and [ADR-0007](../adr/archive/0007-streaming-llm-and-provider-crate.md)): provid
   LLM queries with no engine.
 - **runtime** — the embeddable library: the `Tool` trait + `ToolRegistry`
   ([ADR-0059](../adr/archive/0059-tool-trait-and-registry-live-in-the-runtime.md), #206),
-  host tools + their execution, permission dispatch + approval, sub-agents,
-  sessions + persistence (§8). It reads no config or env file and resolves no
-  user directory: the embedder hands it plain values (#967). No binary
-  (#931). Features ([ADR-0025](../adr/archive/0025-runtime-cargo-feature-gates.md),
-  changed by #931): `default = ["provider", "mcp-http", "rhai", "web-fetch"]`;
+  tool execution, permission dispatch + approval, sub-agents, sessions +
+  persistence (§8). It ships no host tool and keeps no filesystem-root logic
+  (#968), reads no config or env file and resolves no user directory: the
+  embedder hands it plain values (#967). No binary (#931). Features
+  ([ADR-0025](../adr/archive/0025-runtime-cargo-feature-gates.md), changed by
+  #931, #968): `default = ["provider", "mcp-http", "rhai"]`;
   `--no-default-features` drops the provider-backed aux-LLM helpers, the HTTP
-  MCP transport, `rhai` and `web_fetch`. Neither build pulls a CLI, TUI or
+  MCP transport and `rhai`. Neither build pulls a CLI, TUI or
   web-server crate (`make check-lean` gates both, §7); `reqwest` rides in
   transitively via core → provider.
 - **skutter** — the coding CLI (#931, `publish = false`): every head (`run`/
-  `pipe`/`tui`/`serve`), user slash commands, lifecycle hooks (#964), the
+  `pipe`/`tui`/`serve`), the host tools, their containment, the escape-root
+  check, `/cd` and the bubblewrap sandbox (`host`, #968), user slash
+  commands, lifecycle hooks (#964), the
   file-backed grants/MCP-credential/MCP-tool-name/escape-root stores and the
   `mcp:` write-back behind the runtime's in-memory seams (#966), the layered
   `config.yml`, the managed pin files, the definitions watcher and the key
   writer (`config`, `watch`, #967), `inspect`, the log setup and `config
-  set-key`, built on the runtime's public API only. Its library (`serve`,
-  `slash_commands`, `hooks`, `state`, `config`, `watch`, `inspect`, `logging`) is
+  set-key`, built on the runtime's public API only. Its library (`host`,
+  `serve`, `slash_commands`, `hooks`, `state`, `config`, `watch`, `inspect`,
+  `logging`, `tool_vocab`) is
   what its integration tests drive; the binary holds the heads (`pipe`/`run`/`tui`, dispatched by
   `heads`), the clap surface (`args`) and the startup wiring (`providers`/
   `factories` → `engine_setup` → `boot` → `services`, #737).

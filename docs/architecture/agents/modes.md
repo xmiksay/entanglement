@@ -235,9 +235,9 @@ below realize one model:
   a class. The `rhai` launch is graded like any tool, on its canonical
   script `path` (`rhai(scripts/deploy/*)`; an inline script matches only a
   bare `rhai` rule), and a script's nested calls by the same rules as direct
-  calls — one rule set. A `bash`
-  compound command (`&&`/`||`/`;`/`|`/`&`, ADR-0197)
-  grades **per segment**, folding to the most restrictive result, and
+  calls — one rule set. A compound command — the argument of any tool
+  that declares `ArgKind::Command`, such as `skutter`'s `bash` (#968;
+  `&&`/`||`/`;`/`|`/`&`, ADR-0197) — grades **per segment**, folding to the most restrictive result, and
   anything the conservative splitter can't fully parse (`SplitOutcome::Opaque`
   — redirection, substitution, a heredoc, subshell grouping) grades at the
   mode's `default` outright — never a whole-string guess. A `Deny` is

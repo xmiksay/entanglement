@@ -93,27 +93,23 @@
   scope stays keyed by `SessionId`, since a session belongs to exactly one
   user already). Reachable only through the embedder library API — `serve`
   stays single-user (ADR-0048).
-- **Escape-root access via approval (✅ #escape-root, [ADR-0109](../../adr/archive/0109-escape-root-access-via-approval.md)):**
-  root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`
-  path, a `rhai` script `path` or a `bash` `workdir` that resolves **outside** root is detected in
-  the executor (the tool's `Tool::escape_target` + `path_grading::escaping_path`) and
-  forces an approval prompt even when the profile would `Allow` (a `Deny` floor
-  still wins). The approval is recorded in a **separate** store from the
-  permission grants above — `runtime::extra_roots::ExtraRootStore`, in memory;
-  its `Always` grants reach the embedder's `extra_roots::AlwaysRoots`
-  (`skutter`: `state::FileExtraRoots`, the managed
-  `<state dir>/extra-roots.yml`, `ENTANGLEMENT_STATE_DIR`, ADR-0213, #967) — keyed by `(tool, resolved-absolute-path)`,
-  **per tool** (a `read` grant never unlocks `write`), at `Once` (single-use,
-  additionally bound to the approving call's `request_id` so a concurrent
-  in-flight call can't spend it, #449,
-  [ADR-0120](../../adr/archive/0120-once-scoped-escape-root-grant-bound-to-request-id.md)) /
-  `Session` (process-lifetime) / `Always` (persisted) scope. The host tools
-  consult it via `resolve_under_root_or_grant` to relax containment for the
-  approved path (matched against the symlink-canonicalized target). Reuses the
-  `ToolRequest`/`Approve{scope}` wire (no new variant); `glob`/`grep` stay
-  strictly root-contained. The store is separate from `grants.yml` because the
-  key spaces differ — a permission grant upgrades `Ask→Allow` on a `tool(command)`
-  key, an escape grant relaxes *containment* on a `(tool, absolute-path)` key.
+- **Escape-root access via approval (✅ #escape-root, [ADR-0109](../../adr/archive/0109-escape-root-access-via-approval.md), moved to `skutter` by #968):**
+  the library keeps no root containment. `skutter` wraps its resolver in
+  `host::EscapeResolver`: a call whose `Tool::escape_target` (a `rhai`
+  script `path` for a launch) resolves **outside** the root grades
+  `Grade::Ask(Some(AskReason))` — reason text and `CardReason::RootEscape`
+  (`LaunchEscape` for a launch) on the card — even when the mode would
+  `Allow` (a `Deny` still wins). Like any `Ask`, a library `Grade::Ask`
+  carrying a reason is answered by a mode-scoped grant on the call's
+  `(tool, graded argument)` (for `bash`, its command), records one on a
+  `Session`/`Always` approval, and collapses-then-parks unattended. A `Once`
+  approval is not bound to its request id any more (#449's token is gone):
+  the tool runs whatever path the check cleared. A durable entry in
+  `skutter`'s `state::ExtraRootStore` — a `/cd` grant for `bash`, the
+  scratch dir, an `Always` entry an earlier release persisted in
+  `<state dir>/extra-roots.yml` (`ENTANGLEMENT_STATE_DIR`, ADR-0213) —
+  skips the ask. Reuses the `ToolRequest`/`Approve{scope}` wire (no new
+  variant).
 - **User config file + permission ceiling (✅ #172, [ADR-0047](../../adr/archive/0047-local-trust-boundary.md)):**
   `skutter`'s general user settings file (`skutter::config`; the library reads
   none, #967 — the ceiling reaches it as a plain `PermissionProfile`), same

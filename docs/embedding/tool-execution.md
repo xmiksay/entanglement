@@ -28,15 +28,15 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `agents(AgentCatalog)` / `live_agents(Arc<RwLock<AgentCatalog>>)` | `AgentCatalog::new()` (the built-in `general` agent only) |
 | `live_skills(Arc<RwLock<Arc<SkillRegistry>>>)` | empty registry |
 | `base(PermissionProfile)` | allow-all ceiling (no clamp — same as an absent `permissions:`) |
-| `resolver(Arc<dyn PermissionResolver>)` | `ModeResolver` over the builder's final `perm_modes`/`mode_table`/`tools`/`base`, root-relative when `escape_root` is set |
+| `resolver(Arc<dyn PermissionResolver>)` | `ModeResolver` over the builder's final `perm_modes`/`mode_table`/`tools`/`base`, root-relative when `root` is set |
 | `grants(Arc<dyn GrantStore>)` | `InMemoryGrantStore` — `Always` grants last for the executor's lifetime; the library never writes a grants file (#966) |
 | `mode_table(Arc<ModeTable>)` | `ModeTable::builtin()` |
 | `perm_modes(..)` / `active(..)` | private maps. **A custom `.resolver(..)` (or sandbox resolver) that reads a mode map must get the same `Arc` via `.perm_modes(..)`** — otherwise the executor folds `ModeChanged` into its private map and your resolver silently grades from a map that never changes |
-| `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
-| `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/plans watcher if you wire those) |
+| `root(PathBuf)` | none — path arguments grade verbatim and plans resolve against the cwd. The library keeps no containment: a tool that must stay inside a root checks it itself or through your resolver (`skutter`'s `host::EscapeResolver` returns `Grade::ask(..)` for an out-of-root path, #968) |
+| `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your exec tool/plans watcher if you wire those) |
 | `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
 | `http_gate(Arc<HttpGate>)` | no `http` tool — set it to enable the script `http()` binding; the builder registers the tool over this gate (ADR-0227) |
-| `workdirs(SessionWorkdirs)` | private — share it with `glob`/`grep` so they list relative to a session's workdir (ADR-0224) |
+| `workdirs(SessionWorkdirs)` | private — share it with your search tools so they list relative to a session's workdir (ADR-0224) |
 | `catalog(Arc<Catalog>)` | none — `list_models` and `agent`'s `model` validation report "no catalog configured" |
 | `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private advertising state, empty MCP roster) |
 | `attendance(Attendance)` | private — nobody watches, so a mode's `question_timeout` alone decides. Share it with your heads: a head that answers cards registers a `Watcher` (`watch_all()`, or `watcher()` + `attend(&session)`) for as long as it is attached, and that session and its sub-agents then park every `Ask` with no deadline (ADR-0247); pass the same value to `serve::router` |
@@ -52,18 +52,16 @@ add|remove` changes only the in-memory `ServerConfigs` — persist it on
 `OutEvent::McpChanged` if you want it to survive a restart.
 
 **Undo/rewind is opt-in too** ([ADR-0212](../adr/archive/0212-undo-rewind-via-per-write-file-backups.md)).
-Build the file tools with backups and hand core the matching reverter, all
-from the `SessionStore` your persistence tap writes (a revert reads its turns
-from that log):
+Have your file tools record each write in a `FileBackups`
+(`record_stamped`, stamped before the write — `skutter`'s `host` tools are
+the worked example) and hand core the matching reverter, all from the
+`SessionStore` your persistence tap writes (a revert reads its turns from
+that log):
 
 ```rust,ignore
 let backups = FileBackups::new(store.clone());
 cfg.file_reverter = Some(backups.reverter());         // before Holly::spawn
-let tools = host_tools_with(root, HostToolOptions {
-    extra_roots: extra,
-    backups: Some(backups.clone()),
-    ..HostToolOptions::default()
-});
+let tools = my_file_tools(root, backups.clone());      // your tools record into it
 let holly = Holly::spawn(cfg);
 backups.track_roots(&holly);                          // lineage, write ancestry + busy sessions
 backups.set_busy_probe(detached_work_probe(jobs, scripts)); // refuse while detached work runs
@@ -84,19 +82,19 @@ change them live; the next recorded write sees the new limits, and backups
 already taken stay restorable even with `enabled: false`.
 
 **Session working directories are opt-in too** ([ADR-0224](../adr/archive/0224-session-working-directory.md)).
-Give core the runtime's resolver and share one `SessionWorkdirs` between the
+Give core a `workdir_resolver` (the `/cd` validator — `skutter`'s is
+`host::workdir::resolver`, which keeps a directory inside the root unless an
+escape-root grant covers it) and share one `SessionWorkdirs` between your
 search tools and the executor; with no resolver every `SetWorkdir`/
 `Spawn.workdir` is refused:
 
 ```rust,ignore
-cfg.workdir_resolver = Some(workdir::resolver(root.clone(), Some(store.clone())));
+cfg.workdir_resolver = Some(my_cd_resolver(root.clone()));
 let workdirs = SessionWorkdirs::default();
-let tools = host_tools_with(root, HostToolOptions {
-    extra_roots: Some(store),
-    workdirs: Some(workdirs.clone()),
-    ..HostToolOptions::default()
-});
-ToolExecutor::builder(&holly, tools.shared()).workdirs(workdirs) /* … */;
+let tools = my_tools(root.clone(), workdirs.clone());
+ToolExecutor::builder(&holly, tools.shared())
+    .root(root)
+    .workdirs(workdirs) /* … */;
 ```
 
 Wrap your own call dispatch in `exec_scope::with_exec_seq(tool_exec.seq, ..)`
