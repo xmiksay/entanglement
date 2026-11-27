@@ -209,7 +209,6 @@ impl GlobTool {
     }
 }
 
-/// `glob`'s path grading (ADR-0224), shared by `glob_json`: a relative
 /// Resolve the optional `path` base directory onto `pattern` — the same
 /// string the permission layer grades (ADR-0150). An empty/blank base is
 /// ignored rather than joined: a leading `/` would re-root the walk at the
@@ -221,6 +220,7 @@ pub(crate) fn joined_pattern(base: Option<&str>, pattern: &str) -> String {
     }
 }
 
+/// `glob`'s path grading (ADR-0224), shared by `glob_json`: a relative
 /// `path` joins onto the workdir, an absent one becomes it — unless an
 /// absolute `pattern` already names where to search.
 pub(crate) fn join_workdir(

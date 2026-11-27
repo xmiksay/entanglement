@@ -145,6 +145,41 @@ mod tests {
         assert_eq!(permission_scope(&tools, "fetch_doc").arg, ArgKind::Path);
     }
 
+    /// A path tool's argument defaults to its escape target, so a tool that
+    /// declares `ArgKind::Path` and an `escape_target` is scopable with no
+    /// third method to keep in step; any other kind defaults to none.
+    #[test]
+    fn a_path_scope_defaults_its_argument_to_the_escape_target() {
+        struct Note(ArgKind);
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for Note {
+            fn name(&self) -> std::borrow::Cow<'static, str> {
+                match self.0 {
+                    ArgKind::Path => "note".into(),
+                    _ => "note_text".into(),
+                }
+            }
+            async fn run(&self, _input: &str) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+            fn escape_target(&self, input: &str) -> Option<String> {
+                str_arg(input, "file")
+            }
+            fn permission_scope(&self) -> PermissionScope {
+                PermissionScope::arg(self.0)
+            }
+        }
+        let mut tools = ToolRegistry::new();
+        tools.register(Note(ArgKind::Path));
+        tools.register(Note(ArgKind::Text));
+        let input = r#"{"file":"notes/a.md"}"#;
+        assert_eq!(
+            permission_arg(&tools, "note", input).as_deref(),
+            Some("notes/a.md")
+        );
+        assert_eq!(permission_arg(&tools, "note_text", input), None);
+    }
+
     /// ADR-0228: a `path` run is graded and escape-checked on its path; an
     /// inline script has no argument, so only a bare `rhai` rule matches it.
     #[test]

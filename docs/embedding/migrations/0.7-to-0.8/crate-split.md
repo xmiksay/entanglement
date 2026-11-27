@@ -196,14 +196,20 @@ functions (site's resolver has its own `permission_arg` analog).
   target of `tool(path)` rules. A config rule whose *scope* can never match
   (`mcp__gh__x(foo)`, `read{/tmp/*}`, `bash(git *){/x}`) no longer warns at
   config load: the name check stays there, the scope check runs where the
-  registry is known (`skutter` calls `warn_unscopable_rules` at engine
-  build). The `skutter` TUI and `run` headers and a script's nested-call
+  registry is known (`skutter` calls `warn_unscopable_rules` once the tool
+  executor is built, since the builder registers `http` at spawn).
+  `skutter inspect` and the TUI's config reload run no engine, so they do
+  not repeat the scope warnings — look for them in the startup log. The
+  `skutter` TUI and `run` headers and a script's nested-call
   lines take the argument from the registry the same way; a `glob` card
   shows its base `path` on its own line.
 - **Instead:** implement `permission_scope`/`permission_arg` on a tool
   whose calls should be scopable (`ArgKind::Path` for a filesystem path,
   graded root-relative; `Command` for a command line; `Text` otherwise;
-  `workdir: true` when its input carries a `workdir` string). Pass the
-  registry to `permission_arg`/`permission_workdir`/`grading_arg`, and call
-  `Config::warn_unscopable_rules` once your registry is populated if you
-  load `Config`.
+  `workdir: true` when its input carries a top-level string field named
+  exactly `workdir` — the field name is fixed). A `Path` tool's
+  `permission_arg` defaults to its `escape_target`, so override it only
+  when the graded string differs. Pass the registry to
+  `permission_arg`/`permission_workdir`/`grading_arg`, and call
+  `Config::warn_unscopable_rules` once your registry is complete (after the
+  executor builder's `spawn`, which registers `http`) if you load `Config`.

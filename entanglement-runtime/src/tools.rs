@@ -148,7 +148,11 @@ pub trait Tool: Send + Sync {
     }
 
     /// Permission scoping (#962): what argument- and workdir-scoped rules
-    /// can match on this tool's calls. Default: neither.
+    /// can match on this tool's calls. The argument comes from
+    /// [`permission_arg`][Tool::permission_arg]; the workdir a
+    /// `tool{pattern}` rule matches is always the input's top-level
+    /// `workdir` string field, so declare `workdir: true` only when the
+    /// input spells it exactly so. Default: neither.
     fn permission_scope(&self) -> PermissionScope {
         PermissionScope::default()
     }
@@ -158,9 +162,16 @@ pub trait Tool: Send + Sync {
     /// root-relative before grading). `None` when the call carries none or
     /// `input` is malformed: only the tool's bare rules apply then. Only a
     /// tool whose [`permission_scope`][Tool::permission_scope] declares an
-    /// argument returns one. Default: none.
-    fn permission_arg(&self, _input: &str) -> Option<String> {
-        None
+    /// argument returns one. Default: the
+    /// [`escape_target`][Tool::escape_target] for an [`ArgKind::Path`]
+    /// scope — the path a call touches is the one its rules scope on —
+    /// otherwise none; override it when the graded string differs (`glob`
+    /// grades its joined pattern).
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        match self.permission_scope().arg {
+            ArgKind::Path => self.escape_target(input),
+            _ => None,
+        }
     }
 
     /// Whether the spec joins the one surface every session is advertised

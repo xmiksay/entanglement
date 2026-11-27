@@ -88,12 +88,10 @@ impl Tool for WriteTool {
         crate::path_grading::str_arg(input, "path")
     }
 
+    /// The argument is the `escape_target` path, the trait default for a
+    /// path scope.
     fn permission_scope(&self) -> PermissionScope {
         PermissionScope::arg(ArgKind::Path)
-    }
-
-    fn permission_arg(&self, input: &str) -> Option<String> {
-        crate::path_grading::str_arg(input, "path")
     }
 
     fn name(&self) -> Cow<'static, str> {
