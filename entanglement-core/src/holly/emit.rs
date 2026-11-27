@@ -110,12 +110,13 @@ impl Holly {
         });
     }
 
-    /// Broadcast a runtime-authored [`OutEvent::History`] reply to an
+    /// Broadcast an embedder-authored [`OutEvent::History`] reply to an
     /// [`InMsg::ReplayFrom`] query (#160, ADR-0072). Like
     /// [`emit_status`][Self::emit_status] it carries no `seq` — a supervisor-global
     /// query reply, not session content — so no counter is touched. The sanctioned
-    /// way for the runtime's log-owning history responder to answer a late
-    /// subscriber without the raw outbound sender being exposed.
+    /// way for a log-owning history responder (`skutter`'s; the library ships
+    /// none, #932) to answer a late subscriber without the raw outbound sender
+    /// being exposed.
     pub fn emit_history(&self, correlation_id: String, session: SessionId, events: Vec<OutEvent>) {
         self.outlets.emit(OutEvent::History {
             correlation_id,
@@ -168,7 +169,7 @@ impl Holly {
         });
     }
 
-    /// Broadcast a runtime-authored [`OutEvent::McpList`] reply to an
+    /// Broadcast an embedder-authored [`OutEvent::McpList`] reply to an
     /// [`InMsg::McpList`] query (#375). Engine-global like
     /// [`emit_history`][Self::emit_history]: no `seq`, no counter touched.
     pub fn emit_mcp_list(
@@ -182,8 +183,9 @@ impl Holly {
         });
     }
 
-    /// Broadcast a runtime-authored [`OutEvent::McpChanged`] reply to
-    /// [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375). No `seq` — a point-in-time
+    /// Broadcast an embedder-authored [`OutEvent::McpChanged`] reply to
+    /// [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375) — `skutter`'s MCP responder
+    /// is one such author; the library ships none (#932). No `seq` — a point-in-time
     /// engine-global lifecycle event, not session content.
     pub fn emit_mcp_changed(&self, name: String, action: crate::protocol::McpAction) {
         self.outlets.emit(OutEvent::McpChanged {
@@ -210,7 +212,7 @@ impl Holly {
         });
     }
 
-    /// Broadcast a runtime-authored [`OutEvent::McpAuthChanged`] reply to
+    /// Broadcast an embedder-authored [`OutEvent::McpAuthChanged`] reply to
     /// [`InMsg::McpAuth`] (ADR-0153). No `seq` — a point-in-time engine-global
     /// lifecycle event, not session content. A `Connect` emits twice: an interim
     /// event carrying the authorize URL, then the terminal outcome.

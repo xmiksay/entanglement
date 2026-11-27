@@ -108,8 +108,9 @@ pub enum OutEvent {
         approvals: Vec<PendingApproval>,
     },
     /// Snapshot of every currently-attached MCP server (lifecycle event, no
-    /// `seq`), in reply to [`InMsg::McpList`] (#375). Answered by the runtime
-    /// service that owns the live server connections — same "engine-global, not
+    /// `seq`), in reply to [`InMsg::McpList`] (#375). Answered by the embedder
+    /// or head service that owns the live server connections (`skutter`'s MCP
+    /// responder; the library ships none, #932) — same "engine-global, not
     /// core's business" shape as [`SessionList`][OutEvent::SessionList].
     McpList {
         correlation_id: String,
@@ -187,8 +188,9 @@ pub enum OutEvent {
     /// process never recovers from ends with no `PersistenceRecovered`.
     PersistenceRecovered { root: SessionId, lost: u64 },
     /// A session's persisted content history from a requested `after_seq`, in
-    /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the runtime's
-    /// history responder — which owns the event log — not the core supervisor.
+    /// reply to [`InMsg::ReplayFrom`] (#160, ADR-0072). Answered by the
+    /// embedder's or head's history responder — whichever owns the event log
+    /// (`skutter`'s; the library ships none, #932) — not the core supervisor.
     /// `events` holds every content [`OutEvent`] whose `seq` exceeds the requested
     /// `after_seq`, in log order; `correlation_id` echoes the request so a
     /// multiplexed head can pair the reply. A lifecycle query reply (no `seq`); it

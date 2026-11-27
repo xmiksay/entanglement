@@ -205,10 +205,10 @@ pub enum InMsg {
     /// Enumerate the engine's currently-attached MCP servers (#375). MCP config
     /// is global (not per-session), so — like [`ListSessions`][InMsg::ListSessions]
     /// — this is supervisor-global: core routes it to no session task, and it is
-    /// answered by a runtime service that owns the tool registry + live server
-    /// connections, off the inbound fan-out (mirrors how
-    /// [`ReplayFrom`][InMsg::ReplayFrom] is answered by the runtime's history
-    /// responder). `correlation_id` pairs the reply
+    /// answered off the inbound fan-out by an embedder or head service that owns
+    /// the live server connections (`skutter`'s MCP responder; the library ships
+    /// none, #932), the same way [`ReplayFrom`][InMsg::ReplayFrom] is answered.
+    /// `correlation_id` pairs the reply
     /// ([`OutEvent::McpList`][crate::protocol::OutEvent::McpList]) to this query.
     McpList { correlation_id: String },
     /// Hot-connect an MCP server in the running process and persist it to
@@ -230,8 +230,9 @@ pub enum InMsg {
     /// Manage a server's OAuth authorization (ADR-0153): sign in, validate the
     /// stored credential, or drop it. Engine-global like
     /// [`McpAdd`][InMsg::McpAdd] — MCP config and its credentials are
-    /// process-wide, not per-session — and answered by the runtime's MCP
-    /// responder, which alone holds the server configs and the token store.
+    /// process-wide, not per-session — and answered off the inbound fan-out by
+    /// the embedder's or head's MCP responder, which holds the server configs
+    /// and the token store (`skutter`'s; the library ships none, #932).
     /// Emits [`OutEvent::McpAuthChanged`].
     ///
     /// **Trusted-only** (#472, ADR-0124, the `McpAdd` rationale sharpened): a
@@ -242,8 +243,9 @@ pub enum InMsg {
     McpAuth { name: String, action: McpAuthAction },
     /// Fetch a session's persisted content history from `after_seq` onward, for a
     /// head that subscribed late and missed the live broadcast (#160, ADR-0072).
-    /// Answered out-of-core by the runtime's history responder — which owns the
-    /// event log — with a single [`OutEvent::History`] snapshot carrying every
+    /// Answered out-of-core, off the inbound fan-out, by whichever embedder or
+    /// head owns the event log (`skutter`'s history responder; the library ships
+    /// none, #932) — with a single [`OutEvent::History`] snapshot carrying every
     /// content event whose `seq` exceeds `after_seq`, `correlation_id` echoed so
     /// the requester can pair the reply. `after_seq == 0` requests the whole
     /// content history. A head-authored query, so it is wire-allowed.

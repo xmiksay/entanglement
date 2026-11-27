@@ -56,10 +56,10 @@ entanglement-provider = { workspace = true, optional = true }
 # Per-crate feature trim (#502, ADR-0135): `rt`+`rt-multi-thread`+`macros`
 # back the examples' `#[tokio::main]` (multi-threaded by default);
 # `sync`/`time` the mpsc/broadcast/oneshot/watch + sleep/timeout/interval
-# usage throughout; `fs`/`process`/`io-util` the file backups, mcp stdio and
-# the exec helpers' piping; `net` the MCP transport tests' stub servers. The
+# usage throughout; `process`/`io-util` mcp stdio and the exec helpers'
+# piping; `net` the MCP transport tests' stub servers. The
 # `tokio` dev-dependency adds only `test-util`.
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

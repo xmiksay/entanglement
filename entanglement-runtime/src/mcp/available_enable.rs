@@ -20,8 +20,8 @@ use super::AvailableMcp;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Connect an available server if it isn't already, registering its tools
-/// into the live `registry` (no persistence — `ServerConfigs` and
-/// `config.yml` are never touched), and record its tool names in the
+/// into the live `registry` (no persistence — an embedder's server config
+/// store, e.g. `skutter`'s `ServerConfigs` and `config.yml`, is never touched), and record its tool names in the
 /// last-seen cache. Returns the server's registered tool names. `http`
 /// (#559) is the shared endpoint pool the connect rides.
 pub async fn ensure_connected(

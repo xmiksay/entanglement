@@ -204,8 +204,8 @@ impl Supervisor {
         // Runtime-consumed off the inbound fan-out above, never routed to a
         // session task: approval decisions (`Approve`/`Reject`, #59),
         // `AnswerQuestion` for `ask_user` (ADR-0027), and the `ReplayFrom`
-        // history query answered by the
-        // runtime's log-owning responder (#160).
+        // history query answered by the embedder's log-owning responder
+        // (`skutter`'s, #160, #932).
         if matches!(
             msg,
             InMsg::Approve { .. }

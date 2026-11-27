@@ -103,7 +103,7 @@ the code, never as a description of current behaviour — that is
 | [0069](0069-trusted-untrusted-wire-frame-split.md) | Trusted/untrusted wire-frame split: privileged in-process `ToolResult`/`Spawn` | current; amended by 0124 | — |
 | [0070](0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md) | Authoritative `ToolExec` profile, fail-closed permission/mask fallback, lag-proof decision delivery | current | — |
 | [0071](0071-parked-turn-reoffer-timer.md) | In-process parked-turn re-offer timer + executor request_id dedupe | current | — |
-| [0072](0072-protocol-warts-settled-before-serve.md) | Protocol warts settled before `serve` freezes the wire | current; amended by 0139 | — |
+| [0072](0072-protocol-warts-settled-before-serve.md) | Protocol warts settled before `serve` freezes the wire | current; amended by 0139; changed by #932 | — |
 | [0073](0073-managed-env-file-writer-and-key-surfaces.md) | One shared writer for the managed env file, with a CLI and TUI surface | current; changed by #931; changed by #967 | — |
 | [0074](0074-cross-vendor-skill-and-agent-discovery.md) | Cross-vendor skill & agent discovery (`~/.claude`, `.claude/`, `.agents/`) | current; partly superseded by 0229; changed by #967; changed by #932 | — |
 | [0075](0075-provider-side-web-search-mvp.md) | Provider-side web search MVP — opt-in config, results on the reasoning channel | current; amended by 0131, 0171; removed by #919 | — |
@@ -155,7 +155,7 @@ the code, never as a description of current behaviour — that is
 | [0121](0121-prune-only-compact-stays-silent.md) | Prune-only `Context::compact` stays silent — accepted live/replay divergence | current; partly superseded by 0205 | — |
 | [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213; changed by #918 | — |
 | [0123](0123-agent-poll-zero-timeout-waits-for-notification.md) | `agent_poll` `timeout_secs: 0` waits for the child's notification | current; amended by 0155, 0161 | — |
-| [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current; changed by #916 | — |
+| [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current; changed by #916; changed by #932 | — |
 | [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916; changed by #962; changed by #968 | — |
 | [0126](0126-session-scoped-directory-grants.md) | Session-scoped directory grants via `ApprovalScope::SessionDir` and TUI `/allow` | current; changed by #916; removed by #925 | — |
 | [0127](0127-ask-user-v2-multi-question-envelope.md) | `ask_user` v2 — multi-question envelope, always-on free text, multi-select | current; amended by 0143, 0146 | — |
@@ -189,7 +189,7 @@ the code, never as a description of current behaviour — that is
 | [0155](0155-errored-subagent-turn-parks-for-steering.md) | An errored sub-agent turn parks the parent for steering, not unblocks it | current | — |
 | [0156](0156-normalize-and-stabilize-the-endpoint-pool-key.md) | Normalize and stabilize the endpoint pool key | current | — |
 | [0157](0157-mcp-http-transport-shares-the-endpoint-pool.md) | The MCP HTTP transport shares the LLM endpoint pool | current; amended by 0169; changed by #915 | — |
-| [0158](0158-defer-session-title-aux-call-under-contended-primary-concurrency.md) | Defer the session-title aux call when the primary model's concurrency cap is contended | current | — |
+| [0158](0158-defer-session-title-aux-call-under-contended-primary-concurrency.md) | Defer the session-title aux call when the primary model's concurrency cap is contended | current; changed by #932 | — |
 | [0159](0159-plan-mask-widened-for-explore-delegation.md) | `plan`'s own mask carries `call`/`bash` so its `explore` delegation isn't self-defeating | superseded by 0207 (agent masks are gone; previously unmarked) | — |
 | [0160](0160-extended-thinking-round-trip.md) | Extended thinking round-trips as a persisted `ContentPart`, replay gated per model | current; changed by #919 | — |
 | [0161](0161-unified-async-work-background-flag-and-one-poll.md) | Unified async work: a `background` flag on every launcher, one `poll` to join | current; partly superseded by 0185; amended by 0166, 0190; changed by #916 | — |
@@ -213,7 +213,7 @@ the code, never as a description of current behaviour — that is
 | [0179](0179-lazily-registered-built-ins-advertise-session-scoped.md) | Lazily-registered built-ins advertise session-scoped, like lazy MCP servers | superseded by 0192 | — |
 | [0180](0180-build-speed-trims-round-2.md) | Build-speed trims round 2: dependency cuts and integration-test consolidation | current | — |
 | [0181](0181-userid-leaves-the-runtime-crate.md) | `UserId` leaves the runtime crate — multi-user seams are embedder-side and session-keyed | current | — |
-| [0182](0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md) | MCP OAuth: device-code flow, and closing the cross-process refresh race | current; amended by 0153, 0187; changed by #966 | — |
+| [0182](0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md) | MCP OAuth: device-code flow, and closing the cross-process refresh race | current; amended by 0153, 0187; changed by #966; changed by #932 | — |
 | [0183](0183-narrate-purpose-and-per-user-aux-pins.md) | A `narrate` aux purpose; per-user aux pins stay embedder-side | current; changed by #932 | — |
 | [0184](0184-provider-hosted-multi-user-seams.md) | Provider-hosted multi-user seams: per-user token store + relocated provider context | current; changed by #918; changed by #919 | — |
 | [0185](0185-rhai-joins-background-and-poll.md) | `rhai` joins `background`/`poll` — cooperative kill, own handle kind | current; amended by 0228 | — |
@@ -267,7 +267,7 @@ the code, never as a description of current behaviour — that is
 | [0233](0233-live-only-nested-call-events-for-rhai-scripts.md) | Live-only `NestedCall` events report a script's binding calls | current | — |
 | [0234](0234-live-sub-agents-survive-compaction.md) | Live sub-agents survive compaction | current; amended by 0236 | — |
 | [0235](0235-scoped-spawn-rules-grade-the-target.md) | Scoped spawn rules grade the target | current | — |
-| [0236](0236-rewind-follows-adopted-sub-agents.md) | Rewind follows adopted sub-agents' backups | current | — |
+| [0236](0236-rewind-follows-adopted-sub-agents.md) | Rewind follows adopted sub-agents' backups | current; changed by #932 | — |
 | [0237](0237-detached-flag-on-tool-request.md) | `ToolRequest` marks a card parked by detached work | current; amended by 0238, 0239, 0240 | — |
 | [0238](0238-compaction-moves-a-background-scripts-card.md) | A compaction moves a background script's parked card to the successor | current; amended by 0239, 0240, 0241, 0242 | — |
 | [0239](0239-retired-session-keeps-a-seq-high-water.md) | A retired session keeps a seq high-water | current; amended by 0244 | — |

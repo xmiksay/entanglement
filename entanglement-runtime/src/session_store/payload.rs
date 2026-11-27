@@ -30,8 +30,9 @@ pub enum LogPayload {
     /// Adoption pointer (ADR-0234): the record's session moved under a
     /// session of *this* root's tree while its history stays in root `from`'s
     /// file (the tap routes by spawn-time root). Written by the tap into the
-    /// adopting root on `OutEvent::ParentChanged`; `SessionStore::read_tree`
-    /// follows it so a resume of this root restores the moved sub-tree. Carries
+    /// adopting root on `OutEvent::ParentChanged`; a resume (`skutter`'s
+    /// `SessionStore::read_tree`) follows it so this root restores the moved
+    /// sub-tree. Carries
     /// no state of its own.
     Adopted {
         from: entanglement_core::SessionId,

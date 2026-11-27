@@ -268,7 +268,8 @@ impl ToolExecutorBuilder {
         self
     }
 
-    /// The user and project skill layer dirs ([`crate::skills::skill_dirs`]):
+    /// The user and project skill layer dirs (`skutter`'s `skills::skill_dirs`
+    /// is one source):
     /// a `write`/`edit`/`apply_patch` of a `SKILL.md`/`lib.rhai` under one
     /// always asks (ADR-0228). Default: none.
     pub fn skill_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {

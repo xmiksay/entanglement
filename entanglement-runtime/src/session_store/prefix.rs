@@ -51,7 +51,7 @@ impl ResumablePrefix {
 ///
 /// This is the *truncate* policy, for embedders that prefer resuming the
 /// intact head over refusing. The in-tree heads keep #104's stricter *refuse*
-/// policy ([`check_for_resume`][super::check_for_resume]): both use
+/// policy (`skutter`'s `session_store::check_for_resume`): both use
 /// [`LogPayload::gap_dropped`] to decide what a gap is.
 ///
 /// **Before a resumed session writes again, remove the hole.** Its new rows

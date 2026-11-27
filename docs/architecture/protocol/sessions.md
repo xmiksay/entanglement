@@ -121,10 +121,11 @@ starting it.
 **Late-subscriber history fetch** (#160, [ADR-0072](../../adr/archive/0072-protocol-warts-settled-before-serve.md)).
 A head that connected after a turn started asks
 `ReplayFrom{session,correlation_id,after_seq}` for the events it missed. Because
-the event log is the **runtime's** persistence seam (core holds no log), this is
-answered *out-of-core*: a runtime history responder (spawned beside the
-persistence subscriber, `history.rs`) reads it off the inbound fan-out — like the
-supervisor answers `ListSessions`, just runtime-side — and broadcasts one
+the event log belongs to the embedder (core holds no log, and since #932 the
+library stores none), this is answered *out-of-core*: an embedder or head
+history responder — `skutter`'s, spawned beside its persistence subscriber
+(`skutter/src/history.rs`) — reads it off the inbound fan-out, like the
+supervisor answers `ListSessions`, and broadcasts one
 `History{correlation_id,session,events}` snapshot of every persisted content event
 whose `seq` exceeds `after_seq` (via the seq-less `Holly::emit_history`, keeping
 the raw sender closed). The query and reply are transient — neither is persisted

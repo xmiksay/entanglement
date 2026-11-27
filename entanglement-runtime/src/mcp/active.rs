@@ -20,7 +20,8 @@ pub struct ActiveServer {
     pub transport: String,
 }
 
-/// Shared, mutated by the MCP responder task (#375) on every add/remove.
+/// Shared, mutated on every add/remove by whichever embedder answers the MCP
+/// ops (`skutter`'s MCP responder, #375, #932).
 pub type ActiveServers = Arc<Mutex<HashMap<String, ActiveServer>>>;
 
 /// Replace `name`'s connection: unregister exactly the tools its previous

@@ -10,8 +10,8 @@ use crate::protocol::{InMsg, OutEvent};
 /// Wire shape of one MCP server's spawn/connect config, carried by
 /// [`InMsg::McpAdd`]. Mirrors `entanglement_runtime::mcp::McpServerConfig`
 /// field-for-field, but lives here as a passive DTO: core holds no MCP logic
-/// (ADR-0067) — the `command` XOR `url` transport choice is validated
-/// runtime-side, on connect.
+/// (ADR-0067) — the `command` XOR `url` transport choice is validated by the
+/// embedder's MCP responder (`skutter`'s, #932), on connect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpServerSpec {
     #[serde(default)]
@@ -29,7 +29,8 @@ pub struct McpServerSpec {
 }
 
 /// One server's live status, as reported in an [`OutEvent::McpList`] snapshot
-/// (#375). `connected`/`tools` reflect the runtime's `ActiveServers` map;
+/// (#375). `connected`/`tools` reflect the answering embedder's live server
+/// map (`skutter`'s global roster over `entanglement_runtime::mcp::ActiveServers`);
 /// `error` is set for a server that failed to connect (empty `tools`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpServerStatus {

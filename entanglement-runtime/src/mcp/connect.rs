@@ -28,7 +28,7 @@ pub fn transport_label(cfg: &McpServerConfig) -> String {
 
 /// The two network-I/O awaits (connect + `tools/list`), with no registry
 /// involved — split out of the old single-shot `connect_one` (#375) so a live
-/// `mcp_add` can run these *before* taking the registry's write lock, never
+/// add (`skutter`'s `mcp_add`) can run these *before* taking the registry's write lock, never
 /// holding it across an `.await`. `http` (#559) is forwarded to the HTTP
 /// transport so its traffic rides the shared endpoint pool. `token_store` is
 /// where an `oauth:` server's bearer comes from — the roster's store for a

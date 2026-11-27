@@ -41,17 +41,17 @@ impl EnvDatePins {
     }
 }
 
-/// Patch a baked system prompt's `<env>` date line to `date`. Returns `None`
-/// — falling back to the unmodified baked prompt — when there's no `<env>`
-/// block (a subagent's prompt omits it) or the date already matches, so the
-/// prompt stays byte-identical. Called from [`crate::system_prompt_mode`],
-/// which owns the single `SystemPromptResolver` slot `EngineConfig` exposes.
 /// Today's UTC date (`YYYY-MM-DD`): the form an `<env>` block's `Date:` line
 /// carries and [`EnvDatePins`] pins.
 pub fn today_utc() -> String {
     crate::date::today_utc()
 }
 
+/// Patch a baked system prompt's `<env>` date line to `date`. Returns `None`
+/// — falling back to the unmodified baked prompt — when there's no `<env>`
+/// block (a subagent's prompt omits it) or the date already matches, so the
+/// prompt stays byte-identical. Called from [`crate::system_prompt_mode`],
+/// which owns the single `SystemPromptResolver` slot `EngineConfig` exposes.
 pub(crate) fn refresh_env_date(system_prompt: &str, date: &str) -> Option<String> {
     let marker = "\nDate: ";
     let start = system_prompt.find(marker)? + marker.len();
