@@ -28,6 +28,7 @@ pub async fn eventually(mut cond: impl FnMut() -> bool) -> bool {
 mod mode_support;
 
 mod apply_patch;
+mod escape_grants;
 mod host_tools;
 mod load_skill;
 mod mcp_schema_violation;

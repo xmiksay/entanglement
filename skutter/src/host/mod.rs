@@ -14,8 +14,10 @@
 //! the path it touches ([`crate::tools::Tool::escape_target`]). A path
 //! outside the root is the escape-root check's question ([`escape`]): it
 //! asks before the call runs, so a tool runs whatever path the gate cleared
-//! (#968, no per-call token). `glob`/`grep` drop a match whose canonical
-//! path escapes their walk ([`list_files`]). Output is byte-capped so a
+//! (#968, no per-call token). `glob`/`grep` never ask: they drop a match
+//! whose canonical path escapes the root unless a durable `read` entry in
+//! the escape-root store covers it ([`list_files_with_extra_roots`],
+//! ADR-0132). Output is byte-capped so a
 //! runaway listing or huge file can't silently consume the context window.
 //! `bash` runs the command rooted at `root` (or at `workdir`) but otherwise
 //! inherits the engine process's full privileges by default — unsandboxed
@@ -59,7 +61,7 @@ pub use registry::{host_tools, host_tools_with, HostToolOptions};
 pub use sandbox::{SandboxBackend, SandboxConfig, SandboxPolicy, SandboxResolver};
 pub use search_json::{GlobJsonTool, GrepJsonTool};
 pub(crate) use walk::MAX_RESULTS;
-pub use walk::{list_files, FileList};
+pub use walk::{list_files, list_files_with_extra_roots, FileList};
 pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
@@ -341,28 +343,6 @@ mod tests {
         assert!(list.matched_dirs > 0);
     }
 
-    /// ADR-0150 × #968: an external directory — one the escape-root check
-    /// already asked about — expands like an in-root one, so
-    /// `{"path": "/approved/dir"}` searches it recursively.
-    #[test]
-    fn list_files_expands_an_external_directory() {
-        let dir = TempDir::new();
-        let outside = TempDir::new();
-        std::fs::write(outside.join("nested/lib.rs"), "x\n").unwrap();
-
-        let pattern = outside.path.display().to_string();
-        let list = list_files(&dir.path, &pattern, &[]).unwrap();
-        let names: Vec<String> = list
-            .files
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            names.iter().any(|n| n.ends_with("nested/lib.rs")),
-            "{names:?}"
-        );
-    }
-
     /// ADR-0150: `{a,b}` brace sets expand into alternatives.
     #[test]
     fn list_files_brace_set_expands_alternatives() {
@@ -560,29 +540,6 @@ mod tests {
         );
     }
 
-    /// #629/ADR-0170 × #968: a walk of an approved external directory is a
-    /// deliberate, narrow reach — its own `.gitignore` must not silently
-    /// hide files the user approved searching.
-    #[test]
-    fn list_files_external_walk_bypasses_the_dirs_own_gitignore() {
-        let dir = TempDir::new();
-        let outside = TempDir::new();
-        fs::write(outside.join(".gitignore"), "lib.rs\n").unwrap();
-        fs::write(outside.join("lib.rs"), "x\n").unwrap();
-
-        let pattern = format!("{}/**/*", outside.path.display());
-        let list = list_files(&dir.path, &pattern, &[]).unwrap();
-        let names: Vec<String> = list
-            .files
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            names.iter().any(|n| n.ends_with("lib.rs")),
-            "granted external file must not be hidden by its own .gitignore: {names:?}"
-        );
-    }
-
     /// #678: a `.gitignore`d directory is pruned — never opened — not merely
     /// filtered from results. An unreadable ignored dir is the proof: the old
     /// two-pass walk descended into it and logged read errors; pruning means
@@ -620,7 +577,7 @@ mod tests {
         for i in 0..50 {
             fs::write(dir.join(&format!("f{i:02}.txt")), "x").unwrap();
         }
-        let list = walk::list_files_bounded(&dir.path, "**/*", &[], 10).unwrap();
+        let list = walk::list_files_bounded(&dir.path, "**/*", &[], None, 10).unwrap();
         assert!(list.scan_capped, "{list:?}");
         assert!(list.files.len() <= 10, "{:?}", list.files);
     }
@@ -852,79 +809,6 @@ mod tests {
             !names.iter().any(|n| n.contains("leak.txt")),
             "symlinked out-of-tree file leaked: {names:?}"
         );
-    }
-
-    /// #968: a pattern outside the root — one the escape-root check asked
-    /// about — walks there, surfacing the matches under it.
-    #[test]
-    fn list_files_walks_an_external_pattern() {
-        let dir = TempDir::new();
-        let outside = TempDir::new();
-        std::fs::write(outside.join("lib.rs"), "x\n").unwrap();
-
-        let pattern = format!("{}/**/*", outside.path.display());
-        let list = list_files(&dir.path, &pattern, &[]).unwrap();
-        let names: Vec<String> = list
-            .files
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            names.iter().any(|n| n.ends_with("lib.rs")),
-            "the external file should be listed: {names:?}"
-        );
-    }
-
-    /// A symlink inside an external walk pointing *outside* it must not leak
-    /// matches — the walk is confined to its own start (and its real
-    /// descendants), not wherever a symlink redirects.
-    #[cfg(unix)]
-    #[test]
-    fn an_external_walk_does_not_leak_through_a_symlink_out_of_it() {
-        let dir = TempDir::new();
-        let granted = TempDir::new();
-        let secret = TempDir::new();
-        std::fs::write(secret.join("leak.txt"), "x\n").unwrap();
-        std::os::unix::fs::symlink(&secret.path, granted.join("escape")).unwrap();
-        std::fs::write(granted.join("inside.txt"), "x\n").unwrap();
-
-        let pattern = format!("{}/**/*", granted.path.display());
-        let list = list_files(&dir.path, &pattern, &[]).unwrap();
-        let names: Vec<String> = list
-            .files
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            names.iter().any(|n| n.ends_with("inside.txt")),
-            "the walked directory's own file should be listed: {names:?}"
-        );
-        assert!(
-            !names.iter().any(|n| n.contains("leak.txt")),
-            "a symlink out of the walked directory must not leak: {names:?}"
-        );
-    }
-
-    /// #968: `GlobTool`/`GrepTool` end-to-end — an external directory the
-    /// escape-root check cleared is searchable by both tools.
-    #[tokio::test]
-    async fn glob_and_grep_search_an_external_directory() {
-        let dir = TempDir::new();
-        let outside = TempDir::new();
-        std::fs::write(outside.join("lib.rs"), "fn needle() {}\n").unwrap();
-
-        let glob_tool = GlobTool::new(dir.path.clone());
-        let pattern = format!(r#"{{"pattern":"{}/**/*.rs"}}"#, outside.path.display());
-        let out = glob_tool.run(&pattern).await.unwrap();
-        assert!(out.contains("lib.rs"), "got: {out}");
-
-        let grep_tool = GrepTool::new(dir.path.clone());
-        let grep_input = format!(
-            r#"{{"pattern":"needle","path":"{}/**/*"}}"#,
-            outside.path.display()
-        );
-        let out = grep_tool.run(&grep_input).await.unwrap();
-        assert!(out.contains("needle"), "got: {out}");
     }
 
     #[test]

@@ -2,21 +2,24 @@
 //! relative to the working directory. A bare directory pattern lists it
 //! recursively and a zero-result call always explains itself (ADR-0150).
 
-use super::list_files;
+use super::list_files_with_extra_roots;
 use crate::capability::Capability;
 use crate::output::truncate_output;
 use crate::path_grading::SessionWorkdirs;
+use crate::state::ExtraRootStore;
 use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::sync::Arc;
 
 pub struct GlobTool {
     root: std::path::PathBuf,
-    /// Widens a search into a directory already covered by a durable `read`
-    /// grant (ADR-0109/#482). `None` keeps strict containment.
+    /// Keeps a match outside the root that a durable `read` entry covers
+    /// (ADR-0132). `None` keeps strict containment.
+    extra_roots: Option<Arc<ExtraRootStore>>,
     workdirs: Option<SessionWorkdirs>,
 }
 
@@ -24,8 +27,16 @@ impl GlobTool {
     pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             root,
+            extra_roots: None,
             workdirs: None,
         }
+    }
+
+    /// Keep matches under a directory with a durable `read` entry in
+    /// `extra` — see [`super::list_files_with_extra_roots`].
+    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 
     /// Print paths relative to the calling session's workdir (#764,
@@ -59,17 +70,16 @@ impl Tool for GlobTool {
         join_workdir(args, base)
     }
 
-    /// The argument is the `escape_target` pattern, the trait default for
-    /// a path scope.
+    /// The search pattern, itself a path glob, with the optional `path`
+    /// base joined on exactly as the walk resolves it (ADR-0150), so a
+    /// `glob(src/**)` rule sees the string the walk uses. No
+    /// `escape_target`: a search never asks to leave the root, its walk
+    /// drops what lies outside (ADR-0132).
     fn permission_scope(&self) -> PermissionScope {
         PermissionScope::arg(ArgKind::Path)
     }
 
-    /// The search pattern, itself a path glob, with the optional `path`
-    /// base joined on exactly as the walk resolves it (ADR-0150), so a
-    /// `glob(src/**)` rule — and the escape-root check, for a pattern
-    /// reaching outside the root (#968) — sees the string the walk uses.
-    fn escape_target(&self, input: &str) -> Option<String> {
+    fn permission_arg(&self, input: &str) -> Option<String> {
         let value: serde_json::Value = serde_json::from_str(input).ok()?;
         let pattern = value.get("pattern")?.as_str()?;
         let base = value.get("path").and_then(|p| p.as_str());
@@ -131,7 +141,12 @@ impl GlobTool {
             .context("invalid input to glob: expected {\"pattern\": string, ...}")?;
         let pattern = joined_pattern(parsed.path.as_deref(), &parsed.pattern);
         tracing::debug!(pattern = %pattern, root = %self.root.display(), "glob tool executing");
-        let list = list_files(&self.root, &pattern, &parsed.exclude)?;
+        let list = list_files_with_extra_roots(
+            &self.root,
+            &pattern,
+            &parsed.exclude,
+            self.extra_roots.as_deref(),
+        )?;
         tracing::debug!(
             files = list.files.len(),
             matched_dirs = list.matched_dirs,

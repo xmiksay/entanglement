@@ -93,8 +93,20 @@ async fn an_out_of_root_path_asks_with_the_reason() {
     let workdir = serde_json::json!({"command": "ls", "workdir": f.outside});
     let graded = f.grade(Grade::Allow, "bash", workdir).await;
     assert_eq!(reason(&graded).unwrap().0, CardReason::RootEscape);
-    let glob = serde_json::json!({"pattern": format!("{}/*", f.outside.display())});
-    assert!(reason(&f.grade(Grade::Allow, "glob", glob).await).is_some());
+}
+
+/// A search never asks (ADR-0132): its walk drops what lies outside the
+/// root, so an out-of-root or brace pattern keeps the mode's grade.
+#[tokio::test]
+async fn a_search_never_asks() {
+    let f = fx();
+    let outside = format!("{}/*", f.outside.display());
+    for pattern in [outside.as_str(), "{src,../outside}/*", "../outside/*"] {
+        let glob = serde_json::json!({"pattern": pattern});
+        assert_eq!(f.grade(Grade::Allow, "glob", glob).await, Grade::Allow);
+        let grep = serde_json::json!({"pattern": "x", "path": pattern});
+        assert_eq!(f.grade(Grade::Allow, "grep", grep).await, Grade::Allow);
+    }
 }
 
 /// A deny wins over the escape: there is nothing to ask about.
@@ -147,4 +159,43 @@ async fn a_symlink_out_of_the_root_asks() {
         text.ends_with(&f.outside.join("x.txt").display().to_string()),
         "{text}"
     );
+}
+
+fn grant_of(grade: &Grade) -> AskGrant {
+    match grade {
+        Grade::Ask(Some(why)) => why.grant.clone().expect("an escape ask names its grant"),
+        other => panic!("not a reasoned ask: {other:?}"),
+    }
+}
+
+/// The #968 review: an escape ask is answered by its own key, never by a
+/// grant on the bare argument — `bash`'s keys on its command *and* the
+/// escaped workdir, a path tool's on the escaped path.
+#[tokio::test]
+async fn an_escape_ask_is_keyed_on_what_escapes() {
+    let f = fx();
+    let other = f.outside.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let bash = |cmd: &str, dir: &Path| serde_json::json!({"command": cmd, "workdir": dir});
+    let key = grant_of(
+        &f.grade(Grade::Allow, "bash", bash("make", &f.outside))
+            .await,
+    );
+    assert_eq!(key.tool, "bash#outside-root");
+    let expected = serde_json::json!([f.outside.to_string_lossy(), "make"]).to_string();
+    assert_eq!(key.arg, expected);
+    assert_ne!(key.arg, "make", "never the bare command");
+    let elsewhere = grant_of(&f.grade(Grade::Allow, "bash", bash("make", &other)).await);
+    assert_ne!(key, elsewhere, "another workdir is another grant");
+    let other_cmd = grant_of(
+        &f.grade(Grade::Allow, "bash", bash("rm x", &f.outside))
+            .await,
+    );
+    assert_ne!(key, other_cmd, "another command is another grant");
+
+    let target = f.outside.join("x.txt");
+    let read = serde_json::json!({"path": target});
+    let key = grant_of(&f.grade(Grade::Ask(None), "read", read).await);
+    assert_eq!(key.tool, "read#outside-root");
+    assert_eq!(key.arg, target.to_string_lossy());
 }

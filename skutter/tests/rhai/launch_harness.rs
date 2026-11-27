@@ -193,6 +193,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         HostToolOptions {
             backups: None,
             workdirs: Some(workdirs.clone()),
+            extra_roots: None,
         },
     );
     tools.register(LoadSkillTool::new(skills.clone()));

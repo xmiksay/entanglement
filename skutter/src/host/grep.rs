@@ -5,10 +5,11 @@
 //! itself (ADR-0150).
 
 use super::glob::suggest_files_pattern;
-use super::{list_files, FileList};
+use super::{list_files_with_extra_roots, FileList};
 use crate::capability::Capability;
 use crate::output::truncate_output;
 use crate::path_grading::SessionWorkdirs;
+use crate::state::ExtraRootStore;
 use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -17,6 +18,7 @@ use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Cap on how much of a file `grep` is willing to read into memory and scan,
 /// **independent of** [`crate::output::MAX_OUTPUT_BYTES`] (the *result-string* cap).
@@ -121,8 +123,9 @@ pub(crate) async fn scan_matches(
 
 pub struct GrepTool {
     root: std::path::PathBuf,
-    /// Widens a search into a directory already covered by a durable `read`
-    /// grant (ADR-0109/#482). `None` keeps strict containment.
+    /// Keeps a match outside the root that a durable `read` entry covers
+    /// (ADR-0132). `None` keeps strict containment.
+    extra_roots: Option<Arc<ExtraRootStore>>,
     workdirs: Option<SessionWorkdirs>,
 }
 
@@ -130,8 +133,16 @@ impl GrepTool {
     pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             root,
+            extra_roots: None,
             workdirs: None,
         }
+    }
+
+    /// Keep matches under a directory with a durable `read` entry in
+    /// `extra` — see [`super::list_files_with_extra_roots`].
+    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
+        self.extra_roots = Some(extra);
+        self
     }
 
     /// Print paths relative to the calling session's workdir (#764,
@@ -229,15 +240,14 @@ impl Tool for GrepTool {
         crate::path_grading::join_or_default(args, "path", base)
     }
 
-    /// The argument is the `escape_target` filter, the trait default for a
-    /// path scope.
+    /// The optional file filter `path` (#417): a path, unlike the regex
+    /// `pattern`. No `escape_target`: a search never asks to leave the
+    /// root, its walk drops what lies outside (ADR-0132).
     fn permission_scope(&self) -> PermissionScope {
         PermissionScope::arg(ArgKind::Path)
     }
 
-    /// The optional file filter `path` (#417): a path, unlike the regex
-    /// `pattern` — what the escape-root check judges a search by (#968).
-    fn escape_target(&self, input: &str) -> Option<String> {
+    fn permission_arg(&self, input: &str) -> Option<String> {
         crate::path_grading::str_arg(input, "path")
     }
 
@@ -301,7 +311,12 @@ impl GrepTool {
             .context("invalid input to grep: expected {\"pattern\": string, ...}")?;
         let re = compile_regex(&parsed.pattern, parsed.case_insensitive)?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
-        let mut list = list_files(&self.root, filter, &parsed.exclude)?;
+        let mut list = list_files_with_extra_roots(
+            &self.root,
+            filter,
+            &parsed.exclude,
+            self.extra_roots.as_deref(),
+        )?;
         let scanned = list.files.len();
         let scan = scan_matches(shown, &mut list, &re).await?;
         let mut out = String::new();

@@ -175,6 +175,7 @@ pub(crate) async fn build_config(
             host: host::HostToolOptions {
                 backups: Some(file_backups),
                 workdirs: Some(workdirs.clone()),
+                extra_roots: Some(extra_root_store.clone()),
             },
             secret_env: secret_env.clone(),
             sandbox_resolver: sandbox_config.resolver(),

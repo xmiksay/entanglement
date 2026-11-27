@@ -218,4 +218,31 @@ mod tests {
             Arc::as_ptr(&bare.get("read").unwrap())
         ));
     }
+
+    /// The tools a script's clock must never cut — `bash` bounds itself
+    /// (#419), a cut write could land between backup and write (ADR-0212)
+    /// — say so, exactly those, and still do behind the hook wrapper.
+    #[test]
+    fn exactly_the_write_and_exec_tools_run_past_a_script_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = crate::host::every_tool(dir.path().to_path_buf());
+        let unbounded = |tools: &ToolRegistry| {
+            let mut names: Vec<String> = tools
+                .names()
+                .into_iter()
+                .filter(|n| tools.get(n).is_some_and(|t| t.script_unbounded()))
+                .collect();
+            names.sort();
+            names
+        };
+        let expected = ["apply_patch", "bash", "edit", "write"];
+        assert_eq!(unbounded(&tools), expected);
+        let before = Arc::as_ptr(&tools.get("bash").unwrap());
+        wrap_host_tools(&mut tools, &hooks("true".into(), &[]));
+        assert!(
+            !std::ptr::addr_eq(before, Arc::as_ptr(&tools.get("bash").unwrap())),
+            "wrapped"
+        );
+        assert_eq!(unbounded(&tools), expected);
+    }
 }

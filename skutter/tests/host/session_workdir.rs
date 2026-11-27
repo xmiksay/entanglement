@@ -15,7 +15,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::path_grading::SessionWorkdirs;
-use entanglement_runtime::policy::{ModeResolver, PermissionResolver};
+use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver, PermissionResolver};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use skutter::host::{host_tools_with, workdir, BashTool, EscapeResolver, HostToolOptions};
 use skutter::state::ExtraRootStore;
@@ -46,7 +46,7 @@ impl Llm for Batch {
     }
 }
 
-fn call(id: &str, name: &str, input: serde_json::Value) -> ToolCall {
+pub(crate) fn call(id: &str, name: &str, input: serde_json::Value) -> ToolCall {
     ToolCall {
         id: id.into(),
         name: name.into(),
@@ -55,18 +55,20 @@ fn call(id: &str, name: &str, input: serde_json::Value) -> ToolCall {
     }
 }
 
-struct Harness {
+pub(crate) struct Harness {
     _dir: tempfile::TempDir,
-    root: PathBuf,
-    outside: PathBuf,
+    pub(crate) root: PathBuf,
+    pub(crate) outside: PathBuf,
     holly: Holly,
-    sid: SessionId,
+    pub(crate) sid: SessionId,
+    /// The executor's grant store, for a test to seed.
+    pub(crate) grants: Arc<InMemoryGrantStore>,
 }
 
 /// A canonical project root with `top.txt` and `sub/{a,e,p}.txt`, a sibling
 /// `outside/` directory, and the real host tools + executor wired the way
 /// `engine_setup`/`services` wire them.
-fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
+pub(crate) fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
     let dir = tempfile::tempdir().expect("tempdir");
     let base = dir.path().canonicalize().expect("canonical tempdir");
     let (root, outside) = (base.join("root"), base.join("outside"));
@@ -96,6 +98,7 @@ fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
         HostToolOptions {
             backups: None,
             workdirs: Some(workdirs.clone()),
+            extra_roots: None,
         },
     );
     reg.register(BashTool::new(root.clone()));
@@ -115,7 +118,9 @@ fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
         store,
         tools.clone(),
     ));
+    let grants = Arc::new(InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(&holly, tools)
+        .grants(grants.clone())
         .perm_modes(modes)
         .mode_table(mode_table)
         .resolver(resolver)
@@ -128,6 +133,7 @@ fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
         outside,
         holly,
         sid: SessionId::new("s1"),
+        grants,
     }
 }
 
@@ -161,7 +167,7 @@ impl Harness {
     }
 
     /// Run one turn, rejecting any approval prompt; returns every event.
-    async fn turn(&self) -> Vec<OutEvent> {
+    pub(crate) async fn turn(&self) -> Vec<OutEvent> {
         let mut sub = self.holly.subscribe();
         self.holly
             .send(InMsg::prompt(self.sid.clone(), "go"))
@@ -204,7 +210,7 @@ impl Harness {
 }
 
 /// `(output, is_error)` of call `id`.
-fn output(events: &[OutEvent], id: &str) -> (String, bool) {
+pub(crate) fn output(events: &[OutEvent], id: &str) -> (String, bool) {
     events
         .iter()
         .find_map(|e| match e {
@@ -219,7 +225,7 @@ fn output(events: &[OutEvent], id: &str) -> (String, bool) {
         .unwrap_or_else(|| panic!("no output for {id}: {events:?}"))
 }
 
-fn requests(events: &[OutEvent]) -> Vec<String> {
+pub(crate) fn requests(events: &[OutEvent]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {

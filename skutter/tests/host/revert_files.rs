@@ -76,6 +76,7 @@ pub(crate) fn spawn_with(
         HostToolOptions {
             backups: Some(backups),
             workdirs: None,
+            extra_roots: None,
         },
     )
     .shared();

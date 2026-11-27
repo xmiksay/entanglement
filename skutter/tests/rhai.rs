@@ -23,6 +23,7 @@ use entanglement_runtime::policy::{
 use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::host::escape::escape_grant;
 use skutter::host::EscapeResolver;
 use skutter::host::{host_tools, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool};
 use skutter::state::ExtraRootStore;
@@ -784,7 +785,7 @@ async fn binding_edit_delegates_and_root_contains() {
 
 /// #446, #968: with the escape-root check wired, a binding targeting an
 /// out-of-root path asks with the ADR-0109 warning, and on approval both
-/// runs the call and records a mode-scoped grant on its `(tool, path)`.
+/// runs the call and records a mode-scoped grant on the escaped path.
 #[tokio::test]
 async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
     let dir = TempDir::new("escape-approve");
@@ -844,10 +845,14 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
         "hello world\n",
         "the approved binding call wrote outside the project root"
     );
+    // The grant is the escape ask's own key on the escaped path — never
+    // one on the bare argument a mode grant would use (#968 review).
+    let key = escape_grant("write", &target.canonicalize().unwrap(), None);
     assert!(
-        grants.is_granted(&sid, "write", Some(&rel), "build"),
-        "the Session-scoped approval must be recorded as a grant on (write, {rel})"
+        grants.is_granted(&sid, &key.tool, Some(&key.arg), "build"),
+        "the Session-scoped approval must be recorded as {key:?}"
     );
+    assert!(!grants.is_granted(&sid, "write", Some(&rel), "build"));
 }
 
 /// #446: a durable escape grant recorded earlier — e.g. by a direct, non-rhai

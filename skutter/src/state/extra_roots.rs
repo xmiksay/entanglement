@@ -9,7 +9,10 @@
 //! is what no single call approves: a `/cd` into an out-of-root directory
 //! (recorded for `bash`, whose default cwd it becomes), the trusted scratch
 //! dir, and — read only — the `Always` grants earlier releases persisted.
-//! Grants are per tool and keyed by the normalized absolute path.
+//! Grants are per tool and keyed by the normalized absolute path. `glob`/
+//! `grep` keep an out-of-root match under a `read` entry here (ADR-0132,
+//! [`is_durably_allowed_under`][ExtraRootStore::is_durably_allowed_under])
+//! and never ask on their own.
 //!
 //! # The trusted scratch dir (#524, ADR-0142, amends ADR-0109)
 //!
@@ -118,6 +121,12 @@ impl ExtraRootStore {
         let k = key(tool, path);
         let g = self.inner.lock().expect("extra-roots mutex poisoned");
         g.always.contains(&k) || g.session.contains(&k)
+    }
+
+    /// Whether `path` or any ancestor of it is durably allowed for `tool` —
+    /// what lets `glob`/`grep` keep a match outside the root (ADR-0132).
+    pub fn is_durably_allowed_under(&self, tool: &str, path: &Path) -> bool {
+        path.ancestors().any(|p| self.is_durably_allowed(tool, p))
     }
 
     /// Record a `Session` or `Always` grant for `(tool, path)`; `Always`
@@ -256,6 +265,18 @@ mod tests {
         assert!(s.is_durably_allowed("bash", Path::new("/opt/a")));
         assert!(!s.is_durably_allowed("bash", Path::new("/opt/b")));
         assert!(!store(&file).is_durably_allowed("bash", Path::new("/opt/a")));
+    }
+
+    #[test]
+    fn is_durably_allowed_under_covers_descendants_per_tool() {
+        let s = ExtraRootStore::ephemeral();
+        let dir = Path::new("/ext/granted");
+        s.record("read", dir, ApprovalScope::Session);
+        assert!(s.is_durably_allowed_under("read", dir));
+        assert!(s.is_durably_allowed_under("read", &dir.join("a/b.rs")));
+        assert!(!s.is_durably_allowed_under("read", Path::new("/ext/other")));
+        assert!(!s.is_durably_allowed_under("read", Path::new("/ext")));
+        assert!(!s.is_durably_allowed_under("write", &dir.join("a.rs")));
     }
 
     #[test]

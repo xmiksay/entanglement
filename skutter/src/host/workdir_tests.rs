@@ -124,8 +124,9 @@ fn other_tools_and_bad_input_are_untouched() {
 }
 
 /// ADR-0109: the file tools are escape-checked on `path`, `bash` on its
-/// `workdir`, a search on its own path argument (#968); `read_raw` and the
-/// JSON variants are checked as the tool they grade as. A host tool losing
+/// `workdir`; a search never is — its walk drops what lies outside the root
+/// (ADR-0132); `read_raw` and the JSON variants are checked as the tool
+/// they grade as. A host tool losing
 /// its `escape_target` would silently drop the approval prompt, so the
 /// whole table is pinned here.
 #[test]
@@ -146,8 +147,8 @@ fn escape_targets_per_host_tool() {
         ("apply_patch", Some("/etc/x")),
         ("bash", Some("/tmp")),
         ("read_raw", None),
-        ("glob", Some("/etc/x/*")),
-        ("grep", Some("/etc/x")),
+        ("glob", None),
+        ("grep", None),
         ("glob_json", None),
         ("grep_json", None),
         ("web_fetch", None),

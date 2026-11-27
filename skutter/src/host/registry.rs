@@ -3,10 +3,12 @@
 //! registered by the head alongside it, unconditionally (ADR-0195).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::{ApplyPatchTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use crate::file_backup::FileBackups;
 use crate::path_grading::SessionWorkdirs;
+use crate::state::ExtraRootStore;
 use crate::tools::ToolRegistry;
 
 /// The optional wiring for [`host_tools_with`]; `Default` is the
@@ -19,6 +21,9 @@ pub struct HostToolOptions {
     /// The executor's per-session workdirs (#764, ADR-0224): `glob`/`grep`
     /// list matches relative to the calling session's workdir.
     pub workdirs: Option<SessionWorkdirs>,
+    /// The escape-root store whose durable `read` entries `glob`/`grep`
+    /// keep out-of-root matches under (ADR-0132).
+    pub extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
 /// The sextet with no backups.
@@ -28,7 +33,11 @@ pub fn host_tools(root: PathBuf) -> ToolRegistry {
 
 /// The sextet with every optional piece of [`HostToolOptions`] wired in.
 pub fn host_tools_with(root: PathBuf, opts: HostToolOptions) -> ToolRegistry {
-    let HostToolOptions { backups, workdirs } = opts;
+    let HostToolOptions {
+        backups,
+        workdirs,
+        extra_roots,
+    } = opts;
     let read = ReadTool::new(root.clone());
     let mut glob = GlobTool::new(root.clone());
     let mut grep = GrepTool::new(root.clone());
@@ -38,6 +47,10 @@ pub fn host_tools_with(root: PathBuf, opts: HostToolOptions) -> ToolRegistry {
     if let Some(w) = workdirs {
         glob = glob.with_workdirs(w.clone());
         grep = grep.with_workdirs(w);
+    }
+    if let Some(e) = extra_roots {
+        glob = glob.with_extra_roots(e.clone());
+        grep = grep.with_extra_roots(e);
     }
     if let Some(b) = backups {
         edit = edit.with_backups(b.clone());
