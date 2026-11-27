@@ -664,6 +664,8 @@ mod tests {
             ('y', Some((false, Once))),
             ('s', Some((false, Session))),
             ('a', Some((false, Always))),
+            // The cut `[d]` dir grant (#925): an unbound key on a card is inert.
+            ('d', None),
         ] {
             let sid = SessionId::new("s1");
             let mut app = App::new_for_test(sid.clone());

@@ -248,6 +248,14 @@ fn approve_scope_roundtrips_when_set() {
     }
 }
 
+/// #925: the cut `session_dir` scope must stay an unknown value — an alias or
+/// a `#[serde(other)]` fallback would silently re-accept the removed grant.
+#[test]
+fn approve_rejects_the_removed_session_dir_scope() {
+    let frame = r#"{"kind":"approve","session":"s1","request_id":"r1","scope":"session_dir"}"#;
+    assert!(serde_json::from_str::<InMsg>(frame).is_err());
+}
+
 /// #560 (ADR-0207 §7 extension): `mode` is the approver's plan-acceptance
 /// choice, additive and omitted by default exactly like `scope` — an older
 /// head's frame (no `mode`) still deserializes to `None`.

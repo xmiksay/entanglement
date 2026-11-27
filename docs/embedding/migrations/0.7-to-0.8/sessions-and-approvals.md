@@ -122,6 +122,10 @@ grant by hand. Nexial only folded it into `Session`. What changes:
   `GrantStore` drops its override), `FileGrantStore::grant_session_dir` and
   `tool_names::is_read_capability_member`. `FileGrantStore`'s grants are all
   exact-match now.
+- **Changed API:** `tool_names::CAPABILITIES` is now a name-only `&[&str]`
+  (`read`/`write`/`call`); its read/write membership lists are gone with
+  their last reader. Code that iterated it as `(name, members)` tuples reads
+  the names directly.
 - **TUI (`skutter`):** the approval card's `[d]` key and its
   `allow dir (session)` hint are gone; `/allow` is free for a user slash
   command.
