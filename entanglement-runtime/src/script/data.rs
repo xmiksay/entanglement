@@ -8,10 +8,10 @@ use rhai::{Dynamic, Engine, EvalAltResult};
 
 use super::bindings::runtime_err;
 
-/// The four script-facing names registered below, for the spec's binding
-/// reference to be pinned against (`super::spec`) — the registration itself
-/// can't be table-driven, the four have four different signatures.
-#[cfg(test)]
+/// The four script-facing names registered below: the spec's binding
+/// reference is pinned against them, and a tool binding may not take one
+/// (`super::spec::tool_bindings`) — the registration itself can't be
+/// table-driven, the four have four different signatures.
 pub(super) const DATA_FUNCTIONS: [&str; 4] = ["parse_json", "to_json", "parse_yaml", "to_yaml"];
 
 /// Register the four functions. Built on Rhai's own `serde` bridge

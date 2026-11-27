@@ -321,6 +321,8 @@ fn the_library_engine_binds_no_file_or_process_function() {
         r#"edit("x", "a", "b")"#,
         r#"glob("*")"#,
         r#"grep("x")"#,
+        r#"glob_json("*")"#,
+        r#"grep_json("x")"#,
         r#"bash("echo hi")"#,
     ] {
         let (out, calls) = eval_bound(&[], "", script);

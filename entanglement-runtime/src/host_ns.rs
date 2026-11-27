@@ -62,7 +62,8 @@ impl std::fmt::Debug for HostNamespace {
 /// A registered tool's positional script function (#933): `name(a, b)` runs
 /// the tool with `{"<key a>": a, "<key b>": b}`, through the same dispatch
 /// seam as a model-issued call. Bound under the tool's name, which must be a
-/// Rhai identifier.
+/// Rhai function name that is not `http` or a JSON/YAML converter; any other
+/// name is skipped with a warning (neither bound nor listed in the spec).
 #[derive(Debug, Clone, Copy)]
 pub struct ScriptBinding {
     /// One parameter list per overload: each parameter's input key and type.

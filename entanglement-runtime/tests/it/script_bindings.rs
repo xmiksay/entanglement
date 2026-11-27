@@ -83,6 +83,8 @@ async fn a_library_only_script_cannot_touch_files_or_spawn_processes() {
         r#"edit("x.txt", "a", "b")"#,
         r#"glob("*")"#,
         r#"grep("x")"#,
+        r#"glob_json("*")"#,
+        r#"grep_json("x")"#,
         r#"bash("echo hi")"#,
     ] {
         let out = run_script(script).await;

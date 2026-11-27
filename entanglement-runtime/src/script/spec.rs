@@ -21,8 +21,9 @@
 use entanglement_core::ToolSpec;
 use rhai::EvalAltResult;
 
+use super::data::DATA_FUNCTIONS;
 use crate::host_ns::ScriptBinding;
-use crate::tool_names::RHAI_TOOL;
+use crate::tool_names::{HTTP_TOOL, RHAI_TOOL};
 use crate::tools::ToolRegistry;
 
 /// The reference's opening: what Rhai is and how every binding is checked.
@@ -58,18 +59,38 @@ Every function is also callable as a method: parse_json(text) is text.parse_json
 Result: the value of the last expression, serialized, with any print(x) output returned above it (a background run streams prints to `poll` as they happen)."#;
 
 /// Every registered tool that binds itself into scripts, name-sorted: what a
-/// run registers and what the reference lists.
+/// run registers and what the reference lists. A binding a script could not
+/// call by that name (not a Rhai function name) or that would shadow the
+/// library's own `http`/converters is skipped with a warning.
 pub(crate) fn tool_bindings(tools: &ToolRegistry) -> Vec<(String, ScriptBinding)> {
     let mut out: Vec<_> = tools
         .names()
         .into_iter()
         .filter_map(|name| {
             let binding = tools.get(&name)?.script_binding()?;
-            Some((name, binding))
+            bindable(&name).then_some((name, binding))
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+fn bindable(name: &str) -> bool {
+    if !rhai::is_valid_function_name(name) {
+        tracing::warn!(
+            tool = name,
+            "script binding skipped: not a Rhai function name"
+        );
+        false
+    } else if name == HTTP_TOOL || DATA_FUNCTIONS.contains(&name) {
+        tracing::warn!(
+            tool = name,
+            "script binding skipped: shadows a library function"
+        );
+        false
+    } else {
+        true
+    }
 }
 
 /// Every function a `rhai` script run over `tools` can call,
@@ -179,7 +200,6 @@ mod tests {
 
     use super::*;
     use crate::host_ns::ScriptArg;
-    use crate::script::data::DATA_FUNCTIONS;
     use crate::script::{register_bindings, result_line, BindingCall};
     use crate::tools::Tool;
 
@@ -286,6 +306,25 @@ mod tests {
         );
         assert!(a < z && z < desc.find("  http(").unwrap(), "{desc}");
         assert!(desc.contains("\n  second line\n"), "{desc}");
+    }
+
+    /// A binding no script could call by its name, or one that would shadow
+    /// the library's own `http`/converters, is dropped from both the run and
+    /// the reference.
+    #[test]
+    fn an_uncallable_or_shadowing_binding_is_skipped() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Bound("fetch-doc", "fetch-doc(path) -> bad name"));
+        tools.register(Bound("fn", "fn(path) -> keyword"));
+        tools.register(Bound("http", "http(path) -> shadows http"));
+        tools.register(Bound("parse_json", "parse_json(path) -> shadows"));
+        tools.register(Bound("fetch_doc", "fetch_doc(path) -> its text"));
+        let names: Vec<_> = tool_bindings(&tools).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["fetch_doc"]);
+        let desc = rhai_spec(&tools).description;
+        for doc in ["bad name", "keyword", "shadows"] {
+            assert!(!desc.contains(doc), "{doc}: {desc}");
+        }
     }
 
     /// The other direction: nothing in the reference is invented — each

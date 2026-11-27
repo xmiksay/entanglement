@@ -80,6 +80,8 @@ reply parsed into a Rhai value (a non-JSON reply throws), and an optional
 interrupt cannot reach a call in flight, so a tool that bounds itself gets
 the bound in its input. Its `doc` line joins the `rhai` spec's host
 bindings, so the spec lists exactly what a run binds (`script::spec::reference`).
+A tool whose name is not a Rhai function name, or is `http` or one of the
+converters, is skipped with a `tracing` warning — neither bound nor listed.
 A call climbs the same seam as every binding. `skutter`'s host tools declare
 theirs in `skutter::host::script_bindings` (`read`, `read_raw`, `glob`,
 `grep`, `glob_json`, `grep_json`, `edit`, `write`, `bash` with `timeout` as
