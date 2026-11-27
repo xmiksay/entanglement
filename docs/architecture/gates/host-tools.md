@@ -91,11 +91,15 @@ guessing again:
   ancestor (ADR-0008 upgraded by [ADR-0054](../../adr/archive/0054-canonicalizing-symlink-safe-root-containment.md),
   #163), so a `root/link -> /etc` symlink is judged by `/etc`. Each tool names
   the path a call touches (`Tool::escape_target`): `path` for `read`/`edit`/
-  `write`/`apply_patch`, `workdir` for `bash`, the joined pattern for `glob`
-  and the `path` filter for `grep`. `glob`/`grep` (`list_files`) drop any
-  match whose canonical path escapes their walk — the root, or the approved
-  external directory the walk started in. Not TOCTOU-tight (an OS sandbox
-  via `openat2(RESOLVE_BENEATH)` is deferred).
+  `write`/`apply_patch`, `workdir` for `bash`; `glob`/`grep` name none and
+  never ask. Their walk (`list_files_with_extra_roots`) drops any match
+  whose canonical path escapes the root — judged per match, so no brace
+  alternative, `..` or absolute pattern moves the boundary — unless a
+  durable `read` entry in `state::ExtraRootStore` covers it (the scratch
+  dir, or a `read` grant an earlier release persisted;
+  [ADR-0132](../../adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md));
+  such an external walk ignores that directory's `.gitignore`. Not
+  TOCTOU-tight (an OS sandbox via `openat2(RESOLVE_BENEATH)` is deferred).
 - **Approval-gated escape (ADR-0109, moved to `skutter` by #968):** the
   library keeps no filesystem-root logic. `skutter` wraps its resolver in
   `host::EscapeResolver` (outermost, over the `pre_tool_use` hook resolver
@@ -105,20 +109,21 @@ guessing again:
   `Grade::Ask(Some(AskReason))` with `CardReason::RootEscape` (a launch:
   `LaunchEscape`) and the text `accesses a path outside the project root:
   <abs>`, even where the mode would `Allow`. The executor treats it like any
-  `Ask` ([approvals & grants](../agents/approvals-and-grants.md)): a
-  mode-scoped grant on the call's `(tool, graded argument)` answers it, an
-  approval wider than `Once` records one (for `bash` its command, not its
-  `workdir`), unattended it follows the collapse-then-park ladder, and the
-  card shows the reason. The tools then run whatever path the check cleared
+  `Ask` ([approvals & grants](../agents/approvals-and-grants.md)), except
+  that the ask names its own grant key (`AskReason::grant`,
+  `host::escape::escape_grant`): `<tool>#outside-root` on the escaped path,
+  for `bash` on `[workdir, command]`. Only a mode-scoped grant on that key
+  answers it and an approval wider than `Once` records that key — so an
+  in-root grant on `bash(make)` never runs `make` elsewhere, and approving
+  one out-of-root run covers that command in that directory only.
+  Unattended it follows the collapse-then-park ladder (the refusal names
+  the reason), and the card shows the reason. The tools then run whatever path the check cleared
   (`host::resolve_path`) — there is no per-call token any more, so a
   symlink swapped between the check and the run is not caught (0.7's
   request-id binding, #449/[ADR-0120](../../adr/archive/0120-once-scoped-escape-root-grant-bound-to-request-id.md),
   is gone). A durable entry in `skutter`'s `state::ExtraRootStore` skips
   the ask: a `/cd` grant, the trusted scratch dir, and the `Always` entries
-  earlier releases persisted in `extra-roots.yml`. `glob`/`grep` ask for an
-  out-of-root search base like any path tool and then walk it
-  ([ADR-0132](../../adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md)'s
-  ride-a-`read`-grant widening is gone). `rhai`'s file/exec bindings call
+  earlier releases persisted in `extra-roots.yml`. `rhai`'s file/exec bindings call
   the same tools through the same seam (#446,
   [ADR-0119](../../adr/archive/0119-rhai-bindings-route-through-the-escape-root-gate.md)),
   so a script is no more able to escape root than a direct call. `bash`
@@ -163,7 +168,8 @@ guessing again:
   (`SessionStore::scratch_dir`) needs no approval, for every tool, in every
   mode. `skutter`'s `ExtraRootStore::with_scratch` records it once at
   startup and `is_durably_allowed` checks it first — a `starts_with` against
-  the canonicalized scratch path, so every file under it is covered. Not
+  the canonicalized scratch path, so every file under it is covered; the
+  same check lets `glob`/`grep` keep a match there (ADR-0132). Not
   per-tool (a trusted *location*) and never persisted (re-derived from the
   cwd at every startup). Only the escape-root ask disappears — the session
   mode's own grade for the call (e.g. `research` mode's `default: prompt`

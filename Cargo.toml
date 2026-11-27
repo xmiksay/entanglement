@@ -51,10 +51,11 @@ regex = "1"
 # ripgrep's gitignore-aware directory walker (#629, ADR-0008 named this seam):
 # `list_files` walks with it instead of raw `glob` so `.gitignore`'d trees
 # (`target/`, `node_modules/`) don't consume the walk budget or pollute
-# results. Runtime-only, pure Rust.
+# results. `skutter`-only since its host tools moved there (#968), pure Rust.
 ignore = "0.4"
-# Unix syscalls for the exec tools: process-group kill on timeout/cancel so a
-# command's grandchildren can't orphan (#168). Runtime-only, cross/lean-clean.
+# Unix syscalls: process-group kill on timeout/cancel so a command's
+# grandchildren can't orphan (#168), `O_NOFOLLOW` opens, the TUI's signal
+# reset. Used by the runtime and `skutter`, cross/lean-clean.
 libc = "0.2"
 # Embedded, capability-sandboxed script engine for the `rhai` host tool
 # (ADR-0046). Pure Rust, cross-compile + lean-build friendly. `sync` makes the
@@ -63,8 +64,8 @@ libc = "0.2"
 rhai = { version = "1", default-features = false, features = ["std", "sync", "serde"] }
 diffy = "0.5"
 # HTML -> Markdown for the `web_fetch` host tool (#736, ADR-0220). Pulls
-# html5ever + markup5ever_rcdom (pure Rust, no transport), so the runtime
-# gates it behind its own default-on `web-fetch` feature like `rhai`.
+# html5ever + markup5ever_rcdom (pure Rust, no transport); `skutter`-only
+# since the host tools moved there (#968), so the library never builds it.
 htmd = "0.5"
 # The parser stack `htmd` sits on, named directly so `web_fetch` can run
 # the spec tokenizer (linear depth pre-scan) and walk the rcdom tree

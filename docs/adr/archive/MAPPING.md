@@ -150,8 +150,8 @@ the code, never as a description of current behaviour — that is
 | [0116](0116-workdir-scoped-permission-rules-for-bash-call.md) | Workdir-scoped permission rules for `bash`/`call` (`tool{pattern}`) | current; amended by 0130; changed by #916; changed by #962 | — |
 | [0117](0117-mcp-tool-capability-fan-out.md) | Config-side capability hints fan MCP tools into `read`/`write`/`call` | current | — |
 | [0118](0118-ambiguous-stop-reason-bounded-retry.md) | Bounded retry on an ambiguous LLM stop, instead of ending the turn | current | — |
-| [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227; changed by #916 | — |
-| [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) | `Once`-scoped escape-root grants are bound to the approving `request_id` | current; changed by #916 | — |
+| [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227; changed by #916; changed by #968 | — |
+| [0120](0120-once-scoped-escape-root-grant-bound-to-request-id.md) | `Once`-scoped escape-root grants are bound to the approving `request_id` | current; changed by #916; removed by #968 | — |
 | [0121](0121-prune-only-compact-stays-silent.md) | Prune-only `Context::compact` stays silent — accepted live/replay divergence | current; partly superseded by 0205 | — |
 | [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213; changed by #918 | — |
 | [0123](0123-agent-poll-zero-timeout-waits-for-notification.md) | `agent_poll` `timeout_secs: 0` waits for the child's notification | current; amended by 0155, 0161 | — |
@@ -163,7 +163,7 @@ the code, never as a description of current behaviour — that is
 | [0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) | Thread the skill `allowed_tools` mask into `rhai` binding resolution | superseded by 0194 (binding snapshot by 0227) | — |
 | [0130](0130-rhai-exec-bindings-marshal-workdir.md) | `rhai` `exec`/`bash` bindings marshal `workdir` | current; amended by 0227; changed by #916 | — |
 | [0131](0131-web-search-post-mvp-follow-ups.md) | Web search post-MVP follow-ups — persisted results, `pause_turn` continuation, version flag | current; amended by 0171; removed by #919 | — |
-| [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current; removed by #968 | — |
+| [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current; changed by #968 | — |
 | [0133](0133-live-bash-enablement-graded-by-permission.md) | Live bash enablement, graded by the permission model | superseded by 0163 | — |
 | [0134](0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) | Per-profile sandbox scoping for `bash`/`call`, with a spawn-chain confinement clamp | superseded by 0207 | — |
 | [0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md) | Deferred build-speed trims: per-crate tokio features, optional `rhai`, trimmed `syntect` | current; amended by 0180; changed by #931 | — |

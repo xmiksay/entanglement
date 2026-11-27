@@ -312,7 +312,9 @@ names no host tool. Site and nexial use none of the moved items; nexial's
   `glob`, `ignore`, `base64` and HTML-converter dependencies).
 - **New API:** `ToolExecutorBuilder::root(PathBuf)` — the project root a
   path argument grades relative to and plans live under;
-  `policy::AskReason { text, card }` and `Grade::ask(text, card)`;
+  `policy::AskReason { text, card, grant }`, `policy::AskGrant { tool,
+  arg }`, `Grade::ask(text, card)` and `Grade::ask_keyed(text, card,
+  grant)`;
   `Tool::script_unbounded()` (default `false`: a script's nested call is
   cut at the script's budget); `tool_names::LIBRARY_TOOL_NAMES`;
   `tools::text_parts` is public.
@@ -328,29 +330,39 @@ names no host tool. Site and nexial use none of the moved items; nexial's
   `Capability::Write` and a path argument (0.7: `write`/`edit`/
   `apply_patch`). A tool's `call_grading` name is what grants are recorded
   under. A resolver's reasoned `Ask` shows its text and `CardReason` on the
-  card, a timed-out reasoned `rhai` launch is refused, and a mode grant on
-  the call's `(tool, argument)` answers it like any `Ask`.
+  card, a timed-out reasoned `rhai` launch is refused, an unattended
+  collapse of it names the reason, and a mode grant on the call's `(tool,
+  argument)` answers it like any `Ask` — unless the resolver named its own
+  grant key (`AskReason::grant`): then only a grant on that key answers
+  it, and an approval wider than `Once` records that key instead.
 - **Changed behaviour (`skutter`):** an out-of-root call asks through
   `host::EscapeResolver`, the outermost resolver wrapper. Its approval is a
-  mode-scoped grant on `(tool, graded argument)` — `bash`'s is its
-  command, not its `workdir` — not a mode-independent `(tool, path)` entry
+  mode-scoped grant on the ask's own key — `<tool>#outside-root` on the
+  escaped path, for `bash` on `[workdir, command]` — so an in-root grant on
+  a command never runs it elsewhere and an out-of-root approval never
+  grants the bare command; not a mode-independent `(tool, path)` entry
   in `extra-roots.yml`, and a `Once` approval is no longer bound to its
   request id: the tools run whatever path the check cleared, so a symlink
   swapped between the check and the run is not caught (#449's guard is
   gone). Unattended, an escape follows the `Ask` ladder (the first collapses
   to a refusal, a repeat parks) instead of always parking. `extra-roots.yml`
   now holds `/cd --always` grants; entries earlier releases wrote are still
-  honoured. `glob`/`grep` ask for an out-of-root pattern or `path` and then
-  search there (0.7: they dropped such matches unless a durable `read`
-  grant covered them). `post_tool_use` runs inside `skutter`'s own tools,
-  before their result returns, a script's calls included; an MCP tool's
-  still fires from the event stream.
+  honoured. `glob`/`grep` still never ask and drop an out-of-root match
+  unless a durable `read` entry in that store covers it — the scratch dir
+  or a `read` grant an earlier release persisted; a `read` approved now is
+  a mode grant, which they do not ride (ADR-0132). `post_tool_use` runs
+  inside `skutter`'s own tools, before their result returns, a script's
+  calls included; an MCP tool's still fires from the event stream.
+- **Left for #932:** `Mode::sandbox` and `Mode::sandbox_network` stay on
+  the library's `Mode`, though only `skutter` (`host::sandbox`, `inspect`)
+  reads them.
 - **Instead:** register your own tools (the library ships none); confine
   them in the tool or in a `PermissionResolver` wrapper that returns
-  `Grade::ask(..)`, as `skutter`'s `EscapeResolver` does; pass
+  `Grade::ask_keyed(..)`, as `skutter`'s `EscapeResolver` does; pass
   `.root(path)` for root-relative grading; implement `script_unbounded`,
   `call_grading` and a `Write` + `ArgKind::Path` declaration where your
   tool needs the clock exemption, a base tool's grade or the write floor.
   `skutter`: `FileExtraRoots` is folded into `state::ExtraRootStore`
-  (`managed`/`at`); `hooks::CallPaths` is gone and `hooks::spawn` takes
+  (`managed`/`at`), and `host_tools_with_extra_roots` is
+  `HostToolOptions::extra_roots`; `hooks::CallPaths` is gone and `hooks::spawn` takes
   `(holly, hooks)` — call `hooks::wrap_host_tools` on the registry first.

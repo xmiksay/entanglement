@@ -99,10 +99,12 @@
   script `path` for a launch) resolves **outside** the root grades
   `Grade::Ask(Some(AskReason))` — reason text and `CardReason::RootEscape`
   (`LaunchEscape` for a launch) on the card — even when the mode would
-  `Allow` (a `Deny` still wins). Like any `Ask`, a library `Grade::Ask`
-  carrying a reason is answered by a mode-scoped grant on the call's
-  `(tool, graded argument)` (for `bash`, its command), records one on a
-  `Session`/`Always` approval, and collapses-then-parks unattended. A `Once`
+  `Allow` (a `Deny` still wins). The ask names its own grant key
+  (`AskReason::grant`: `<tool>#outside-root` on the escaped path, for
+  `bash` on `[workdir, command]`), so only a mode-scoped grant on that key
+  answers it — never one on the call's bare argument — and a
+  `Session`/`Always` approval records that key; unattended it
+  collapses-then-parks, the refusal naming the reason. A `Once`
   approval is not bound to its request id any more (#449's token is gone):
   the tool runs whatever path the check cleared. A durable entry in
   `skutter`'s `state::ExtraRootStore` — a `/cd` grant for `bash`, the
