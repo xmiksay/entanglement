@@ -23,8 +23,8 @@ use crate::tool_names::RHAI_TOOL;
 use crate::tools::{ArgKind, ToolRegistry};
 
 /// Fold `.`/`..`/`//` out of `path` **lexically** — no filesystem access, so a
-/// symlink component is left exactly as written (resolving those is the
-/// escape-root gate's job, not this one, ADR-0109). A `..` that has nothing to
+/// symlink component is left exactly as written (resolving those is a
+/// head's containment check's job, not this one, ADR-0109). A `..` that has nothing to
 /// pop (a leading `..` in a relative path, or one immediately after an
 /// absolute root) is kept as-is rather than treated as an error — this is a
 /// normalizer, not a validator. An empty result (`"."`, `""`, or a path that
@@ -61,7 +61,7 @@ pub fn normalize_lexical(path: &str) -> String {
 /// resolves under `root` — strip the root prefix (`root` itself becomes
 /// `"."`). An out-of-root absolute path stays verbatim (lexically
 /// normalized): a root-relative rule matching an outside path would be
-/// wrong, and the escape-root gate (ADR-0109) already owns that case.
+/// wrong, and a head's containment check (ADR-0109) owns that case.
 pub fn rooted_path(root: &Path, path: &str) -> String {
     root_relative(root, normalize_lexical(path))
 }
@@ -96,11 +96,11 @@ fn root_relative(root: &Path, normalized: String) -> String {
 /// [`permission_arg`] mapped through [`rooted_path`] (a `rhai` script path
 /// through [`rooted_script`]) when the tool declares a [`ArgKind::Path`]
 /// argument and a project `root` is wired. `root: None` — a
-/// `ToolExecutor::builder` with no `.escape_root(..)` — yields the verbatim
+/// `ToolExecutor::builder` with no `.root(..)` — yields the verbatim
 /// argument, byte-identical to pre-#485 behavior. This is the function every
 /// arg-scoped rule match and grant-key lookup should use; `permission_arg`
-/// itself stays reserved for display and the escape-root/workdir
-/// extractors, which have their own, unrelated normalization needs.
+/// itself stays reserved for display and the workdir extractor, which has
+/// its own, unrelated normalization needs.
 pub fn grading_arg(
     tools: &ToolRegistry,
     tool: &str,
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(
             rooted_path(root, "/etc/passwd"),
             "/etc/passwd",
-            "out-of-root paths are the escape-root gate's problem, not this one"
+            "out-of-root paths are a containment check's problem, not this one"
         );
         // Still lexically normalized, just not root-relativized.
         assert_eq!(rooted_path(root, "/etc/../etc/passwd"), "/etc/passwd");

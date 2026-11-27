@@ -5,10 +5,9 @@
 //! call additionally runs under the script's remaining budget (ADR-0227).
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use entanglement_core::{ApprovalScope, Holly, OutEvent, SessionId, ToolCall};
+use entanglement_core::{Holly, OutEvent, SessionId, ToolCall};
 
 use crate::arg_validate;
 use crate::skills::load_skill::parse_skill_id;
@@ -19,13 +18,7 @@ use crate::tools::{ToolExecution, ToolRegistry};
 use super::{Call, Dispatcher, Outcome, Via};
 
 impl Dispatcher {
-    pub(super) async fn execute(
-        &self,
-        tools: &ToolRegistry,
-        call: Call,
-        via: Via<'_>,
-        escape_token: Option<PathBuf>,
-    ) -> Outcome {
+    pub(super) async fn execute(&self, tools: &ToolRegistry, call: Call, via: Via<'_>) -> Outcome {
         let Call {
             request_id,
             tool,
@@ -87,15 +80,9 @@ impl Dispatcher {
             grants: self.grants.clone(),
             session: session.clone(),
             mode: self.mode.clone(),
-            root: self.escape_root.as_ref().map(|er| er.root.clone()),
+            root: self.grading_root.clone(),
             run_all: matches!(via, Via::Script(sc) if sc.run_all()),
         };
-        // Recorded only now, past validation: a call declined at the door
-        // must not leave an unspent single-use escape token behind (#449).
-        if let (Some(abs), Some(er)) = (&escape_token, &self.escape_root) {
-            er.store
-                .record(&tool, abs, ApprovalScope::Once, &request_id);
-        }
         let tool_call = ToolCall {
             id: request_id,
             name: tool.clone(),

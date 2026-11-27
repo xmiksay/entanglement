@@ -1,7 +1,7 @@
 //! `rhai`'s own launch (ADR-0228), graded like any other tool call — the
-//! mode's rules (a `path` script graded on its canonical root-relative path,
-//! so `rhai(scripts/deploy/*)` matches; an inline one only by a bare `rhai`
-//! rule), the ceiling and grants:
+//! resolver's grade (a `path` script graded on its canonical root-relative
+//! path, so `rhai(scripts/deploy/*)` matches; an inline one only by a bare
+//! `rhai` rule), the ceiling and grants:
 //!
 //! - **Deny** refuses it, a trusted path included;
 //! - a `path` inside a `rhai.trusted` folder (not suppressed for this mode)
@@ -12,24 +12,24 @@
 //!   command** or **Reject**, with the usual scope — a wider scope records a
 //!   grant for the exact path (never for an inline script, never `run_all`),
 //!   so the next launch grades Allow. With nobody to answer (the mode's
-//!   `question_timeout` elapses) it runs Ask per command.
+//!   `question_timeout` elapses) it runs Ask per command — unless the
+//!   resolver gave a reason for asking (#968: `skutter`'s escape-root check
+//!   for a script outside the project root), which the card shows and which
+//!   silence never approves.
 //!
-//! A non-trusted `path` outside the project root carries the escape-root
-//! warning on that same card (an Allow grade then asks too), and a timeout
-//! refuses it. The grade needs only the raw input, so it runs before the
-//! file is touched: a denied launch never opens it. A `path` script is then
-//! read *before* the card so the user approves the very source that runs:
-//! the text read here is what the engine evaluates, and trust is judged on
-//! the canonical path of the file that text came from ([`read_script`]) —
-//! which must be the file the grade was computed on. A read failure still
-//! goes through the card, so an out-of-root path's existence is not
-//! disclosed before approval.
+//! The grade needs only the raw input, so it runs before the file is
+//! touched: a denied launch never opens it. A `path` script is then read
+//! *before* the card so the user approves the very source that runs: the
+//! text read here is what the engine evaluates, and trust is judged on the
+//! canonical path of the file that text came from ([`read_script`]) — which
+//! must be the file the grade was computed on. A read failure still goes
+//! through the card, so a path's existence is not disclosed before approval.
 
 use std::path::{Path, PathBuf};
 
-use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason, Permission};
+use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason};
 
-use crate::policy::{deny_text, Grade};
+use crate::policy::{deny_text, AskReason, Grade};
 use crate::seam::ApprovalDecision;
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_runner::{Dispatcher, Posture};
@@ -39,11 +39,6 @@ use super::Launch;
 
 /// The first line of an inline script's launch card.
 const INLINE_CARD_HEADER: &str = "// inline script";
-
-/// The line a launch card ends with when its script lies outside the
-/// project root — for the human only: a head decides on
-/// [`CardReason::LaunchEscape`] (ADR-0230).
-const LAUNCH_ESCAPE_NOTE: &str = "⚠ runs a script OUTSIDE the project root";
 
 /// What the gate decided.
 pub(super) enum Verdict {
@@ -55,8 +50,8 @@ pub(super) enum Verdict {
     Stopped,
 }
 
-/// Gate one launch. `input` is the raw call input — the grade and the
-/// escape-root target read it, exactly as for `read`.
+/// Gate one launch. `input` is the raw call input — the grade reads it,
+/// exactly as for any tool.
 pub(super) async fn gate(
     dispatcher: &Dispatcher,
     launch: &Launch,
@@ -68,20 +63,14 @@ pub(super) async fn gate(
     let root = launch_root(d, launch);
     let graded = graded_input(root, input);
     let (grade, arg) = d.grade(&d.tools, RHAI_TOOL, &graded).await;
-    let perm = match grade {
+    let why = match grade {
         Grade::Deny(reason) => return Verdict::Refuse(deny_text(RHAI_TOOL, &d.mode, reason)),
-        graded => graded.permission(),
-    };
-    let escape = match parsed.source {
-        Source::Path(_) => d
-            .escape_root
-            .as_ref()
-            .and_then(|er| er.escaping(&d.tools, RHAI_TOOL, input)),
-        Source::Inline(_) => None,
+        Grade::Allow => None,
+        Grade::Ask(why) => Some(why),
     };
     let (source, trusted) = match &parsed.source {
         Source::Inline(script) => (Ok(script.clone()), false),
-        Source::Path(path) => match read(d, launch, escape.as_ref(), path, arg.as_deref()).await {
+        Source::Path(path) => match read(d, launch, path, arg.as_deref()).await {
             Ok((text, canon)) => (Ok(text), d.trust.folders.runs_trusted(&canon, &d.mode)),
             Err(e) => (Err(e), false),
         },
@@ -96,41 +85,38 @@ pub(super) async fn gate(
     if trusted {
         return run(Posture::Trusted);
     }
-    let escape = escape.filter(|abs| {
-        d.escape_root
-            .as_ref()
-            .is_some_and(|er| !er.store.is_durably_allowed(RHAI_TOOL, abs))
-    });
-    if perm == Permission::Allow && escape.is_none() {
+    // Allow: no card. Ask: the resolver's reason, if it gave one.
+    let Some(why) = why else {
         return run(Posture::AskPerCommand);
-    }
-    let reason = match (&escape, perm) {
-        (Some(_), Permission::Allow) => "runs a script outside the project root".to_string(),
-        _ => format!("mode `{}` grades `{RHAI_TOOL}` Ask", d.mode),
     };
-    let card_reason = match (&parsed.source, &escape) {
+    let reason = why.as_ref().map_or_else(
+        || format!("mode `{}` grades `{RHAI_TOOL}` Ask", d.mode),
+        |w| w.text.clone(),
+    );
+    let card_reason = match (&parsed.source, &why) {
         (Source::Inline(_), _) => CardReason::InlineLaunch,
-        (Source::Path(_), Some(_)) => CardReason::LaunchEscape,
+        (Source::Path(_), Some(w)) => w.card,
         (Source::Path(_), None) => CardReason::ScriptLaunch,
     };
-    let card = card(parsed, &source, escape.as_deref());
+    let card = card(parsed, &source, why.as_ref());
     // A script that could not be read never runs, so no grant is recorded
     // for it (`record` below): its card offers `Once` alone.
     let once_only = source.is_err();
     match ask(d, request_id, &card, reason, card_reason, once_only).await {
         // Nobody answered within the mode's `question_timeout`: silence
-        // never approves the escape, and otherwise costs only the
+        // never approves a reasoned ask, and otherwise costs only the
         // force-allow — each nested call is still graded on its own.
-        None if escape.is_some() => Verdict::Refuse(format!(
-            "tool `{RHAI_TOOL}` refused: no response within {}s — the script is outside the \
-             project root (mode `{}`)",
-            d.limits.question_timeout, d.mode
-        )),
-        None => run(Posture::AskPerCommand),
+        None => match &why {
+            Some(w) => Verdict::Refuse(format!(
+                "tool `{RHAI_TOOL}` refused: no response within {}s — {} (mode `{}`)",
+                d.limits.question_timeout, w.text, d.mode
+            )),
+            None => run(Posture::AskPerCommand),
+        },
         Some(ApprovalDecision::Approve { scope, run_all, .. }) => {
             // A script that could not be read never ran: nothing to grant.
             if source.is_ok() {
-                record(d, request_id, perm, arg.as_deref(), escape.as_ref(), scope).await;
+                record(d, arg.as_deref(), scope).await;
             }
             run(if run_all {
                 Posture::RunAll
@@ -146,25 +132,15 @@ pub(super) async fn gate(
     }
 }
 
-/// What a wider approval earns: the escape-root grant, and — when the grade
-/// asked — the launch grant for the exact script path, so the next launch
-/// grades Allow (Ask per command). An inline script has no path to key a
-/// grant on, so its approval is once only; `run_all` is never recorded.
-async fn record(
-    d: &Dispatcher,
-    request_id: &str,
-    perm: Permission,
-    arg: Option<&str>,
-    escape: Option<&PathBuf>,
-    scope: ApprovalScope,
-) {
+/// What a wider approval earns: the launch grant for the exact script path,
+/// so the next launch grades Allow (Ask per command). An inline script has
+/// no path to key a grant on, so its approval is once only; `run_all` is
+/// never recorded.
+async fn record(d: &Dispatcher, arg: Option<&str>, scope: ApprovalScope) {
     if scope == ApprovalScope::Once {
         return;
     }
-    if let (Some(abs), Some(er)) = (escape, &d.escape_root) {
-        er.store.record(RHAI_TOOL, abs, scope, request_id);
-    }
-    if let (Permission::Ask, Some(arg)) = (perm, arg) {
+    if let Some(arg) = arg {
         d.grants
             .record(&d.session, RHAI_TOOL, Some(arg), scope, &d.mode)
             .await;
@@ -177,13 +153,12 @@ async fn record(
 async fn read(
     d: &Dispatcher,
     launch: &Launch,
-    escape: Option<&PathBuf>,
     path: &str,
     arg: Option<&str>,
 ) -> Result<(String, PathBuf), String> {
-    let abs = resolve_path(d, launch, escape, path)?;
-    let file = read_script(path, abs).await?;
-    if arg.is_some_and(|arg| !read_is_graded(launch_root(d, launch), &file.canon, arg)) {
+    let root = launch_root(d, launch);
+    let file = read_script(path, root.join(path)).await?;
+    if arg.is_some_and(|arg| !read_is_graded(root, &file.canon, arg)) {
         return Err(format!(
             "rhai: {path:?} changed while it was being launched — refusing to run it"
         ));
@@ -191,14 +166,12 @@ async fn read(
     Ok((file.text, file.canon))
 }
 
-/// The root a script `path` is graded and read against: the escape-root
-/// policy's when one is wired, else the launch's own project root — so a
+/// The root a script `path` is graded and read against: the executor's
+/// project root when one is wired, else the launch's own — so a
 /// `rhai(scripts/*)` rule and the read-vs-grade check behave the same
 /// either way.
 fn launch_root<'a>(d: &'a Dispatcher, launch: &'a Launch) -> &'a Path {
-    d.escape_root
-        .as_ref()
-        .map_or(launch.root.as_path(), |er| er.root.as_path())
+    d.grading_root.as_deref().unwrap_or(launch.root.as_path())
 }
 
 /// `input` with its script `path` replaced by the canonical root-relative
@@ -219,21 +192,6 @@ fn graded_input(root: &Path, input: &str) -> String {
 /// Whether the file read (canonical `canon`) is the one graded as `arg`.
 fn read_is_graded(root: &Path, canon: &Path, arg: &str) -> bool {
     crate::permission_path::rooted_script(root, &canon.to_string_lossy()) == arg
-}
-
-/// The absolute file a script `path` names: the out-of-root target when it
-/// escapes, strict containment when no escape-root policy is wired.
-fn resolve_path(
-    dispatcher: &Dispatcher,
-    launch: &Launch,
-    escape: Option<&PathBuf>,
-    path: &str,
-) -> Result<PathBuf, String> {
-    if let Some(abs) = escape {
-        return Ok(abs.clone());
-    }
-    crate::path_grading::resolve_under_root(launch_root(dispatcher, launch), path)
-        .map_err(|e| format!("rhai: cannot run {path:?}: {e}"))
 }
 
 /// Park the launch card and wait for the head's choice — bounded by the
@@ -277,10 +235,10 @@ async fn ask(
 }
 
 /// The approval card body: the source as a script, headed by its
-/// `path`/`args` as Rhai comments, plus the escape-root warning. The path is
-/// quoted (`{:?}`) — it is model-supplied, and a raw newline would let it
-/// forge card lines.
-fn card(parsed: &ScriptInput, source: &Result<String, String>, escape: Option<&Path>) -> String {
+/// `path`/`args` as Rhai comments, plus the resolver's reason for asking.
+/// The path is quoted (`{:?}`) — it is model-supplied, and a raw newline
+/// would let it forge card lines.
+fn card(parsed: &ScriptInput, source: &Result<String, String>, why: Option<&AskReason>) -> String {
     // The first line is always the runtime's own — `// path:` or the
     // inline header — so script text can never pass itself off as a path
     // card to the human reading it (heads decide on the card reason).
@@ -296,8 +254,8 @@ fn card(parsed: &ScriptInput, source: &Result<String, String>, escape: Option<&P
         Ok(script) => card.push_str(script),
         Err(e) => card.push_str(&format!("// {}", e.replace('\n', " "))),
     }
-    if let Some(abs) = escape {
-        card.push_str(&format!("\n\n{LAUNCH_ESCAPE_NOTE}: {}", abs.display()));
+    if let Some(why) = why {
+        card.push_str(&format!("\n\n⚠ {}", why.text));
     }
     card
 }
@@ -319,9 +277,13 @@ mod tests {
         );
         let failed = card(&p, &Err("rhai: cannot read\nx".into()), None);
         assert!(failed.ends_with("// rhai: cannot read x"), "{failed}");
-        let out = card(&p, &Ok("1".into()), Some(Path::new("/elsewhere/x.rhai")));
+        let why = AskReason {
+            text: "runs a script outside the project root: /elsewhere/x.rhai".into(),
+            card: CardReason::LaunchEscape,
+        };
+        let out = card(&p, &Ok("1".into()), Some(&why));
         assert!(
-            out.ends_with("OUTSIDE the project root: /elsewhere/x.rhai"),
+            out.ends_with("⚠ runs a script outside the project root: /elsewhere/x.rhai"),
             "{out}"
         );
     }

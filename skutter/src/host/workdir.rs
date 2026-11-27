@@ -1,6 +1,6 @@
 //! Session working directories (#764,
-//! [ADR-0224](../../docs/adr/archive/0224-session-working-directory.md)) — the
-//! runtime half.
+//! [ADR-0224](../../../docs/adr/archive/0224-session-working-directory.md)) —
+//! `skutter`'s `/cd` (moved from the library by #968).
 //!
 //! Core carries a session's workdir as an opaque absolute path: it stores,
 //! replays and stamps it on every `ToolExec`, but does no file I/O. This
@@ -9,14 +9,14 @@
 //! directory, require it inside the project root or under an escape-root
 //! grant (ADR-0109), recording that grant when the trusted sender approved
 //! it. The executor's per-session view and the rewrite of relative path
-//! arguments live in [`crate::path_grading`].
+//! arguments live in the library's `path_grading`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use entanglement_core::{ApprovalScope, WorkdirResolver};
 
-use crate::extra_roots::ExtraRootStore;
+use crate::state::ExtraRootStore;
 
 /// The exec tool whose default cwd an out-of-root workdir becomes — the
 /// escape-root grant `/cd` records is keyed on it. File tools keep their
@@ -74,7 +74,7 @@ pub fn resolve(
                 .to_string(),
         ),
         Some(scope) => {
-            extra.record(EXEC_TOOL, &canon, scope, "");
+            extra.record(EXEC_TOOL, &canon, scope);
             Ok(canon)
         }
         None if extra.is_durably_allowed(EXEC_TOOL, &canon) => Ok(canon),

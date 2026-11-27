@@ -14,8 +14,9 @@
 # decided (#820) that `auto` means "run". What still asks here:
 #   - the `prompt:` list below — destructive families that are recoverable
 #     enough to approve but must never run silently;
-#   - the escape-root gate (a path outside the project root, ADR-0109) —
-#     unattended it parks up to `question_timeout`, then refuses;
+#   - a resolver's own `Ask` (`skutter`'s escape-root check for a path
+#     outside the project root, ADR-0109) — unattended it follows the
+#     `prompt` ladder below (#968);
 #   - a credentialed `http()` call's per-host approval (ADR-0227) —
 #     unattended it is refused unless an explicit user-layer `http(...)`
 #     allow rule names it;

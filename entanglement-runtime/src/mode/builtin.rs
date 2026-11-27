@@ -522,8 +522,8 @@ mod tests {
 
     /// ADR-0228 (amending ADR-0209): `auto`'s default is `allow` — it lets
     /// everything run its deny list does not refuse — with the bounded
-    /// `question_timeout` still governing whatever asks (escape-root, a
-    /// credentialed host, a user's own `prompt` rule).
+    /// `question_timeout` still governing whatever asks (a resolver's own
+    /// reason, a credentialed host, a user's own `prompt` rule).
     #[test]
     fn auto_defaults_to_allow_with_a_bounded_question_timeout() {
         let auto = parse("auto", AUTO_YML, &[], &[]).expect("parses");

@@ -13,7 +13,7 @@ use crate::policy::{GrantStore, PermissionResolver};
 use crate::skills::SkillRegistry;
 use crate::tools::{SharedRegistry, ToolRegistry};
 
-use super::{DiscoverySurface, EscapeRoot, ToolExecutor};
+use super::{DiscoverySurface, ToolExecutor};
 
 /// Equivalent to
 /// `ToolExecutor::builder(holly, tools.shared()).agents(agents).base(base).spawn()`.
@@ -50,7 +50,7 @@ pub fn spawn_tool_executor_with_policy(
     perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
     resolver: Arc<dyn PermissionResolver>,
     grants: Arc<dyn GrantStore>,
-    escape_root: Option<EscapeRoot>,
+    root: Option<std::path::PathBuf>,
     mode_table: Arc<crate::mode::ModeTable>,
     plan_files: Arc<PlanFileRegistry>,
     mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
@@ -71,8 +71,8 @@ pub fn spawn_tool_executor_with_policy(
         .mode_table(mode_table)
         .plan_files(plan_files)
         .discovery(discovery.unwrap_or_default());
-    if let Some(er) = escape_root {
-        b = b.escape_root(er);
+    if let Some(root) = root {
+        b = b.root(root);
     }
     if let Some(scopes) = mcp_scopes {
         b = b.mcp_scopes(scopes);

@@ -49,7 +49,6 @@ pub mod env_date;
 pub mod exec;
 // The running call's `ToolExec` seq, read by the per-write backups.
 pub mod exec_scope;
-pub mod extra_roots;
 pub mod file_backup;
 pub mod file_change;
 pub mod frontmatter;
@@ -95,7 +94,7 @@ pub mod narrate;
 // no-handle model surface and `InMsg::ListOperations`'s head surface.
 pub mod operations;
 pub mod output;
-// Path grading: workdir rewrite, escape-root target, root containment.
+// Path grading: the session-workdir rewrite of relative path arguments.
 pub mod path_grading;
 pub mod pending;
 pub mod permission;
@@ -170,9 +169,6 @@ pub mod tools;
 // The debounced file-watch primitive (#329) `plan_watch` and an embedder's
 // own reload watcher share.
 pub mod watch;
-// Session working directories (#764, ADR-0224): the core resolver seam, the
-// executor's per-session view, and the relative-path rewrite.
-pub mod workdir;
 
 pub use tools::{SharedRegistry, Tool, ToolRegistry};
 

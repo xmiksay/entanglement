@@ -188,23 +188,17 @@ mod tests {
         assert_eq!(permission_arg(&tools, "note_text", input), None);
     }
 
-    /// ADR-0228: a `path` run is graded and escape-checked on its path; an
-    /// inline script has no argument, so only a bare `rhai` rule matches it.
+    /// ADR-0228: a `path` run is graded on its path; an inline script has
+    /// no argument, so only a bare `rhai` rule matches it.
     #[test]
-    fn rhai_path_is_its_permission_argument_and_escape_target() {
-        use crate::path_grading::escape_target;
+    fn rhai_path_is_its_permission_argument() {
         let none = crate::tools::ToolRegistry::new();
         let path = r#"{"path":"scripts/x.rhai","args":{"n":1}}"#;
         assert_eq!(
             permission_arg(&none, "rhai", path).as_deref(),
             Some("scripts/x.rhai")
         );
-        assert_eq!(
-            escape_target("rhai", &none, path).as_deref(),
-            Some("scripts/x.rhai")
-        );
         let inline = r#"{"script":"read(\"/etc/x\")"}"#;
-        assert_eq!(escape_target("rhai", &none, inline), None);
         assert_eq!(permission_arg(&none, "rhai", inline), None);
     }
 

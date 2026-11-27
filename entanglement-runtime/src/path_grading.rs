@@ -1,19 +1,16 @@
 //! Path grading: which filesystem path a call names, before anything grades
 //! it. The generic pipeline asks; the tools that own the path arguments
-//! answer through [`crate::tools::Tool::join_workdir`] and
-//! [`crate::tools::Tool::escape_target`], so the executor, the script gate
-//! and the binding bridge never name a host tool.
+//! answer through [`crate::tools::Tool::join_workdir`] (and, for an
+//! embedder's own containment check, [`crate::tools::Tool::escape_target`]),
+//! so the executor, the script gate and the binding bridge never name a host
+//! tool.
 //!
-//! - [`rewrite`] turns a call's relative path arguments into root-relative
-//!   ones for a session working in a workdir (#764, ADR-0224), so permission
-//!   rules, grants, the escape-root gate and every tool's own containment
-//!   check see exactly what they would see with no workdir.
-//! - [`escape_target`] is the path the escape-root gate (ADR-0109) checks.
-//! - [`resolve_under_root`]/[`escaping_path`] are the symlink-safe
-//!   containment both sides resolve with (ADR-0054).
-//!
-//! `rhai`'s script `path` (ADR-0228) is answered here: the script tool is
-//! the executor's own route, not a registry tool.
+//! [`rewrite`] turns a call's relative path arguments into root-relative
+//! ones for a session working in a workdir (#764, ADR-0224), so permission
+//! rules, grants and a head's own containment check see exactly what they
+//! would see with no workdir. `rhai`'s script `path` (ADR-0228) is answered
+//! here: the script tool is the executor's own route, not a registry tool.
+//! The library keeps no root containment of its own (#968).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,10 +22,6 @@ use serde_json::{Map, Value};
 use crate::permission_path::normalize_lexical;
 use crate::tool_names::RHAI_TOOL;
 use crate::tools::ToolRegistry;
-
-mod containment;
-pub use containment::resolve_and_contained;
-pub use containment::{escaping_path, resolve_under_root};
 
 /// What `tool`'s input becomes for a session working in `workdir` (absolute)
 /// under `root`, or `None` when nothing changes — no workdir, a workdir equal
@@ -51,16 +44,6 @@ pub fn rewrite(
         tools.get(tool)?.join_workdir(args, &base)
     };
     changed.then(|| value.to_string())
-}
-
-/// The filesystem path a call to `tool` would touch, for the escape-root
-/// gate: `rhai`'s script `path`, else whatever the registered tool declares.
-/// `None` for a tool with none, an unregistered one, or malformed input.
-pub fn escape_target(tool: &str, tools: &ToolRegistry, input: &str) -> Option<String> {
-    if tool == RHAI_TOOL {
-        return str_arg(input, "path");
-    }
-    tools.get(tool)?.escape_target(input)
 }
 
 /// The string `key` of a JSON-object `input` — the shape every path

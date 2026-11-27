@@ -204,8 +204,8 @@ fn spawn_with_bash_call(input: &str) -> Holly {
 /// Shared plumbing every harness in this file uses: registers `reg` as the
 /// shared tool registry, grades from `mode_table` (allow-all config
 /// ceiling), and spawns the real executor via `ToolExecutor::builder`.
-/// `root` (#485, ADR-0125), when `Some`, becomes the escape-root policy and
-/// thereby the default resolver's root too, matching `services.rs`.
+/// `root` (#485, ADR-0125), when `Some`, becomes the executor's project
+/// root and thereby the default resolver's root too, matching `services.rs`.
 fn spawn_with_policy_over(
     holly: &Holly,
     reg: ToolRegistry,
@@ -215,16 +215,13 @@ fn spawn_with_policy_over(
 ) {
     // The builder's default resolver is exactly the `ModeResolver` this
     // harness wants: graded from `modes`/`mode_table`, allow-all ceiling,
-    // root-relative normalization off the escape root when one is set.
+    // root-relative normalization off the project root when one is set.
     let mut builder = ToolExecutor::builder(holly, reg.shared())
         .agents(agents)
         .perm_modes(perm_modes())
         .mode_table(mode_table);
     if let Some(root) = root {
-        builder = builder.escape_root(entanglement_runtime::tool_runner::EscapeRoot {
-            root: root.to_path_buf(),
-            store: Arc::new(entanglement_runtime::extra_roots::ExtraRootStore::ephemeral()),
-        });
+        builder = builder.root(root.to_path_buf());
     }
     let _executor = builder.spawn();
 }

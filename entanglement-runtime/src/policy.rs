@@ -39,7 +39,7 @@ use crate::tools::SharedRegistry;
 mod grade;
 mod memory;
 pub(crate) use grade::deny_text;
-pub use grade::Grade;
+pub use grade::{AskReason, Grade};
 pub use memory::InMemoryGrantStore;
 
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`
@@ -296,7 +296,7 @@ mod tests {
             resolver
                 .resolve(&session, "peek", r#"{"path":"/r/src/main.rs"}"#)
                 .await,
-            Grade::Ask
+            Grade::Ask(None)
         );
     }
 
@@ -362,6 +362,6 @@ mod tests {
         );
         let grade = |input: &'static str| resolver.resolve(&session, "doc", input);
         assert_eq!(grade(r#"{"file":"/r/notes/a.md"}"#).await, Grade::Allow);
-        assert_eq!(grade(r#"{"file":"src/a.rs"}"#).await, Grade::Ask);
+        assert_eq!(grade(r#"{"file":"src/a.rs"}"#).await, Grade::Ask(None));
     }
 }

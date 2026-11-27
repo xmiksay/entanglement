@@ -222,7 +222,7 @@ fn a_hop_follows_only_an_allowed_or_ungraded_target() {
         .unwrap_err()
         .to_string();
     assert!(vetoed.ends_with("not followed: no"), "{vetoed}");
-    let ask = verdict(Some((Grade::Ask, "research".into())))
+    let ask = verdict(Some((Grade::Ask(None), "research".into())))
         .unwrap_err()
         .to_string();
     assert!(

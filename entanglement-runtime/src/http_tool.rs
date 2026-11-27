@@ -220,7 +220,7 @@ async fn check_hop(method: String, url: String) -> Result<()> {
         Some((Grade::Deny(None), mode)) => {
             bail!("redirect to {url} not followed: `http` of that URL is denied by mode `{mode}`")
         }
-        Some((Grade::Ask, _)) => bail!(
+        Some((Grade::Ask(_), _)) => bail!(
             "redirect to {url} not followed: requesting that URL needs approval — call \
              http on it directly to request it"
         ),

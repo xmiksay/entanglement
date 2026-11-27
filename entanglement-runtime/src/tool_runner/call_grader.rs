@@ -39,7 +39,7 @@ pub(crate) struct CallGrader {
 
 impl CallGrader {
     /// Grade `(tool, input)` as `dispatch` would grade the same call, minus
-    /// what can't apply mid-call (the escape-root gate, parking).
+    /// what can't apply mid-call (parking).
     pub(crate) async fn grade(&self, tool: &str, input: &str) -> Grade {
         let inputs = GradeInputs {
             tools: &self.tools,
@@ -54,7 +54,7 @@ impl CallGrader {
             capability_override: None,
         };
         match grade_call(&inputs, tool, input).await.0 {
-            Grade::Ask if self.run_all => Grade::Allow,
+            Grade::Ask(_) if self.run_all => Grade::Allow,
             grade => grade,
         }
     }
@@ -152,7 +152,7 @@ mod tests {
         let research = || "research".to_string();
         assert_eq!(graded.0, Some((Grade::Deny(None), research())));
         assert_eq!(graded.1, Some((Grade::Allow, research())));
-        assert_eq!(graded.2, Some((Grade::Ask, research())));
+        assert_eq!(graded.2, Some((Grade::Ask(None), research())));
     }
 
     /// A trusted / **Run all** script's call passes an `Ask` hop like the

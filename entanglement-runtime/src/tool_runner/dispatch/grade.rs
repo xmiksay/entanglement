@@ -1,14 +1,14 @@
 //! The permission-grading primitives `dispatch` composes (issue #451, split
 //! out of `tool_runner.rs`): [`grade_call`] composes a call's whole grade
-//! (the mode grade, then [`apply_grant`]'s `Ask`→`Allow` off an
-//! existing grant, then the trusted-script write floor), and
+//! (the mode grade, then an existing grant's `Ask`→`Allow`, then the
+//! trusted-script write floor), and
 //! [`resolve_effective`] walks a call's ancestor chain through the pluggable
 //! [`PermissionResolver`]. `resolve_effective` is re-exported at
 //! `tool_runner::resolve_effective` for `propose_plan`.
 
 use std::path::Path;
 
-use entanglement_core::{Permission, SessionId};
+use entanglement_core::SessionId;
 
 use crate::capability::Capability;
 use crate::permission::min_permission;
@@ -44,40 +44,35 @@ pub(crate) struct GradeInputs<'a> {
 
 /// The grade `(tool, input)` resolves to, plus the argument it was graded
 /// on: the mode grade clamped across the ancestor chain — a `Deny` returned
-/// as resolved, with its reason (#964) — then
-/// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Last, a write
+/// as resolved, with its reason (#964) — then an `Ask` (the mode's, or a
+/// resolver's reasoned one) upgraded to `Allow` by an existing mode-scoped
+/// grant on the same `(tool, argument)`. Last, a write
 /// ([`crate::rhai_trust::floored_write`]) of a `*.rhai` file inside a
-/// `rhai.trusted` folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored at `Ask`
-/// whatever allowed it (ADR-0228: such a file later runs or loads unasked,
-/// so authoring one is never unseen); a `Deny` stays `Deny`. The
-/// escape-root gate stays with the caller.
+/// `rhai.trusted` folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored
+/// at `Ask` whatever allowed it (ADR-0228: such a file later runs or loads
+/// unasked, so authoring one is never unseen); a `Deny` stays `Deny`.
 pub(crate) async fn grade_call(
     g: &GradeInputs<'_>,
     tool: &str,
     input: &str,
 ) -> (Grade, Option<String>) {
     let arg = grading_arg(g.tools, tool, input, g.root);
-    let base = resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await;
-    if let Grade::Deny(_) = base {
-        return (base, arg);
-    }
-    let perm = apply_grant(
-        g.grants,
-        g.session,
-        tool,
-        arg.as_deref(),
-        base.permission(),
-        g.mode,
-    );
-    let perm = if perm == Permission::Allow
-        && g.floor.is_some_and(|(trust, root)| {
+    let grade =
+        match resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await {
+            Grade::Ask(_) if g.grants.is_granted(g.session, tool, arg.as_deref(), g.mode) => {
+                Grade::Allow
+            }
+            graded => graded,
+        };
+    let floored = || {
+        g.floor.is_some_and(|(trust, root)| {
             crate::rhai_trust::floored_write(g.tools, tool, input, root, trust)
-        }) {
-        Permission::Ask
-    } else {
-        perm
+        })
     };
-    (perm.into(), arg)
+    if grade == Grade::Allow && floored() {
+        return (Grade::Ask(None), arg);
+    }
+    (grade, arg)
 }
 
 /// The name a call grades under: the target its tool's
@@ -89,27 +84,6 @@ pub(crate) fn graded_name(tools: &ToolRegistry, tool: &str, input: &str) -> Stri
         .get(tool)
         .and_then(|t| t.call_grading(input))
         .map_or_else(|| tool.to_string(), |cg| cg.name)
-}
-
-/// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already
-/// granted under `mode` (#174, ADR-0207 §8: a grant matches only the mode it
-/// was earned in): a session-scoped or persisted "always allow" grant lets an
-/// *identical* later call in the *same mode* skip the prompt. Only `Ask` is
-/// widened — a `Deny` (a hard policy floor) and an outright `Allow` pass
-/// through untouched.
-pub(crate) fn apply_grant(
-    grants: &dyn GrantStore,
-    session: &SessionId,
-    tool: &str,
-    arg: Option<&str>,
-    perm: Permission,
-    mode: &str,
-) -> Permission {
-    if perm == Permission::Ask && grants.is_granted(session, tool, arg, mode) {
-        Permission::Allow
-    } else {
-        perm
-    }
 }
 
 /// Least-privileged resolver grade across a call's ancestor chain — the sub-agent
@@ -148,8 +122,11 @@ pub(crate) async fn resolve_effective(
             None => resolver.resolve(session, tool, input).await,
         };
         // Only a strictly lower grade replaces the fold, so a later `Deny`
-        // never overwrites the first one's reason.
-        if min_permission(folded.permission(), grade.permission()) != folded.permission() {
+        // never overwrites the first one's reason — save that a reasoned
+        // `Ask` replaces a plain one, so its card says why.
+        let lower = min_permission(folded.permission(), grade.permission()) != folded.permission();
+        let reasoned = matches!((&folded, &grade), (Grade::Ask(None), Grade::Ask(Some(_))));
+        if lower || reasoned {
             folded = grade;
         }
         any = true;
@@ -193,11 +170,11 @@ mod tests {
         // The tenant rule *widens* the child to Allow, but its parent resolves
         // Ask — the chain min must clamp the child back to Ask, so a resolver can
         // never widen a sub-agent beyond its ancestor.
-        let resolver = per_session(&[(&child, Grade::Allow), (&parent, Grade::Ask)]);
+        let resolver = per_session(&[(&child, Grade::Allow), (&parent, Grade::Ask(None))]);
         let chain = vec![child.clone(), parent.clone()];
         assert_eq!(
             resolve_effective(&resolver, &chain, "bash", "{}", None).await,
-            Grade::Ask
+            Grade::Ask(None)
         );
         // A root (single-element chain) resolves to its own grade unchanged.
         assert_eq!(

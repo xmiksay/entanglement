@@ -299,7 +299,7 @@ async fn custom_resolver_ask_then_always_routes_through_custom_grant_store() {
         recorded: recorded.clone(),
     });
     let resolver = Arc::new(FixedResolver {
-        grade: Grade::Ask,
+        grade: Grade::Ask(None),
         seen: Arc::new(Mutex::new(Vec::new())),
     });
     // Valid JSON so the runtime extracts the argument-scoped grant key (#173).

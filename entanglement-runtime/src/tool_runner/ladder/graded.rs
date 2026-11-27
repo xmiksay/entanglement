@@ -57,7 +57,7 @@ pub(super) fn dispatcher(
         chain,
         grants: ctx.grants.clone(),
         pending: ctx.pending.clone(),
-        escape_root: ctx.escape_root.clone(),
+        grading_root: ctx.grading_root.clone(),
         advertising: ctx.advertising.clone(),
         validation: ctx.validation.clone(),
         mcp_avail: ctx.mcp_avail.clone(),

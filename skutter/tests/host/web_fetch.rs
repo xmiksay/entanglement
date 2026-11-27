@@ -229,7 +229,7 @@ async fn the_executor_scopes_a_grader_matching_the_session_mode() {
     .await;
     assert_eq!(
         first_output(&research),
-        "hop grade: Some((Ask, \"research\"))"
+        "hop grade: Some((Ask(None), \"research\"))"
     );
     let build = run_in_mode(
         "build",

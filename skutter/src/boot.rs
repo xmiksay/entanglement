@@ -13,7 +13,7 @@ use entanglement_provider::{Catalog, HttpClient, ModelInfo, RetryConfig, SharedS
 
 use crate::engine_setup::build_config;
 use crate::factories::build_model_resolver;
-use crate::tool_runner::EscapeRoot;
+use crate::host::escape::EscapeRoot;
 use crate::{
     agents, config, file_backup, host, logging, mcp, mode, retained_output, script_ops, skills,
     subagent, system_prompt, system_prompt_mode, tool_advertising, SharedRegistry,

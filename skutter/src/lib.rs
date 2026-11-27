@@ -10,9 +10,9 @@
 // The moved modules name runtime modules as `crate::<name>`, exactly as they
 // did inside `entanglement-runtime`.
 use entanglement_runtime::{
-    agents, attendance, capability, discover, exec, extra_roots, file_backup, file_change,
-    frontmatter, jobs, layers, mcp, mode, output, path_grading, permission, policy, rhai_trust,
-    secret_env, session_store, skills, system_prompt, tool_names, tool_runner, tools,
+    agents, attendance, capability, discover, exec, file_backup, file_change, frontmatter, jobs,
+    layers, mcp, mode, output, path_grading, permission, policy, rhai_trust, secret_env,
+    session_store, skills, system_prompt, tool_names, tool_runner, tools,
 };
 
 // The layered `config.yml`, the managed state files' paths and the key

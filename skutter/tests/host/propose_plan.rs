@@ -28,14 +28,13 @@ use entanglement_core::{
     session::Session, stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmStream, OutEvent, SessionId, ToolCall,
 };
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
 use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::session_store::{pair_records, LogPayload, SessionStore};
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
-use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
-use skutter::host::host_tools_with_extra_roots;
+use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::host::host_tools;
 
 /// Replays scripted responses in order, then plain text so the turn terminates.
 struct ScriptedLlm {
@@ -168,8 +167,7 @@ fn spawn_with_root_and_table(
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let store = Arc::new(ExtraRootStore::ephemeral());
-    let tools = host_tools_with_extra_roots(root.to_path_buf(), Some(store.clone()));
+    let tools = host_tools(root.to_path_buf());
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
@@ -182,10 +180,7 @@ fn spawn_with_root_and_table(
         Some(root.to_path_buf()),
     ));
     let grants = Arc::new(InMemoryGrantStore::new());
-    let escape_root = EscapeRoot {
-        root: root.to_path_buf(),
-        store,
-    };
+    let project_root = root.to_path_buf();
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(profiles)
         .base(base)
@@ -193,7 +188,7 @@ fn spawn_with_root_and_table(
         .perm_modes(perm_modes)
         .resolver(resolver)
         .grants(grants)
-        .escape_root(escape_root)
+        .root(project_root)
         .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),

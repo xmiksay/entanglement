@@ -60,8 +60,6 @@ pub struct BashTool {
     /// per-profile resolver instead. Defaults to [`SandboxPolicy::none()`] —
     /// unsandboxed, unchanged from before either existed.
     sandbox_resolver: Arc<dyn SandboxResolver>,
-    /// Approval-gated out-of-root `workdir` (ADR-0109).
-    extra_roots: Option<std::sync::Arc<crate::extra_roots::ExtraRootStore>>,
 }
 
 impl BashTool {
@@ -71,17 +69,7 @@ impl BashTool {
             secret_env: Vec::new(),
             jobs: JobRegistry::new(),
             sandbox_resolver: Arc::new(SandboxPolicy::none()),
-            extra_roots: None,
         }
-    }
-
-    /// Permit an approved out-of-root `workdir` (ADR-0109).
-    pub fn with_extra_roots(
-        mut self,
-        extra: std::sync::Arc<crate::extra_roots::ExtraRootStore>,
-    ) -> Self {
-        self.extra_roots = Some(extra);
-        self
     }
 
     /// Scrub `vars` from the spawned command's environment (provider API keys).
@@ -242,7 +230,7 @@ impl Tool for BashTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        Ok(self.run_impl(None, "", input).await?.0)
+        Ok(self.run_impl(None, input).await?.0)
     }
 
     async fn run_for_session(
@@ -260,10 +248,10 @@ impl Tool for BashTool {
     async fn run_with_meta(
         &self,
         session: &SessionId,
-        request_id: &str,
+        _request_id: &str,
         input: &str,
     ) -> Result<crate::tools::ToolRun> {
-        let (text, exit_code) = self.run_impl(Some(session), request_id, input).await?;
+        let (text, exit_code) = self.run_impl(Some(session), input).await?;
         Ok(crate::tools::ToolRun {
             exit_code,
             ..crate::tools::ToolRun::new(crate::tools::text_parts(text))
@@ -272,9 +260,7 @@ impl Tool for BashTool {
 }
 
 impl BashTool {
-    /// `request_id` (#449) is forwarded to the escape-root grant check so a
-    /// `Once` approval for `workdir` is only consumed by the call it was
-    /// approved for. `session` (#479, ADR-0104 amendment) resolves the
+    /// `session` (#479, ADR-0104 amendment) resolves the
     /// per-profile confinement policy; `None` (the plain [`Tool::run`] path)
     /// resolves against the resolver's process-global default.
     /// Returns the formatted output plus the process exit code (#681,
@@ -285,18 +271,11 @@ impl BashTool {
     async fn run_impl(
         &self,
         session: Option<&SessionId>,
-        request_id: &str,
         input: &str,
     ) -> Result<(String, Option<i32>)> {
         let parsed: BashInput = serde_json::from_str(input)
             .context("invalid input to bash: expected {\"command\": string, ...}")?;
-        let cwd = super::resolve_workdir_or_grant(
-            &self.root,
-            self.extra_roots.as_deref(),
-            "bash",
-            request_id,
-            parsed.workdir.as_deref(),
-        )?;
+        let cwd = super::resolve_workdir(&self.root, parsed.workdir.as_deref())?;
         let policy = self.sandbox_resolver.resolve(session);
         let mut cmd = self.build_command(&parsed.command, &cwd, &policy);
 
@@ -685,18 +664,20 @@ mod tests {
         assert!(out.contains("inner.txt"), "{out}");
     }
 
+    /// #968: the escape-root check asks before an out-of-root `workdir`
+    /// reaches the tool, so the tool runs wherever it is pointed.
     #[tokio::test]
-    async fn workdir_escaping_root_is_rejected() {
+    async fn an_out_of_root_workdir_is_the_escape_checks_question() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = BashTool::new(dir.path().to_path_buf());
-        let err = tool
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(dir.path().join("sibling.txt"), "").unwrap();
+        let tool = BashTool::new(root);
+        let out = tool
             .run(r#"{"command":"ls","workdir":".."}"#)
             .await
-            .unwrap_err();
-        assert!(
-            format!("{err}").contains("escapes working directory"),
-            "{err}"
-        );
+            .unwrap();
+        assert!(out.contains("sibling.txt"), "{out}");
     }
 
     #[tokio::test]

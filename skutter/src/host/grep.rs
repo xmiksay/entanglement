@@ -5,9 +5,8 @@
 //! itself (ADR-0150).
 
 use super::glob::suggest_files_pattern;
-use super::{list_files_with_extra_roots, FileList};
+use super::{list_files, FileList};
 use crate::capability::Capability;
-use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
 use crate::path_grading::SessionWorkdirs;
 use crate::tools::{ArgKind, PermissionScope, Tool};
@@ -18,7 +17,6 @@ use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Cap on how much of a file `grep` is willing to read into memory and scan,
 /// **independent of** [`crate::output::MAX_OUTPUT_BYTES`] (the *result-string* cap).
@@ -125,7 +123,6 @@ pub struct GrepTool {
     root: std::path::PathBuf,
     /// Widens a search into a directory already covered by a durable `read`
     /// grant (ADR-0109/#482). `None` keeps strict containment.
-    extra_roots: Option<Arc<ExtraRootStore>>,
     workdirs: Option<SessionWorkdirs>,
 }
 
@@ -133,7 +130,6 @@ impl GrepTool {
     pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             root,
-            extra_roots: None,
             workdirs: None,
         }
     }
@@ -143,13 +139,6 @@ impl GrepTool {
     /// listed path can be passed straight back.
     pub fn with_workdirs(mut self, workdirs: SessionWorkdirs) -> Self {
         self.workdirs = Some(workdirs);
-        self
-    }
-
-    /// Let a search descend into a directory the user already granted `read`
-    /// access to (#482) — see [`super::list_files_with_extra_roots`].
-    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
-        self.extra_roots = Some(extra);
         self
     }
 }
@@ -240,13 +229,15 @@ impl Tool for GrepTool {
         crate::path_grading::join_or_default(args, "path", base)
     }
 
-    /// The optional file filter `path` (#417): a path, unlike the regex
-    /// `pattern`.
+    /// The argument is the `escape_target` filter, the trait default for a
+    /// path scope.
     fn permission_scope(&self) -> PermissionScope {
         PermissionScope::arg(ArgKind::Path)
     }
 
-    fn permission_arg(&self, input: &str) -> Option<String> {
+    /// The optional file filter `path` (#417): a path, unlike the regex
+    /// `pattern` — what the escape-root check judges a search by (#968).
+    fn escape_target(&self, input: &str) -> Option<String> {
         crate::path_grading::str_arg(input, "path")
     }
 
@@ -310,12 +301,7 @@ impl GrepTool {
             .context("invalid input to grep: expected {\"pattern\": string, ...}")?;
         let re = compile_regex(&parsed.pattern, parsed.case_insensitive)?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
-        let mut list = list_files_with_extra_roots(
-            &self.root,
-            filter,
-            &parsed.exclude,
-            self.extra_roots.as_deref(),
-        )?;
+        let mut list = list_files(&self.root, filter, &parsed.exclude)?;
         let scanned = list.files.len();
         let scan = scan_matches(shown, &mut list, &re).await?;
         let mut out = String::new();

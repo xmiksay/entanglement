@@ -3,10 +3,9 @@
 
 use super::{fit_document, skip_notices, walk_notices};
 use crate::capability::Capability;
-use crate::extra_roots::ExtraRootStore;
 use crate::host::grep::{compile_regex, scan_matches};
 use crate::host::walk::MAX_RESULTS;
-use crate::host::{glob, list_files_with_extra_roots, FileList};
+use crate::host::{glob, list_files, FileList};
 use crate::path_grading::SessionWorkdirs;
 use crate::tools::{CallGrading, Tool};
 use anyhow::{Context, Result};
@@ -15,7 +14,6 @@ use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,7 +32,6 @@ struct GrepJsonInput {
 /// "line": …}, …], "notices": […]}`.
 pub struct GrepJsonTool {
     root: PathBuf,
-    extra_roots: Option<Arc<ExtraRootStore>>,
     workdirs: Option<SessionWorkdirs>,
 }
 
@@ -42,7 +39,6 @@ impl GrepJsonTool {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            extra_roots: None,
             workdirs: None,
         }
     }
@@ -50,12 +46,6 @@ impl GrepJsonTool {
     /// Print match paths relative to the calling session's workdir (#764).
     pub fn with_workdirs(mut self, workdirs: SessionWorkdirs) -> Self {
         self.workdirs = Some(workdirs);
-        self
-    }
-
-    /// Ride the same durable `read` grants a direct `grep` search does.
-    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
-        self.extra_roots = Some(extra);
         self
     }
 }
@@ -135,12 +125,7 @@ impl GrepJsonTool {
             .context("invalid input to grep_json: expected {\"pattern\": string, ...}")?;
         let re = compile_regex(&parsed.pattern, parsed.case_insensitive)?;
         let filter = parsed.path.as_deref().unwrap_or("**/*");
-        let mut list = list_files_with_extra_roots(
-            &self.root,
-            filter,
-            &parsed.exclude,
-            self.extra_roots.as_deref(),
-        )?;
+        let mut list = list_files(&self.root, filter, &parsed.exclude)?;
         let scanned = list.files.len();
         let scan = scan_matches(shown, &mut list, &re).await?;
         let mut notices = skip_notices(&scan.skipped, shown);

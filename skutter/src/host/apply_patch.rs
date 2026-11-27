@@ -5,10 +5,9 @@
 //! `edit`/`write`). Matching is exact and non-fuzzy — see
 //! [`crate::host::unified_diff`] for why.
 
-use super::resolve_under_root_or_grant;
+use super::resolve_path;
 use super::unified_diff::{apply_hunks, parse_hunks};
 use crate::capability::Capability;
-use crate::extra_roots::ExtraRootStore;
 use crate::file_backup::FileBackups;
 use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
@@ -17,12 +16,10 @@ use entanglement_core::protocol::FileChangeKind;
 use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::sync::Arc;
 
 pub struct ApplyPatchTool {
     root: std::path::PathBuf,
     /// Approval-gated out-of-root access (ADR-0109).
-    extra_roots: Option<Arc<ExtraRootStore>>,
     /// Per-write backups for undo/rewind (ADR-0212).
     backups: Option<FileBackups>,
 }
@@ -31,7 +28,6 @@ impl ApplyPatchTool {
     pub fn new(root: std::path::PathBuf) -> Self {
         Self {
             root,
-            extra_roots: None,
             backups: None,
         }
     }
@@ -40,12 +36,6 @@ impl ApplyPatchTool {
     /// it (ADR-0212).
     pub fn with_backups(mut self, backups: FileBackups) -> Self {
         self.backups = Some(backups);
-        self
-    }
-
-    /// Permit approved out-of-root patches (ADR-0109) via the shared grant store.
-    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
-        self.extra_roots = Some(extra);
         self
     }
 }
@@ -130,8 +120,7 @@ impl Tool for ApplyPatchTool {
 }
 
 impl ApplyPatchTool {
-    /// `request_id` (#449) is forwarded to the escape-root grant check so a
-    /// `Once` approval is only consumed by the call it was approved for.
+    /// `request_id` names the call in its backup record.
     /// `session` is `None` for a session-less `run`, which is never backed up.
     async fn apply(
         &self,
@@ -142,13 +131,7 @@ impl ApplyPatchTool {
         let parsed: ApplyPatchInput = serde_json::from_str(input).context(
             "invalid input to apply_patch: expected {\"path\": string, \"patch\": string}",
         )?;
-        let target_abs = resolve_under_root_or_grant(
-            &self.root,
-            self.extra_roots.as_deref(),
-            "apply_patch",
-            request_id,
-            &parsed.path,
-        )?;
+        let target_abs = resolve_path(&self.root, &parsed.path)?;
 
         let content = tokio::fs::read_to_string(&target_abs)
             .await
@@ -264,23 +247,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("reading before patch"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn path_escaping_root_is_rejected() {
-        let dir = tmp();
-        let tool = ApplyPatchTool::new(dir.path().to_path_buf());
-        let err = tool
-            .run(
-                &serde_json::json!({"path": "../x", "patch": "@@ -1,1 +1,1 @@\n-x\n+y\n"})
-                    .to_string(),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            format!("{err}").contains("escapes working directory"),
-            "{err}"
-        );
     }
 
     /// Under a `file_change::capture` scope, a successful apply records an

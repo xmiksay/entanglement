@@ -13,13 +13,12 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId, ToolCall,
 };
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::plan_watch::spawn_plans_watcher;
 use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
-use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
-use skutter::host::host_tools_with_extra_roots;
+use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::host::host_tools;
 
 /// Replays scripted responses in order, then plain text so the turn terminates.
 struct ScriptedLlm {
@@ -96,8 +95,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let store = Arc::new(ExtraRootStore::ephemeral());
-    let tools = host_tools_with_extra_roots(root.to_path_buf(), Some(store.clone()));
+    let tools = host_tools(root.to_path_buf());
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();
@@ -110,10 +108,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Some(root.to_path_buf()),
     ));
     let grants = Arc::new(InMemoryGrantStore::new());
-    let escape_root = EscapeRoot {
-        root: root.to_path_buf(),
-        store,
-    };
+    let project_root = root.to_path_buf();
     let plan_files = Arc::new(PlanFileRegistry::new());
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(profiles)
@@ -122,7 +117,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         .perm_modes(perm_modes)
         .resolver(resolver)
         .grants(grants)
-        .escape_root(escape_root)
+        .root(project_root)
         .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),

@@ -16,10 +16,9 @@ use entanglement_core::{
     content_text, stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, SessionId, ToolCall,
 };
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::tool_names::{AGENT_SEND_TOOL, AGENT_TOOL};
-use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
+use entanglement_runtime::tool_runner::ToolExecutor;
 
 /// Replays scripted responses in order, then plain text so the turn terminates.
 struct ScriptedLlm {
@@ -164,7 +163,6 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
-    let store = Arc::new(ExtraRootStore::ephemeral());
     let tools = entanglement_runtime::ToolRegistry::new();
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -178,10 +176,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         Some(root.to_path_buf()),
     ));
     let grants = Arc::new(InMemoryGrantStore::new());
-    let escape_root = EscapeRoot {
-        root: root.to_path_buf(),
-        store,
-    };
+    let project_root = root.to_path_buf();
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(profiles)
         .base(base)
@@ -189,7 +184,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         .perm_modes(perm_modes)
         .resolver(resolver)
         .grants(grants)
-        .escape_root(escape_root)
+        .root(project_root)
         .mode_table(Arc::new(
             entanglement_runtime::mode::ModeTable::builtin()
                 .expect("built-in permission modes must parse"),

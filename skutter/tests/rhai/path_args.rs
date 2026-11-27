@@ -45,7 +45,10 @@ async fn an_out_of_root_path_warns_on_the_one_launch_card() {
     let evil = root.parent().unwrap().join("evil.rhai");
     assert_eq!(seen.launch_cards.len(), 1);
     assert!(
-        seen.launch_cards[0].ends_with(&format!("OUTSIDE the project root: {}", evil.display())),
+        seen.launch_cards[0].ends_with(&format!(
+            "⚠ runs a script outside the project root: {}",
+            evil.display()
+        )),
         "{:?}",
         seen.launch_cards
     );

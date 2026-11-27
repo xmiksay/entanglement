@@ -44,8 +44,6 @@ use crate::tool_names::{
 };
 use crate::tools::SharedRegistry;
 
-use super::EscapeRoot;
-
 /// How the executor routes a `ToolExec`. The tool mask (#116, ADR-0038) that
 /// used to precede this classification is retired (ADR-0207 §8) — every
 /// route below grades from the session's permission mode instead.
@@ -160,7 +158,8 @@ pub(super) struct LadderCtx {
     pub mcp_active: ActiveServers,
     pub mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
     pub advertising: SharedAdvertisingState,
-    pub escape_root: Option<EscapeRoot>,
+    /// The project root path arguments grade relative to (ADR-0125).
+    pub grading_root: Option<std::path::PathBuf>,
     pub grants: Arc<dyn GrantStore>,
     pub mcp_http: Option<entanglement_core::HttpClient>,
     pub active_skill: Arc<Mutex<std::collections::HashSet<SessionId>>>,

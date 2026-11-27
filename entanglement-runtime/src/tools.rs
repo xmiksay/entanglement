@@ -67,11 +67,8 @@ pub trait Tool: Send + Sync {
     /// calls. Default delegates to [`run_content`][Tool::run_content], so an
     /// existing single-tenant tool is unaffected; a multi-tenant embedder's tool
     /// (e.g. one that picks a per-tenant `HttpClient`/DB scope by session) overrides
-    /// this instead. `request_id` (#449) is the calling `ToolExec`'s id — the
-    /// escape-root host tools (`read`/`edit`/`write`/`apply_patch`/`bash`)
-    /// override this to thread it into their `Once`-scoped grant consumption
-    /// ([`crate::extra_roots::ExtraRootStore::take_allowance`]), so a single-use
-    /// approval can only be spent by the exact call it was granted to.
+    /// this instead. `request_id` is the calling `ToolExec`'s id (a file
+    /// tool keys its per-write backup on it).
     async fn run_for_session(
         &self,
         _session: &SessionId,
@@ -140,9 +137,10 @@ pub trait Tool: Send + Sync {
         false
     }
 
-    /// Path grading (ADR-0109): the filesystem path a call would touch, for
-    /// the escape-root gate — an out-of-root one forces approval. Default:
-    /// none, so the call never trips the gate.
+    /// Path grading (ADR-0109): the filesystem path a call would touch —
+    /// what a head's own containment check judges the call by (`skutter`'s
+    /// escape-root check asks before an out-of-root one, #968; the library
+    /// keeps no containment of its own). Default: none.
     fn escape_target(&self, _input: &str) -> Option<String> {
         None
     }

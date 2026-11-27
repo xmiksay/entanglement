@@ -1,7 +1,7 @@
 //! Symlink-safe root containment (ADR-0054, #163): the one resolution the
-//! host tools enforce and the escape-root gate (ADR-0109) and the `rhai`
-//! launch check against, so a grant key (the resolved path) is identical on
-//! both sides.
+//! host tools run a path through and the escape-root check
+//! ([`super::escape`], ADR-0109) judges a call by, so the path a card names
+//! is the path the tool then touches.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -24,10 +24,9 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
 }
 
 /// The absolute out-of-root target `rel` resolves to under `root`, or `None`
-/// when `rel` stays contained (or can't be resolved at all). Used by the
-/// executor's escape-root gate (ADR-0109) to decide whether a call needs
-/// approval, matching the exact resolution the host tools use so the grant key
-/// (the resolved path) is identical on both sides.
+/// when `rel` stays contained (or can't be resolved at all). The escape-root
+/// check (ADR-0109) asks for exactly this path, matching the resolution the
+/// host tools use.
 pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
     match resolve_and_contained(root, rel) {
         Ok((abs, false)) => Some(abs),
@@ -39,8 +38,7 @@ pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
 /// canonicalization of the deepest existing ancestor (#163) — returning the
 /// absolute target and whether it stays contained under `root`. The containment
 /// flag is the AND of the lexical and canonical checks; a strict caller rejects
-/// `false`, an escape-root caller (ADR-0109) may still use the path after a grant
-/// check. A genuinely malformed path (a `..` popping past the filesystem root)
+/// `false`, a tool the escape-root check already cleared uses the path. A genuinely malformed path (a `..` popping past the filesystem root)
 /// is still a hard `Err`.
 pub fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
     // Canonicalize the root defensively so containment holds even when the head

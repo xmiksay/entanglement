@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use entanglement_core::Permission;
+use entanglement_core::{CardReason, Permission};
 use entanglement_runtime::http_gate::HttpGate;
 use entanglement_runtime::rhai_trust::TrustedFolders;
 
@@ -286,8 +286,11 @@ async fn doc_style_comments_never_break_a_script() {
     }
 }
 
+/// #968: the library keeps no root containment — with no escape-root
+/// check wrapped around the resolver, an out-of-root script grades like any
+/// other path (here: Run all) and runs.
 #[tokio::test]
-async fn without_an_escape_policy_an_out_of_root_path_is_refused() {
+async fn without_the_escape_check_an_out_of_root_path_grades_like_any_other() {
     let (_tmp, root) = fixture();
     let mut setup = ask(Launch::RunAll);
     setup.escape_root = false;
@@ -297,7 +300,13 @@ async fn without_an_escape_policy_an_out_of_root_path_is_refused() {
         setup,
     )
     .await;
-    assert!(seen.outputs[0].contains("escapes"), "{:?}", seen.outputs);
+    assert!(seen.outputs[0].contains('2'), "{:?}", seen.outputs);
+    assert!(
+        seen.cards
+            .iter()
+            .all(|c| c.reason != Some(CardReason::LaunchEscape)),
+        "no escape card without the check"
+    );
 }
 
 /// A relative `path` joins the session workdir: `add.rhai` from inside

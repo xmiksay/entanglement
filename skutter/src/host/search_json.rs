@@ -18,9 +18,8 @@
 
 use super::grep::{SkipReason, MAX_SCAN_BYTES};
 use super::walk::MAX_RESULTS;
-use super::{glob, list_files_with_extra_roots, FileList};
+use super::{glob, list_files, FileList};
 use crate::capability::Capability;
-use crate::extra_roots::ExtraRootStore;
 use crate::path_grading::SessionWorkdirs;
 use crate::tools::{CallGrading, Tool};
 use anyhow::{Context, Result};
@@ -29,7 +28,6 @@ use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 mod grep_json;
 pub use grep_json::GrepJsonTool;
@@ -161,7 +159,6 @@ struct GlobJsonInput {
 /// notice carries the why.
 pub struct GlobJsonTool {
     root: PathBuf,
-    extra_roots: Option<Arc<ExtraRootStore>>,
     workdirs: Option<SessionWorkdirs>,
 }
 
@@ -169,7 +166,6 @@ impl GlobJsonTool {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            extra_roots: None,
             workdirs: None,
         }
     }
@@ -178,13 +174,6 @@ impl GlobJsonTool {
     /// script's own relative paths resolve against it.
     pub fn with_workdirs(mut self, workdirs: SessionWorkdirs) -> Self {
         self.workdirs = Some(workdirs);
-        self
-    }
-
-    /// Ride the same durable `read` grants a direct `glob` search does
-    /// (#482/ADR-0132).
-    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
-        self.extra_roots = Some(extra);
         self
     }
 }
@@ -259,12 +248,7 @@ impl GlobJsonTool {
         let parsed: GlobJsonInput = serde_json::from_str(input)
             .context("invalid input to glob_json: expected {\"pattern\": string, ...}")?;
         let pattern = crate::host::glob::joined_pattern(parsed.path.as_deref(), &parsed.pattern);
-        let list = list_files_with_extra_roots(
-            &self.root,
-            &pattern,
-            &parsed.exclude,
-            self.extra_roots.as_deref(),
-        )?;
+        let list = list_files(&self.root, &pattern, &parsed.exclude)?;
         let files: Vec<serde_json::Value> = list
             .files
             .iter()

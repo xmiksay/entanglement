@@ -144,14 +144,16 @@ pub(crate) fn start(
     // can share this exact instance — its out-of-band notice and the
     // executor's staleness guard must agree on what the agent last knew.
     let plan_files = Arc::new(plan_files::PlanFileRegistry::new());
-    // Cloned before `escape_root` moves into the executor below — reused for
-    // the plans watcher's own root (#627).
+    // Cloned before the root moves into the executor below — reused for the
+    // plans watcher's own root (#627).
     let plan_root = escape_root.root.clone();
     // The `hooks:` section (#199) is skutter's own: the library runs no hooks
     // (#964). `pre_tool_use` wraps the resolver — `ModeResolver` over exactly
     // these `perm_modes`/`mode_table`/`tools`/ceiling, with root-relative arg
-    // normalization off `escape_root` (#485, ADR-0125) — and every other point
-    // is a watcher on the event stream, subscribed here before any prompt.
+    // normalization off the project root (#485, ADR-0125) — and every other
+    // point is a watcher on the event stream, subscribed here before any
+    // prompt. Outermost, the escape-root check (#968) asks before a call
+    // reaches outside the root.
     let hooks = Arc::new(hooks);
     let mode_resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
@@ -164,6 +166,12 @@ pub(crate) fn start(
         true => mode_resolver,
         false => Arc::new(HookResolver::new(mode_resolver, hooks.clone())),
     };
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(crate::host::EscapeResolver::new(
+        resolver,
+        escape_root.root.clone(),
+        escape_root.store.clone(),
+        tools.clone(),
+    ));
     let call_paths = crate::hooks::CallPaths {
         tools: tools.clone(),
         root: escape_root.root.clone(),
@@ -200,8 +208,8 @@ pub(crate) fn start(
         // re-read when the file changed, so another instance's counts at once.
         .grants(grants)
         .resolver(resolver)
-        // Escape-root approval (ADR-0109): the same store the host tools read.
-        .escape_root(escape_root)
+        // Path arguments grade root-relative (ADR-0125); plans live here.
+        .root(escape_root.root)
         // `mode_table` carries the `config.yml` `modes:` tuning; sandboxing
         // reads `perm_modes` directly, independent of this executor.
         .mode_table(mode_table)

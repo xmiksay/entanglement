@@ -1,44 +1,12 @@
-//! The caller-supplied policy inputs of
-//! [`super::ToolExecutor::builder`] (issue #712, split out of
-//! `tool_runner.rs`): the escape-root policy and the discovery surface.
-//! Re-exported at their pre-split paths (`tool_runner::EscapeRoot`/
-//! `DiscoverySurface`).
+//! The caller-supplied discovery inputs of [`super::ToolExecutor::builder`]
+//! (issue #712, split out of `tool_runner.rs`), re-exported at
+//! `tool_runner::DiscoverySurface`.
 
 use std::sync::Arc;
 
 use crate::arg_validate;
 use crate::mcp::{ActiveServers, AvailableMcp};
 use crate::tool_advertising::SharedAdvertisingState;
-
-/// Escape-root policy for the executor (ADR-0109): the canonical project `root`
-/// against which an out-of-root `read`/`edit`/`write` path or `bash`
-/// `workdir` is detected, plus the shared [`ExtraRootStore`] approvals are
-/// recorded into and the host tools read. `None` (the builder default, most tests)
-/// keeps strict containment — an out-of-root path is a hard error, never a
-/// prompt.
-///
-#[derive(Clone)]
-pub struct EscapeRoot {
-    pub root: std::path::PathBuf,
-    pub store: Arc<crate::extra_roots::ExtraRootStore>,
-}
-
-impl EscapeRoot {
-    /// The absolute out-of-root path a call to `tool` with `input` would touch,
-    /// or `None` when it stays contained (or the tool has no path argument —
-    /// [`crate::path_grading::escape_target`] asks the tool in `tools`).
-    /// `pub(crate)`: also called from [`crate::script`], whose bindings route
-    /// through this same gate (#446).
-    pub(crate) fn escaping(
-        &self,
-        tools: &crate::tools::ToolRegistry,
-        tool: &str,
-        input: &str,
-    ) -> Option<std::path::PathBuf> {
-        let rel = crate::path_grading::escape_target(tool, tools, input)?;
-        crate::path_grading::escaping_path(&self.root, &rel)
-    }
-}
 
 /// The discovery tools' shared inputs (ADR-0226), bundled into one
 /// struct — see [`super::ToolExecutorBuilder::discovery`].

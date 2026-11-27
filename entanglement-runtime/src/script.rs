@@ -14,7 +14,7 @@
 //! namespaces and each skill's `lib.rhai` as `skill::<skill>` — and every
 //! binding call climbs the **same dispatch seam** as a model-issued call
 //! ([`crate::tool_runner`]'s `Dispatcher`): mode grade, ceiling,
-//! grants, escape-root, argument validation, lazy MCP connect,
+//! grants, argument validation, lazy MCP connect,
 //! `FileChange` capture. Nested `rhai`, the `mcp` envelope and every
 //! runtime-owned tool are unreachable from a script.
 //!
@@ -137,8 +137,8 @@ fn send_binding(
 /// What a run needs beyond the [`Dispatcher`], snapshotted by the executor
 /// at launch.
 pub(crate) struct Launch {
-    /// The project root a relative script `path` resolves under when no
-    /// escape-root policy is wired (the policy's own root wins otherwise).
+    /// The project root a relative script `path` resolves under when the
+    /// executor has none wired (its own root wins otherwise).
     pub root: PathBuf,
     /// The skill registry whose `lib.rhai` modules this run registers.
     pub skills: Arc<SkillRegistry>,

@@ -107,8 +107,8 @@ mod tests {
     #[tokio::test]
     async fn a_cleared_or_unmatched_hook_keeps_the_inner_grade() {
         let s = SessionId::new("s");
-        let cleared = resolver("exit 0", &[], Grade::Ask);
-        assert_eq!(cleared.resolve(&s, "bash", "{}").await, Grade::Ask);
+        let cleared = resolver("exit 0", &[], Grade::Ask(None));
+        assert_eq!(cleared.resolve(&s, "bash", "{}").await, Grade::Ask(None));
         let scoped = resolver("exit 1", &["edit"], Grade::Allow);
         assert_eq!(scoped.resolve(&s, "bash", "{}").await, Grade::Allow);
         assert!(matches!(

@@ -4,9 +4,8 @@
 //! if present. Only writes under the working directory (path-escape rejected).
 //! See ADR-0031 (supersedes-by-addition of ADR-0008/0009).
 
-use super::resolve_under_root_or_grant;
+use super::resolve_path;
 use crate::capability::Capability;
-use crate::extra_roots::ExtraRootStore;
 use crate::file_backup::FileBackups;
 use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
@@ -15,7 +14,6 @@ use entanglement_core::protocol::FileChangeKind;
 use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::sync::Arc;
 
 type CanWriteCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
@@ -23,7 +21,6 @@ pub struct WriteTool {
     root: std::path::PathBuf,
     can_write: Option<CanWriteCallback>,
     /// Approval-gated out-of-root access (ADR-0109).
-    extra_roots: Option<Arc<ExtraRootStore>>,
     /// Per-write backups for undo/rewind (ADR-0212).
     backups: Option<FileBackups>,
 }
@@ -33,7 +30,6 @@ impl WriteTool {
         Self {
             root,
             can_write: None,
-            extra_roots: None,
             backups: None,
         }
     }
@@ -42,12 +38,6 @@ impl WriteTool {
     /// it (ADR-0212).
     pub fn with_backups(mut self, backups: FileBackups) -> Self {
         self.backups = Some(backups);
-        self
-    }
-
-    /// Permit approved out-of-root writes (ADR-0109) via the shared grant store.
-    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
-        self.extra_roots = Some(extra);
         self
     }
 
@@ -146,8 +136,7 @@ impl Tool for WriteTool {
 }
 
 impl WriteTool {
-    /// `request_id` (#449) is forwarded to the escape-root grant check so a
-    /// `Once` approval is only consumed by the call it was approved for.
+    /// `request_id` names the call in its backup record.
     /// `session` is `None` for a session-less `run`, which is never backed up.
     async fn write(
         &self,
@@ -157,13 +146,7 @@ impl WriteTool {
     ) -> Result<String> {
         let parsed: WriteInput = serde_json::from_str(input)
             .context("invalid input to write: expected {\"path\": string, \"content\": string}")?;
-        let target_abs = resolve_under_root_or_grant(
-            &self.root,
-            self.extra_roots.as_deref(),
-            "write",
-            request_id,
-            &parsed.path,
-        )?;
+        let target_abs = resolve_path(&self.root, &parsed.path)?;
 
         if let Some(ref can_write) = self.can_write {
             can_write(&parsed.path)?;
@@ -296,18 +279,6 @@ mod tests {
         assert!(out.contains("1 lines, was 3"), "got: {out}");
         let on_disk = fs::read_to_string(dir.path.join("a.txt")).unwrap();
         assert_eq!(on_disk, "only\n");
-    }
-
-    #[tokio::test]
-    async fn path_escape_is_refused() {
-        let dir = TempDir::new();
-        let tool = WriteTool::new(dir.path.clone());
-        let err = tool
-            .run(r#"{"path":"../escape.txt","content":"nope\n"}"#)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("escapes"), "got: {err}");
-        assert!(!dir.path.join("../escape.txt").exists());
     }
 
     #[tokio::test]

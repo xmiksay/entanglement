@@ -13,7 +13,6 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId, ToolCall,
 };
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::file_backup::FileBackups;
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
 use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
@@ -75,7 +74,6 @@ pub(crate) fn spawn_with(
     let tools = host_tools_with(
         work.to_path_buf(),
         HostToolOptions {
-            extra_roots: Some(Arc::new(ExtraRootStore::ephemeral())),
             backups: Some(backups),
             workdirs: None,
         },

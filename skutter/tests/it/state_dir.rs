@@ -11,18 +11,15 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use std::sync::Arc;
-
 use entanglement_core::{ApprovalScope, StoredAuth, TokenSet, TokenStore};
 use entanglement_runtime::aux_llm::Purpose;
-use entanglement_runtime::extra_roots::{AlwaysRoots, ExtraRootStore};
 use entanglement_runtime::mcp::McpToolCache;
 use serde_json::Value;
 use skutter::config::agent_generation::AgentGenerationStore;
 use skutter::config::agent_models::AgentModelStore;
 use skutter::config::aux_models::AuxModelsPath;
 use skutter::config::state_dir::{self, MCP_TOKENS_FILE, MCP_TOOLS_FILE, STATE_DIR_ENV};
-use skutter::state::{FileExtraRoots, FileMcpToolCache, McpTokenStore};
+use skutter::state::{ExtraRootStore, FileMcpToolCache, McpTokenStore};
 
 use crate::skutter_cmd::isolated_skutter;
 
@@ -135,9 +132,11 @@ fn seed_pins(dir: &Path) {
     AuxModelsPath::at(file(state_dir::AUX_MODELS_FILE))
         .record(Purpose::Narrate, "zai", PROBE)
         .unwrap();
-    FileExtraRoots::at(file(state_dir::EXTRA_ROOTS_FILE))
-        .add("read", "/state-dir-probe")
-        .unwrap();
+    ExtraRootStore::at(file(state_dir::EXTRA_ROOTS_FILE)).record(
+        "read",
+        Path::new("/state-dir-probe"),
+        ApprovalScope::Always,
+    );
 }
 
 /// The pin and escape-root stores (#967), seeded through each store's
@@ -170,12 +169,8 @@ fn the_state_dir_relocates_the_pin_and_escape_root_files() {
         "the child ran no test: {stdout}"
     );
     // The store recorded into the same file.
-    assert_eq!(
-        FileExtraRoots::at(Some(dir.path().join(state_dir::EXTRA_ROOTS_FILE)))
-            .load()
-            .len(),
-        2
-    );
+    let file = ExtraRootStore::at(Some(dir.path().join(state_dir::EXTRA_ROOTS_FILE)));
+    assert!(file.is_durably_allowed("read", Path::new("/second")));
 }
 
 /// The child half of the test above: only meaningful with the state dir set.
@@ -189,12 +184,11 @@ fn pins_follow_the_state_dir() {
     let agent_models = AgentModelStore::load();
     let agent_generation = AgentGenerationStore::load();
     let aux = AuxModelsPath::managed().load();
-    let extra_roots =
-        ExtraRootStore::ephemeral().with_always_roots(Arc::new(FileExtraRoots::managed()));
+    let extra_roots = ExtraRootStore::managed();
 
     assert_eq!(agent_models.get(PROBE), Some(("zai", "glm-5.3")));
     assert!(agent_generation.get(PROBE).is_some());
     assert_eq!(aux.get(Purpose::Narrate), Some(("zai", PROBE)));
     assert!(extra_roots.is_durably_allowed("read", Path::new("/state-dir-probe")));
-    extra_roots.record("read", Path::new("/second"), ApprovalScope::Always, "r");
+    extra_roots.record("read", Path::new("/second"), ApprovalScope::Always);
 }

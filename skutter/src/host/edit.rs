@@ -2,9 +2,8 @@
 //! (refused if exists); non-unique match errors unless `replaceAll` is set.
 //! Only writes under the working directory (path-escape rejected).
 
-use super::resolve_under_root_or_grant;
+use super::resolve_path;
 use crate::capability::Capability;
-use crate::extra_roots::ExtraRootStore;
 use crate::file_backup::FileBackups;
 use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
@@ -13,7 +12,6 @@ use entanglement_core::protocol::FileChangeKind;
 use entanglement_core::{ContentPart, SessionId};
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::sync::Arc;
 
 type CanEditCallback = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
 
@@ -21,7 +19,6 @@ pub struct EditTool {
     root: std::path::PathBuf,
     can_edit: Option<CanEditCallback>,
     /// Approval-gated out-of-root access (ADR-0109).
-    extra_roots: Option<Arc<ExtraRootStore>>,
     /// Per-write backups for undo/rewind (ADR-0212).
     backups: Option<FileBackups>,
 }
@@ -31,7 +28,6 @@ impl EditTool {
         Self {
             root,
             can_edit: None,
-            extra_roots: None,
             backups: None,
         }
     }
@@ -40,12 +36,6 @@ impl EditTool {
     /// it (ADR-0212).
     pub fn with_backups(mut self, backups: FileBackups) -> Self {
         self.backups = Some(backups);
-        self
-    }
-
-    /// Permit approved out-of-root edits (ADR-0109) via the shared grant store.
-    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
-        self.extra_roots = Some(extra);
         self
     }
 
@@ -150,8 +140,7 @@ impl Tool for EditTool {
 }
 
 impl EditTool {
-    /// `request_id` (#449) is forwarded to the escape-root grant check so a
-    /// `Once` approval is only consumed by the call it was approved for.
+    /// `request_id` names the call in its backup record.
     /// `session` is `None` for a session-less `run`, which is never backed up.
     async fn edit(
         &self,
@@ -161,13 +150,7 @@ impl EditTool {
     ) -> Result<String> {
         let parsed: EditInput = serde_json::from_str(input)
             .context("invalid input to edit: expected {\"path\": string, \"oldString\": string, \"newString\": string, ...}")?;
-        let target_abs = resolve_under_root_or_grant(
-            &self.root,
-            self.extra_roots.as_deref(),
-            "edit",
-            request_id,
-            &parsed.path,
-        )?;
+        let target_abs = resolve_path(&self.root, &parsed.path)?;
 
         if let Some(ref can_edit) = self.can_edit {
             can_edit(&parsed.path)?;
@@ -385,17 +368,17 @@ mod tests {
         assert_eq!(rec.hash, format!("{:x}", Sha256::digest(b"body\n")));
     }
 
+    /// #968: the escape-root check asks before an out-of-root path reaches
+    /// the tool, so the tool itself runs whatever path it is given.
     #[tokio::test]
-    async fn path_escaping_root_is_rejected() {
+    async fn an_out_of_root_path_is_the_escape_checks_question() {
         let dir = tmp();
-        let tool = EditTool::new(dir.path().to_path_buf());
-        let err = tool
-            .run(r#"{"path":"../x","oldString":"","newString":"y"}"#)
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let tool = EditTool::new(root);
+        tool.run(r#"{"path":"../x","oldString":"","newString":"y"}"#)
             .await
-            .unwrap_err();
-        assert!(
-            format!("{err}").contains("escapes working directory"),
-            "{err}"
-        );
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("x")).unwrap(), "y");
     }
 }

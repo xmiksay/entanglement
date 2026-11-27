@@ -1,7 +1,7 @@
 //! A session whose model makes a scripted series of tool calls (`rhai`, or
 //! any host tool via [`run_calls`]), wired the
 //! way `engine_setup` wires the executor (real grants, mode resolver,
-//! optional escape-root policy, ceiling, workdir,
+//! optional escape-root check, ceiling, workdir,
 //! `rhai.trusted`, credentialed `http()`) — the shared harness of the ADR-0228 launch tests.
 
 use std::collections::HashMap;
@@ -13,7 +13,6 @@ use entanglement_core::{
     ApprovalScope, CardReason, EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission,
     PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::http_gate::HttpGate;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::path_grading::SessionWorkdirs;
@@ -23,9 +22,9 @@ use entanglement_runtime::policy::{
 use entanglement_runtime::rhai_trust::TrustedFolders;
 use entanglement_runtime::skills::{LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
-use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
-use entanglement_runtime::workdir;
-use skutter::host::{host_tools_with, HostToolOptions};
+use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::host::{host_tools_with, workdir, EscapeResolver, HostToolOptions};
+use skutter::state::ExtraRootStore;
 
 use super::ScriptedLlm;
 
@@ -64,15 +63,15 @@ pub struct Seen {
     pub cards: Vec<Card>,
     /// The tool of every live `NestedCall` report (ADR-0233), in order.
     pub nested_calls: Vec<String>,
-    /// The escape-root grant store the run recorded into.
-    pub store: Arc<ExtraRootStore>,
+    /// The grant store the run's approvals recorded into.
+    pub grants: Arc<dyn GrantStore>,
 }
 
 /// The executor's variable inputs.
 pub struct Setup {
     pub table: Arc<ModeTable>,
     pub launch: Launch,
-    /// Wire the escape-root policy (as `main.rs` does).
+    /// Wrap the resolver in the escape-root check (as `services` does).
     pub escape_root: bool,
     /// The session's workdir, relative to the root.
     pub workdir: Option<&'static str>,
@@ -192,7 +191,6 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
     let mut tools = host_tools_with(
         root.to_path_buf(),
         HostToolOptions {
-            extra_roots: setup.escape_root.then(|| store.clone()),
             backups: None,
             workdirs: Some(workdirs.clone()),
         },
@@ -201,32 +199,35 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
     let tools = tools.shared();
     let base = setup.ceiling.clone();
     let modes = Arc::new(Mutex::new(HashMap::new()));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+    let mut resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         modes.clone(),
         setup.table.clone(),
         tools.clone(),
         base.clone(),
         Some(root.to_path_buf()),
     ));
+    if setup.escape_root {
+        resolver = Arc::new(EscapeResolver::new(
+            resolver,
+            root.to_path_buf(),
+            store.clone(),
+            tools.clone(),
+        ));
+    }
     let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
-    let mut builder = ToolExecutor::builder(&holly, tools)
+    let builder = ToolExecutor::builder(&holly, tools)
         .agents(agents)
         .base(base)
         .perm_modes(modes)
         .resolver(resolver)
-        .grants(grants)
+        .grants(grants.clone())
         .workdirs(workdirs)
         .http_gate(setup.gate)
         .rhai_trusted(setup.trusted)
         .skill_dirs(setup.skill_dirs)
         .live_skills(skills)
-        .mode_table(setup.table);
-    if setup.escape_root {
-        builder = builder.escape_root(EscapeRoot {
-            root: root.to_path_buf(),
-            store: store.clone(),
-        });
-    }
+        .mode_table(setup.table)
+        .root(root.to_path_buf());
     let _executor = builder.spawn();
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
@@ -270,7 +271,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         outputs: Vec::new(),
         cards: Vec::new(),
         nested_calls: Vec::new(),
-        store,
+        grants,
     };
     while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(10), sub.recv()).await {
         if ev.session() != Some(&sid) {

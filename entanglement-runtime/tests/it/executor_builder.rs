@@ -3,7 +3,7 @@
 //! replaces, and a `.grants(..)` seam is actually wired through to the
 //! dispatch path. The other seams have their own suites over the builder:
 //! `.resolver`/custom `.grants` in `policy_seam.rs`,
-//! `.escape_root` in `permission_dispatch.rs`, `.mcp_scopes` in `mcp_scoped.rs`.
+//! `.root` in `permission_dispatch.rs`, `.mcp_scopes` in `mcp_scoped.rs`.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};

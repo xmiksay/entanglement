@@ -1,23 +1,24 @@
-//! Session working directories end to end (#764, ADR-0224): the runtime's
+//! Session working directories end to end (#764, ADR-0224): `skutter`'s
 //! resolver validates `/cd`, the executor runs `bash`/`rhai` there and
-//! resolves relative path arguments against it, while grading, containment
-//! and the escape-root gate keep seeing root-relative paths.
+//! resolves relative path arguments against it, while grading and the
+//! escape-root check (#968) keep seeing root-relative paths.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use entanglement_core::PermissionProfile;
 use entanglement_core::{
     stream_from_response, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, Permission, SessionId, ToolCall,
 };
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::path_grading::SessionWorkdirs;
-use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
-use entanglement_runtime::workdir;
-use skutter::host::{host_tools_with, BashTool, HostToolOptions};
+use entanglement_runtime::policy::{ModeResolver, PermissionResolver};
+use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::host::{host_tools_with, workdir, BashTool, EscapeResolver, HostToolOptions};
+use skutter::state::ExtraRootStore;
 use tokio::sync::broadcast::Receiver;
 
 use crate::mode_support::{allow_all_table, perm_modes};
@@ -93,19 +94,32 @@ fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harness {
     let mut reg = host_tools_with(
         root.clone(),
         HostToolOptions {
-            extra_roots: Some(store.clone()),
             backups: None,
             workdirs: Some(workdirs.clone()),
         },
     );
-    reg.register(BashTool::new(root.clone()).with_extra_roots(store.clone()));
-    let _executor = ToolExecutor::builder(&holly, reg.shared())
-        .perm_modes(perm_modes())
+    reg.register(BashTool::new(root.clone()));
+    let tools = reg.shared();
+    let modes = perm_modes();
+    // As `services` wires it: the mode grade, wrapped in the escape-root
+    // check over the same store `/cd` records into.
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(EscapeResolver::new(
+        Arc::new(ModeResolver::new(
+            modes.clone(),
+            mode_table.clone(),
+            tools.clone(),
+            PermissionProfile::new(Permission::Allow),
+            Some(root.clone()),
+        )),
+        root.clone(),
+        store,
+        tools.clone(),
+    ));
+    let _executor = ToolExecutor::builder(&holly, tools)
+        .perm_modes(modes)
         .mode_table(mode_table)
-        .escape_root(EscapeRoot {
-            root: root.clone(),
-            store,
-        })
+        .resolver(resolver)
+        .root(root.clone())
         .workdirs(workdirs)
         .spawn();
     Harness {
@@ -335,7 +349,7 @@ async fn a_workdir_outside_the_root_needs_an_approval_once() {
 }
 
 /// Containment is re-checked at every use (ADR-0054): a workdir swapped for a
-/// symlink out of the root after `/cd` trips the escape-root gate.
+/// symlink out of the root after `/cd` trips the escape-root check.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_workdir_swapped_for_a_symlink_is_caught_at_use() {
@@ -351,7 +365,7 @@ async fn a_workdir_swapped_for_a_symlink_is_caught_at_use() {
     let events = h.turn().await;
     let asked = requests(&events);
     assert!(
-        asked.len() == 1 && asked[0].contains("OUTSIDE the project root"),
+        asked.len() == 1 && asked[0].contains("outside the project root"),
         "{asked:?}"
     );
     let (out, is_error) = output(&events, "b");
@@ -393,7 +407,7 @@ async fn a_file_tool_in_an_approved_outside_workdir_still_asks() {
     let events = h.turn().await;
     let asked = requests(&events);
     assert!(
-        asked.len() == 1 && asked[0].contains("OUTSIDE the project root"),
+        asked.len() == 1 && asked[0].contains("outside the project root"),
         "{asked:?}"
     );
     let (out, is_error) = output(&events, "r");

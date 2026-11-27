@@ -60,7 +60,7 @@ mod inputs;
 mod lifecycle;
 mod wrappers;
 pub use builder::{ToolExecutor, ToolExecutorBuilder};
-pub use inputs::{DiscoverySurface, EscapeRoot};
+pub use inputs::DiscoverySurface;
 #[allow(deprecated)]
 pub use wrappers::{spawn_tool_executor, spawn_tool_executor_with_policy};
 
@@ -109,7 +109,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         perm_modes,
         resolver,
         grants,
-        escape_root,
+        root,
         mode_table,
         plan_files,
         mcp_scopes,
@@ -131,7 +131,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             mode_table.clone(),
             tools.clone(),
             base,
-            escape_root.as_ref().map(|er| er.root.clone()),
+            root.clone(),
         ))
     });
     let grants = grants.unwrap_or_else(|| Arc::new(crate::policy::InMemoryGrantStore::new()));
@@ -186,20 +186,14 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         // on session end/hibernate.
         let denials = Arc::new(run_limits::DenialTracker::new());
         // The project root `propose_plan` materializes/resolves plan files
-        // against (#513): the same canonical root `escape_root` carries when
-        // wired (every full head). A wrapper with no escape-root policy (test
-        // helpers, a lean embedder) falls back to the process cwd — fine there
-        // since none of those callers exercise `propose_plan` against a shared
-        // working tree.
-        let plan_root: std::path::PathBuf = escape_root
-            .as_ref()
-            .map(|er| er.root.clone())
-            .unwrap_or_else(|| {
-                // Canonical, like an escape root: a script `path` is graded
-                // root-relative by stripping it (ADR-0228).
-                let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-                cwd.canonicalize().unwrap_or(cwd)
-            });
+        // against (#513): the builder's `root` when wired (every full head).
+        // A lean embedder with none falls back to the process cwd.
+        let plan_root: std::path::PathBuf = root.clone().unwrap_or_else(|| {
+            // Canonical, like a wired root: a script `path` is graded
+            // root-relative by stripping it (ADR-0228).
+            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            cwd.canonicalize().unwrap_or(cwd)
+        });
         // Answer + timing per launched sub-agent, keyed by its handle (#89).
         // Shared with the detached launch watchers and `poll` tasks (#605).
         let registry = crate::agent_registry::AgentRegistry::default();
@@ -256,7 +250,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             mcp_active,
             mcp_scopes,
             advertising,
-            escape_root,
+            grading_root: root,
             grants,
             mcp_http,
             active_skill,

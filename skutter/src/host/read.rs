@@ -3,19 +3,16 @@
 //! (detected by extension) comes back as a base64 image **content block** the
 //! provider renders to its native image format (#221).
 
-use super::resolve_under_root_or_grant;
+use super::resolve_path;
 use crate::capability::Capability;
-use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
-use crate::path_grading::resolve_under_root;
 use crate::tools::{ArgKind, CallGrading, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
-use entanglement_core::{ContentPart, SessionId};
+use entanglement_core::ContentPart;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::sync::Arc;
 
 /// Map an image file extension to its IANA media type, or `None` for a
 /// non-image. Only the formats the model providers accept inline (Anthropic's
@@ -40,9 +37,6 @@ type OnReadCallback = Box<dyn Fn(String, Vec<u8>) + Send + Sync>;
 pub struct ReadTool {
     root: std::path::PathBuf,
     on_read: Option<OnReadCallback>,
-    /// Approval-gated out-of-root access (ADR-0109). `None` keeps strict
-    /// containment (standalone/test constructors).
-    extra_roots: Option<Arc<ExtraRootStore>>,
 }
 
 impl ReadTool {
@@ -50,14 +44,7 @@ impl ReadTool {
         Self {
             root,
             on_read: None,
-            extra_roots: None,
         }
-    }
-
-    /// Permit approved out-of-root reads (ADR-0109) via the shared grant store.
-    pub fn with_extra_roots(mut self, extra: Arc<ExtraRootStore>) -> Self {
-        self.extra_roots = Some(extra);
-        self
     }
 
     #[allow(dead_code)]
@@ -137,39 +124,22 @@ impl Tool for ReadTool {
         })
     }
     async fn run(&self, input: &str) -> Result<String> {
-        self.read_text("", input).await
+        self.read_text(input).await
     }
 
     /// An image file (by extension) is base64-encoded into an image content block
     /// the provider renders natively (#221); `offset`/`limit` don't apply. Every
     /// other file takes the text path via [`run`][Self::run].
     async fn run_content(&self, input: &str) -> Result<Vec<ContentPart>> {
-        self.read_content("", input).await
-    }
-
-    async fn run_for_session(
-        &self,
-        _session: &SessionId,
-        request_id: &str,
-        input: &str,
-    ) -> Result<Vec<ContentPart>> {
-        self.read_content(request_id, input).await
+        self.read_content(input).await
     }
 }
 
 impl ReadTool {
-    /// `request_id` (#449) is forwarded to the escape-root grant check so a
-    /// `Once` approval is only consumed by the call it was approved for.
-    async fn read_text(&self, request_id: &str, input: &str) -> Result<String> {
+    async fn read_text(&self, input: &str) -> Result<String> {
         let parsed: ReadInput = serde_json::from_str(input)
             .context("invalid input to read: expected {\"path\": string, ...}")?;
-        let full = resolve_under_root_or_grant(
-            &self.root,
-            self.extra_roots.as_deref(),
-            "read",
-            request_id,
-            &parsed.path,
-        )?;
+        let full = resolve_path(&self.root, &parsed.path)?;
         let bytes = tokio::fs::read(&full)
             .await
             .with_context(|| format!("reading {}", parsed.path))?;
@@ -196,21 +166,13 @@ impl ReadTool {
         Ok(truncate_output(out))
     }
 
-    async fn read_content(&self, request_id: &str, input: &str) -> Result<Vec<ContentPart>> {
+    async fn read_content(&self, input: &str) -> Result<Vec<ContentPart>> {
         let parsed: ReadInput = serde_json::from_str(input)
             .context("invalid input to read: expected {\"path\": string, ...}")?;
         let Some(media_type) = image_media_type(&parsed.path) else {
-            return Ok(crate::tools::text_parts(
-                self.read_text(request_id, input).await?,
-            ));
+            return Ok(crate::tools::text_parts(self.read_text(input).await?));
         };
-        let full = resolve_under_root_or_grant(
-            &self.root,
-            self.extra_roots.as_deref(),
-            "read",
-            request_id,
-            &parsed.path,
-        )?;
+        let full = resolve_path(&self.root, &parsed.path)?;
         let bytes = tokio::fs::read(&full)
             .await
             .with_context(|| format!("reading {}", parsed.path))?;
@@ -275,8 +237,7 @@ impl Tool for ReadRawTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: ReadRawInput = serde_json::from_str(input)
             .context("invalid input to read_raw: expected {\"path\": string}")?;
-        // `read_raw` is rhai-internal; it stays strictly root-contained.
-        let full = resolve_under_root(&self.root, &parsed.path)?;
+        let full = resolve_path(&self.root, &parsed.path)?;
         let bytes = tokio::fs::read(&full)
             .await
             .with_context(|| format!("reading {}", parsed.path))?;
@@ -409,15 +370,24 @@ mod tests {
         assert_eq!(recorded[0].1, bytes);
     }
 
+    /// #968: the escape-root check asks before an out-of-root path reaches
+    /// the tool, so both read variants read whatever path they are given.
     #[tokio::test]
-    async fn path_escaping_root_is_rejected() {
+    async fn an_out_of_root_path_is_the_escape_checks_question() {
         let dir = tmp();
-        let tool = ReadTool::new(dir.path().to_path_buf());
-        let err = tool.run(r#"{"path":"../secret"}"#).await.unwrap_err();
-        assert!(
-            format!("{err}").contains("escapes working directory"),
-            "{err}"
-        );
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(dir.path().join("outer"), "x\n").unwrap();
+        let out = ReadTool::new(root.clone())
+            .run(r#"{"path":"../outer"}"#)
+            .await
+            .unwrap();
+        assert_eq!(out, "1: x\n");
+        let raw = ReadRawTool::new(root)
+            .run(r#"{"path":"../outer"}"#)
+            .await
+            .unwrap();
+        assert_eq!(raw, "x\n");
     }
 
     #[tokio::test]
@@ -451,16 +421,5 @@ mod tests {
         let tool = ReadRawTool::new(dir.path().to_path_buf());
         let out = tool.run(r#"{"path":"cfg.json"}"#).await.unwrap();
         assert_eq!(out, r#"{"a":1}"#);
-    }
-
-    #[tokio::test]
-    async fn read_raw_path_escaping_root_is_rejected() {
-        let dir = tmp();
-        let tool = ReadRawTool::new(dir.path().to_path_buf());
-        let err = tool.run(r#"{"path":"../secret"}"#).await.unwrap_err();
-        assert!(
-            format!("{err}").contains("escapes working directory"),
-            "{err}"
-        );
     }
 }

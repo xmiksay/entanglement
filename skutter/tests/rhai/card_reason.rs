@@ -2,7 +2,7 @@
 //! `scopes` advertise only what an `Approve` honors (#836, #846) — a head
 //! decides on data, never on the card text.
 
-use entanglement_core::{ApprovalScope, CardReason, Permission};
+use entanglement_core::{ApprovalScope, CardReason, Permission, SessionId};
 use serde_json::json;
 
 use super::launch_harness::{fixture, run, run_calls, table, Card, Launch, Setup, ADD};
@@ -94,7 +94,7 @@ async fn ordinary_and_escape_cards_keep_every_scope() {
 }
 
 /// A wire `Always` on a `[once]` card is clamped to `Once`: a floored write
-/// outside the root runs once and leaves no durable escape grant.
+/// outside the root runs once and leaves no grant.
 #[tokio::test]
 async fn a_wire_scope_the_card_did_not_offer_is_clamped_to_once() {
     let (_tmp, root) = fixture();
@@ -116,8 +116,11 @@ async fn a_wire_scope_the_card_did_not_offer_is_clamped_to_once() {
         "1",
         "it ran once"
     );
+    let arg = target.to_string_lossy();
     assert!(
-        !seen.store.is_durably_allowed("write", &target),
-        "no durable escape grant from an unoffered scope"
+        !seen
+            .grants
+            .is_granted(&SessionId::new("s1"), "write", Some(&arg), "build"),
+        "no grant from an unoffered scope"
     );
 }

@@ -19,10 +19,9 @@ use entanglement_core::{
     OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::agents::built_in_registry;
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::policy::{ModeResolver, PermissionResolver};
-use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
+use entanglement_runtime::tool_runner::ToolExecutor;
 use skutter::hooks::{CallPaths, HookResolver, HookSpec, Hooks};
 use skutter::host::host_tools;
 use tokio::task::JoinHandle;
@@ -369,10 +368,7 @@ fn wire_trusted(
         .base(allow_all())
         .perm_modes(modes)
         .mode_table(table)
-        .escape_root(EscapeRoot {
-            root,
-            store: Arc::new(ExtraRootStore::ephemeral()),
-        })
+        .root(root)
         .rhai_trusted(trusted)
         .resolver(Arc::new(HookResolver::new(inner, hooks)))
         .spawn();

@@ -9,14 +9,14 @@ use entanglement_core::{AgentCatalog, EngineConfig};
 use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 
 use crate::factories::build_model_resolver;
+use crate::host::escape::EscapeRoot;
 use crate::mode::ModeTable;
 use crate::providers::select_provider;
-use crate::tool_runner::EscapeRoot;
 
 pub(crate) mod default_tools;
 use crate::{
-    config, extra_roots, file_backup, host, jobs, mcp, path_grading, retained_output, script_ops,
-    skills, subagent, tool_advertising, workdir, SharedRegistry,
+    config, file_backup, host, jobs, mcp, path_grading, retained_output, script_ops, skills,
+    subagent, tool_advertising, SharedRegistry,
 };
 use default_tools::{register_default_tools, register_session_tools, DefaultTools};
 
@@ -133,14 +133,12 @@ pub(crate) async fn build_config(
     // the model is steered toward over `/tmp` (see `system_prompt`'s env
     // block) — a general-purpose scratch carve-out.
     let scratch_base = crate::user_dirs::session_store(&root).scratch_dir().ok();
-    // Escape-root approval store (ADR-0109): shared by the host tools (which
-    // consult it to relax containment for an approved out-of-root path) and the
-    // tool executor (which forces an approval prompt on a first out-of-root
-    // access and records the grant here). The scratch dir itself is
-    // pre-trusted (#524, ADR-0142): every path under it is durably allowed with
-    // no grant, for every tool, in every profile.
-    let mut extra_root_store = extra_roots::ExtraRootStore::ephemeral()
-        .with_always_roots(Arc::new(crate::state::FileExtraRoots::managed()));
+    // Escape-root grants (ADR-0109, #968): what `/cd` records and the
+    // escape-root check (`host::EscapeResolver`, wrapped around the resolver
+    // in `services`) lets through without asking. The scratch dir itself is
+    // pre-trusted (#524, ADR-0142): every path under it is durably allowed
+    // with no grant, for every tool, in every mode.
+    let mut extra_root_store = crate::state::ExtraRootStore::managed();
     if let Some(scratch) = &scratch_base {
         extra_root_store = extra_root_store.with_scratch(scratch.clone());
     }
@@ -148,7 +146,7 @@ pub(crate) async fn build_config(
     // Session working directories (#764, ADR-0224): core validates a
     // `/cd` through this seam (same root + escape-root store the host tools
     // check), and the executor's per-session view feeds the search tools.
-    cfg.workdir_resolver = Some(workdir::resolver(
+    cfg.workdir_resolver = Some(host::workdir::resolver(
         root.clone(),
         Some(extra_root_store.clone()),
     ));
@@ -175,7 +173,6 @@ pub(crate) async fn build_config(
         root.clone(),
         DefaultTools {
             host: host::HostToolOptions {
-                extra_roots: Some(extra_root_store.clone()),
                 backups: Some(file_backups),
                 workdirs: Some(workdirs.clone()),
             },

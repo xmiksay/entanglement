@@ -16,17 +16,16 @@ use entanglement_core::{
     LlmRequest, LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId,
     ToolCall,
 };
-use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
     GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
-use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
-use skutter::host::{
-    host_tools, host_tools_with_extra_roots, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool,
-};
+use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::host::EscapeResolver;
+use skutter::host::{host_tools, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool};
+use skutter::state::ExtraRootStore;
 
 // ADR-0227's unified binding path: FileChange from a script, the generated
 // `mcp::` namespace against a stub server, `http()` grading.
@@ -352,17 +351,16 @@ fn spawn_with_rhai_exec_and_base(
     holly
 }
 
-/// [`spawn_with_rhai`], but wires the escape-root policy (ADR-0109) into both
-/// the host-tool registry and the executor (mirroring `main.rs`'s wiring, #446)
-/// instead of `ToolExecutor::builder`'s no-escape-policy default — so a binding
-/// targeting a path outside `root` is gated by the approval-and-record flow
-/// instead of a hard containment refusal. Returns the `Holly` plus the
-/// in-memory [`ExtraRootStore`] so a test can pre-seed or inspect grants.
+/// [`spawn_with_rhai`], but wraps the resolver in `skutter`'s escape-root
+/// check (ADR-0109, #968; mirroring `services`'s wiring) — so a binding
+/// targeting a path outside `root` asks first. Returns the `Holly`, the
+/// in-memory [`ExtraRootStore`] (to pre-seed durable entries) and the grant
+/// store (to inspect what an approval earned).
 fn spawn_with_rhai_escape(
     script: &str,
     root: &std::path::Path,
     agents: AgentCatalog,
-) -> (Holly, Arc<ExtraRootStore>) {
+) -> (Holly, Arc<ExtraRootStore>, Arc<dyn GrantStore>) {
     let input = serde_json::json!({ "script": script }).to_string();
     let scripted = Arc::new(vec![
         LlmResponse {
@@ -391,35 +389,36 @@ fn spawn_with_rhai_escape(
     let holly = Holly::spawn(cfg);
     answer_launch_cards(&holly);
     let store = Arc::new(ExtraRootStore::ephemeral());
-    let mut tools = host_tools_with_extra_roots(root.to_path_buf(), Some(store.clone()));
+    let mut tools = host_tools(root.to_path_buf());
     tools.register(ReadRawTool::new(root.to_path_buf()));
     let base = PermissionProfile::new(Permission::Allow);
     let active = Arc::new(Mutex::new(HashMap::new()));
     let modes = perm_modes();
     let shared_tools = tools.shared();
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
-        modes.clone(),
-        allow_all_table(),
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(EscapeResolver::new(
+        Arc::new(ModeResolver::new(
+            modes.clone(),
+            allow_all_table(),
+            shared_tools.clone(),
+            base.clone(),
+            Some(root.to_path_buf()),
+        )),
+        root.to_path_buf(),
+        store.clone(),
         shared_tools.clone(),
-        base.clone(),
-        Some(root.to_path_buf()),
     ));
     let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
-    let escape_root = EscapeRoot {
-        root: root.to_path_buf(),
-        store: store.clone(),
-    };
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(agents)
         .base(base)
         .active(active)
         .perm_modes(modes)
         .resolver(resolver)
-        .grants(grants)
-        .escape_root(escape_root)
+        .grants(grants.clone())
+        .root(root.to_path_buf())
         .mode_table(allow_all_table())
         .spawn();
-    (holly, store)
+    (holly, store, grants)
 }
 
 /// A single primary profile named for the caller's scenario — grading itself
@@ -783,32 +782,9 @@ async fn binding_edit_delegates_and_root_contains() {
     );
 }
 
-#[tokio::test]
-async fn root_escape_is_refused_by_the_binding() {
-    let dir = TempDir::new("escape");
-    // The read binding delegates to the host tool, whose `..` guard refuses the
-    // escape — the failure surfaces to the script as the tool's message.
-    let holly = spawn_with_rhai(
-        r#"read("../outside.txt")"#,
-        &dir.path,
-        one_profile("build", PermissionProfile::new(Permission::Allow)),
-    );
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    prompt(&holly, &sid, "build").await;
-    let events = collect(sub, &sid).await;
-
-    let out = rhai_output(&events).expect("expected rhai output");
-    assert!(
-        out.contains("escapes working directory"),
-        "root escape must be refused; got {out}"
-    );
-}
-
-/// #446: with the escape-root policy wired (unlike the test above), a binding
-/// targeting an out-of-root path is no longer a hard refusal — it forces an
-/// approval carrying the ADR-0109 warning, and on approval both runs the call
-/// and durably records the grant.
+/// #446, #968: with the escape-root check wired, a binding targeting an
+/// out-of-root path asks with the ADR-0109 warning, and on approval both
+/// runs the call and records a mode-scoped grant on its `(tool, path)`.
 #[tokio::test]
 async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
     let dir = TempDir::new("escape-approve");
@@ -817,7 +793,7 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
     let rel = format!("../{outside_name}/f.txt");
     let script = format!(r#"write("{rel}", "hello world\n")"#);
 
-    let (holly, store) = spawn_with_rhai_escape(
+    let (holly, _store, grants) = spawn_with_rhai_escape(
         &script,
         &dir.path,
         one_profile("build", PermissionProfile::new(Permission::Allow)),
@@ -840,7 +816,7 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
         } = &ev
         {
             assert!(
-                input.contains("OUTSIDE the project root"),
+                input.contains("outside the project root"),
                 "escaping binding call must carry the ADR-0109 warning; got {input}"
             );
             saw_warning = true;
@@ -868,10 +844,9 @@ async fn escape_root_wired_prompts_with_warning_and_runs_on_approve() {
         "hello world\n",
         "the approved binding call wrote outside the project root"
     );
-    let canonical_target = outside.path.canonicalize().unwrap().join("f.txt");
     assert!(
-        store.is_durably_allowed("write", &canonical_target),
-        "the Session-scoped approval must be recorded into the ExtraRootStore"
+        grants.is_granted(&sid, "write", Some(&rel), "build"),
+        "the Session-scoped approval must be recorded as a grant on (write, {rel})"
     );
 }
 
@@ -887,13 +862,13 @@ async fn pre_existing_durable_grant_is_honored_without_a_new_prompt() {
     let rel = format!("../{outside_name}/f.txt");
     let script = format!(r#"write("{rel}", "hello world\n")"#);
 
-    let (holly, store) = spawn_with_rhai_escape(
+    let (holly, store, _grants) = spawn_with_rhai_escape(
         &script,
         &dir.path,
         one_profile("build", PermissionProfile::new(Permission::Allow)),
     );
     let target = outside.path.canonicalize().unwrap().join("f.txt");
-    store.record("write", &target, ApprovalScope::Session, "pre-existing");
+    store.record("write", &target, ApprovalScope::Session);
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();

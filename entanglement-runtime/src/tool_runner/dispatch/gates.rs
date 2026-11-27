@@ -1,9 +1,7 @@
 //! The gate ladder every call climbs, model-issued or script-issued
 //! (ADR-0227): resolve the tool (lazy MCP connect), the `Control` bypass,
-//! mode grade + grants, the escape-root gate (ADR-0109), the
-//! credentialed-`http` gate — then run, refuse, or park for approval.
-
-use std::path::PathBuf;
+//! the resolver's grade + grants, the credentialed-`http` gate — then run,
+//! refuse, or park for approval.
 
 use entanglement_core::Permission;
 
@@ -16,11 +14,9 @@ use super::decision::Prompt;
 use super::grade::{grade_call, graded_name, GradeInputs};
 use super::{script, Call, Dispatcher, Outcome, Via};
 
-/// What [`Dispatcher::clear`] decided: run (with the out-of-root path a
-/// trusted / **Run all** script's call reaches — its single-use escape token
-/// is recorded just before the host tool runs), or refuse with the reason.
+/// What [`Dispatcher::clear`] decided: run, or refuse with the reason.
 pub(super) enum Cleared {
-    Run(Option<PathBuf>),
+    Run,
     Refused(String),
 }
 
@@ -44,10 +40,10 @@ impl Dispatcher {
         // and is never graded (a script never gets here — `unreachable`);
         // the spawning pair is the exception (ADR-0232), gated in [`Self::gate`].
         if capability::bypasses_grading(&call.tool, capability::capability_of(&call.tool, &tools)) {
-            return Some(self.execute(&tools, call, via, None).await);
+            return Some(self.execute(&tools, call, via).await);
         }
         Some(match self.clear(&tools, &call, via).await? {
-            Cleared::Run(escape_token) => self.execute(&tools, call, via, escape_token).await,
+            Cleared::Run => self.execute(&tools, call, via).await,
             Cleared::Refused(why) => Outcome::Refused(why),
         })
     }
@@ -59,54 +55,42 @@ impl Dispatcher {
     /// `Stop` unwound the park.
     pub(crate) async fn gate(&self, call: &Call) -> Option<Result<(), String>> {
         Some(match self.clear(&self.tools, call, Via::Model).await? {
-            Cleared::Run(_) => Ok(()),
+            Cleared::Run => Ok(()),
             Cleared::Refused(why) => Err(why),
         })
     }
 
-    /// Every gate short of execution: grade + grants, the mode deny,
-    /// escape-root, the credentialed-`http` gate, the unattended collapse and
-    /// the approval park. `None` when a `Stop` unwound the park.
+    /// Every gate short of execution: grade + grants, the resolver's deny,
+    /// the credentialed-`http` gate, the unattended collapse and the
+    /// approval park. `None` when a `Stop` unwound the park.
     async fn clear(&self, tools: &ToolRegistry, call: &Call, via: Via<'_>) -> Option<Cleared> {
         let (grade, arg) = self.grade(tools, &call.tool, &call.input).await;
         // ADR-0207 §4: absolute, no prompt — names the way out, or gives
         // the resolver's own reason (#964).
-        let perm = match grade {
+        let (perm, reason) = match grade {
             Grade::Deny(reason) => {
                 return Some(Cleared::Refused(deny_text(&call.tool, &self.mode, reason)))
             }
-            graded => graded.permission(),
+            Grade::Allow => (Permission::Allow, None),
+            Grade::Ask(reason) => (Permission::Ask, reason),
         };
-        // ADR-0109: an out-of-root target forces approval unless durably
-        // granted for this exact `(tool, path)`.
-        let escape = self
-            .escape_root
-            .as_ref()
-            .and_then(|er| er.escaping(tools, &call.tool, &call.input))
-            .filter(|abs| {
-                self.escape_root
-                    .as_ref()
-                    .is_some_and(|er| !er.store.is_durably_allowed(&call.tool, abs))
-            });
         // ADR-0227: a credentialed `http` call forces one approval per host
         // per session, whatever the grade.
         let host = self
             .http_gate
             .credentialed_host(&call.tool, &call.input)
             .filter(|host| !self.http_gate.is_approved(&self.session, host));
-        let run = Cleared::Run(None);
         let floored = self.floored(tools, &call.tool, &call.input);
         // ADR-0228: a trusted script, or one the user chose **Run all** for,
-        // passes every remaining gate — a graded `Ask`, escape-root (a
-        // single-use token the host tool spends), the credentialed-`http`
-        // approval. The denies above (mode, ceiling) already
-        // won. A floored write is the exception for **Run all**: approving a
-        // script once must not let it author trusted code unseen, so that
-        // write gets its own card. A trusted script's writes are its
-        // owner's, and pass.
+        // passes every remaining gate — a graded `Ask` (a resolver's
+        // reasoned one included) and the credentialed-`http` approval. The
+        // denies above (mode, ceiling) already won. A floored write is the
+        // exception for **Run all**: approving a script once must not let
+        // it author trusted code unseen, so that write gets its own card. A
+        // trusted script's writes are its owner's, and pass.
         if let Via::Script(sc) = via {
             if sc.run_all() && (!floored || sc.trusted()) {
-                return Some(Cleared::Run(escape));
+                return Some(Cleared::Run);
             }
         }
         let unattended = run_limits::unattended(&self.limits, &self.attendance, &self.chain);
@@ -114,7 +98,7 @@ impl Dispatcher {
             if unattended {
                 return Some(
                     if perm == Permission::Allow && self.explicit_http_allow(&arg) {
-                        run
+                        Cleared::Run
                     } else {
                         Cleared::Refused(format!(
                             "tool `{}` refused — an authenticated call to {host} needs approval \
@@ -126,14 +110,14 @@ impl Dispatcher {
                 );
             }
         }
-        if escape.is_none() && host.is_none() {
+        if host.is_none() {
             if perm == Permission::Allow {
-                return Some(run);
+                return Some(Cleared::Run);
             }
             // A script asks once per exact call per run (tool + full input).
             if let Via::Script(sc) = via {
                 if sc.was_approved(&call.tool, &call.input) {
-                    return Some(run);
+                    return Some(Cleared::Run);
                 }
             }
             // ADR-0207 §11: unattended, a first `Ask` collapses to a denial;
@@ -151,13 +135,9 @@ impl Dispatcher {
                 )));
             }
         }
-        let prompt = match (escape, host) {
-            (Some(abs), _) => Prompt::Escape {
-                abs,
-                graded_ask: perm == Permission::Ask,
-            },
-            (None, Some(host)) => Prompt::Host(host),
-            (None, None) => Prompt::Grade,
+        let prompt = match host {
+            Some(host) => Prompt::Host(host),
+            None => Prompt::Grade(reason),
         };
         self.park(call, via, arg, prompt, floored).await
     }
@@ -186,7 +166,7 @@ impl Dispatcher {
             grants: &*self.grants,
             session: &self.session,
             mode: &self.mode,
-            root: self.escape_root.as_ref().map(|er| er.root.as_path()),
+            root: self.grading_root.as_deref(),
             floor: Some((&*self.trust, self.files_root.as_path())),
             capability_override: call_grade.as_ref().map(|cg| cg.capabilities),
         };

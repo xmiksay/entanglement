@@ -107,9 +107,8 @@ pub(super) struct ScriptFile {
     pub text: String,
 }
 
-/// Read the script `path` resolves to (`abs`, already resolved by the
-/// caller's containment/escape-root check), off the async runtime. `Err` is
-/// the reply text.
+/// Read the script `path` resolves to (`abs`, the caller's join onto its
+/// root), off the async runtime. `Err` is the reply text.
 pub(super) async fn read_script(path: &str, abs: PathBuf) -> Result<ScriptFile, String> {
     let shown = format!("{path:?}");
     tokio::task::spawn_blocking(move || read_capped(&shown, &abs))

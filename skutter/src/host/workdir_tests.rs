@@ -1,11 +1,11 @@
 //! Each host tool's path grading through the generic [`path_grading`]
 //! entry points, run over the real host registry: which arguments join onto
 //! a session workdir ([`rewrite`], #764, ADR-0224) and which path the
-//! escape-root gate checks ([`escape_target`], ADR-0109).
+//! escape-root check asks about ([`escape_target`], ADR-0109, #968).
 //!
 //! [`path_grading`]: crate::path_grading
 
-use crate::path_grading::{escape_target, rewrite};
+use crate::path_grading::rewrite;
 use crate::tools::ToolRegistry;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,11 @@ fn registry() -> ToolRegistry {
 }
 
 const ROOT: &str = "/p";
+
+/// The path a call to `tool` touches, as the escape-root check asks it.
+fn escape_target(tool: &str, reg: &ToolRegistry, input: &str) -> Option<String> {
+    reg.get(tool)?.escape_target(input)
+}
 
 fn run(workdir: &str, tool: &str, input: Value) -> Option<Value> {
     rewrite(
@@ -119,9 +124,10 @@ fn other_tools_and_bad_input_are_untouched() {
 }
 
 /// ADR-0109: the file tools are escape-checked on `path`, `bash` on its
-/// `workdir`; a search (ADR-0132), `read_raw` and the JSON variants never
-/// trip the gate. A host tool losing its `escape_target` would silently drop
-/// the approval prompt, so the whole table is pinned here.
+/// `workdir`, a search on its own path argument (#968); `read_raw` and the
+/// JSON variants are checked as the tool they grade as. A host tool losing
+/// its `escape_target` would silently drop the approval prompt, so the
+/// whole table is pinned here.
 #[test]
 fn escape_targets_per_host_tool() {
     let reg = registry();
@@ -140,8 +146,8 @@ fn escape_targets_per_host_tool() {
         ("apply_patch", Some("/etc/x")),
         ("bash", Some("/tmp")),
         ("read_raw", None),
-        ("glob", None),
-        ("grep", None),
+        ("glob", Some("/etc/x/*")),
+        ("grep", Some("/etc/x")),
         ("glob_json", None),
         ("grep_json", None),
         ("web_fetch", None),

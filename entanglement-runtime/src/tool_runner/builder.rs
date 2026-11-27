@@ -24,7 +24,7 @@ use crate::script_ops::ScriptRegistry;
 use crate::skills::{SessionSkills, SkillRegistry, SkillResolver};
 use crate::tools::SharedRegistry;
 
-use super::{DiscoverySurface, EscapeRoot};
+use super::DiscoverySurface;
 
 /// Namespace for [`ToolExecutor::builder`]; the spawned executor itself is
 /// just its `JoinHandle` (abort it to shut the executor down).
@@ -49,7 +49,7 @@ impl ToolExecutor {
             perm_modes: Arc::new(Mutex::new(HashMap::new())),
             resolver: None,
             grants: None,
-            escape_root: None,
+            root: None,
             mode_table: None,
             plan_files: Arc::new(PlanFileRegistry::new()),
             mcp_scopes: None,
@@ -82,7 +82,7 @@ pub struct ToolExecutorBuilder {
     pub(super) perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
     pub(super) resolver: Option<Arc<dyn PermissionResolver>>,
     pub(super) grants: Option<Arc<dyn GrantStore>>,
-    pub(super) escape_root: Option<EscapeRoot>,
+    pub(super) root: Option<std::path::PathBuf>,
     pub(super) mode_table: Option<Arc<ModeTable>>,
     pub(super) plan_files: Arc<PlanFileRegistry>,
     pub(super) mcp_scopes: Option<Arc<McpScopes>>,
@@ -192,7 +192,7 @@ impl ToolExecutorBuilder {
     /// The `Allow | Ask | Deny` decider (#311) — a multi-tenant embedder's
     /// own rules. Default: a [`crate::policy::ModeResolver`] over this
     /// builder's final `perm_modes`, `mode_table`, `tools` and `base`, with
-    /// root-relative path normalization when [`Self::escape_root`] is set.
+    /// root-relative path normalization when [`Self::root`] is set.
     /// A custom resolver that grades off a session→mode map must share that
     /// map via [`Self::perm_modes`], or it never sees a mode change.
     pub fn resolver(mut self, resolver: Arc<dyn PermissionResolver>) -> Self {
@@ -209,11 +209,14 @@ impl ToolExecutorBuilder {
         self
     }
 
-    /// Approval-gated escape-root access (ADR-0109); its `root` is also the
-    /// `propose_plan` project root. Default: strict containment — an
-    /// out-of-root path is a hard error, and plans resolve against the cwd.
-    pub fn escape_root(mut self, escape_root: EscapeRoot) -> Self {
-        self.escape_root = Some(escape_root);
+    /// The canonical project root: a path argument is graded relative to
+    /// it (ADR-0125) and `propose_plan` resolves plan files against it. The
+    /// library keeps no containment of its own — a head that confines its
+    /// tools to the root does so in its tools and its resolver (#968).
+    /// Default: none — path arguments grade verbatim and plans resolve
+    /// against the process cwd.
+    pub fn root(mut self, root: std::path::PathBuf) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -321,7 +324,7 @@ mod tests {
     }
 
     /// The defaults embedders rely on (and `docs/embedding/tool-execution.md` documents):
-    /// no clamp, no persisted grants, no custom policy, strict containment,
+    /// no clamp, no persisted grants, no custom policy, no project root,
     /// single-user.
     #[tokio::test]
     async fn bare_builder_carries_the_documented_defaults() {
@@ -337,7 +340,7 @@ mod tests {
             b.mode_table.is_none(),
             "mode table defaults to built-in at spawn"
         );
-        assert!(b.escape_root.is_none());
+        assert!(b.root.is_none());
         assert!(b.mcp_scopes.is_none());
         assert!(b.catalog.is_none());
         assert!(b.active.lock().unwrap().is_empty());

@@ -7,7 +7,7 @@
 //! an id it never parked on.
 //!
 //! The ladder itself lives in [`gates`] (the `Control` bypass,
-//! mode grade + grants, escape-root, the credentialed-`http`
+//! the resolver's grade + grants, the credentialed-`http`
 //! gate), unknown/lazy-MCP resolution in [`resolve`], the approval park in
 //! [`decision`], the run-against-the-registry step in [`execute`].
 
@@ -36,8 +36,6 @@ use crate::tool_advertising::SharedAdvertisingState;
 use crate::tool_names::REQUEST_MODE_TOOL;
 use crate::tools::{SharedRegistry, ToolRegistry};
 
-use super::EscapeRoot;
-
 #[cfg(feature = "rhai")]
 pub(crate) use script::Posture;
 pub(crate) use script::ScriptCall;
@@ -58,7 +56,8 @@ pub(crate) struct Dispatcher {
     pub chain: Vec<SessionId>,
     pub grants: Arc<dyn GrantStore>,
     pub pending: PendingDecisions,
-    pub escape_root: Option<EscapeRoot>,
+    /// The project root path arguments are graded relative to (ADR-0125).
+    pub grading_root: Option<std::path::PathBuf>,
     pub advertising: SharedAdvertisingState,
     pub validation: Arc<LoopBreaker>,
     pub mcp_avail: Arc<AvailableMcp>,

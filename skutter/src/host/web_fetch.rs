@@ -165,7 +165,7 @@ fn hop_verdict(url: &str, graded: Option<(Grade, String)>) -> Result<()> {
         Some((Grade::Deny(None), mode)) => bail!(
             "redirect to {url} not followed: `web_fetch` of that URL is denied by mode `{mode}`"
         ),
-        Some((Grade::Ask, _)) => bail!(
+        Some((Grade::Ask(_), _)) => bail!(
             "redirect to {url} not followed: fetching that URL needs approval — call \
              web_fetch on it directly to request it"
         ),

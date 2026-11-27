@@ -10,8 +10,7 @@ use crate::{host, ToolRegistry};
 
 /// What [`register_default_tools`] wires into the host tools.
 pub(crate) struct DefaultTools {
-    /// The sextet's escape-root store, backups and session workdirs; the
-    /// store is shared with `bash`.
+    /// The sextet's backups and session workdirs.
     pub(crate) host: host::HostToolOptions,
     pub(crate) secret_env: Vec<String>,
     pub(crate) sandbox_resolver: Arc<dyn host::SandboxResolver>,
@@ -35,15 +34,11 @@ pub(crate) fn register_default_tools(root: std::path::PathBuf, opts: DefaultTool
         sandbox_resolver,
         jobs,
     } = opts;
-    let extra_roots = host.extra_roots.clone();
     let mut tools = host::host_tools_with(root.clone(), host);
-    let mut bash = BashTool::new(root.clone())
+    let bash = BashTool::new(root.clone())
         .with_secret_env(secret_env)
         .with_jobs(jobs)
         .with_sandbox_resolver(sandbox_resolver);
-    if let Some(e) = &extra_roots {
-        bash = bash.with_extra_roots(e.clone());
-    }
     tools.register(bash);
     // `web_fetch` (#736) is an advertised tool (ADR-0226): on the surface
     // whenever it is compiled in and its client builds.

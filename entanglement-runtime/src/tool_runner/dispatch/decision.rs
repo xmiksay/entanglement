@@ -1,14 +1,13 @@
 //! The approval park (issue #451, re-cut by ADR-0227): emit the
 //! `ToolRequest`, wait for the head's decision (bounded by the mode's
 //! `question_timeout` unless a head watches the session, ADR-0247), record
-//! what the approval earned — an escape-root grant, a per-host `http`
-//! approval, a wider-scope grant, a script's per-run cache entry — and clear
-//! the call to run, or refuse.
-
-use std::path::PathBuf;
+//! what the approval earned — a per-host `http` approval, a wider-scope
+//! grant, a script's per-run cache entry — and clear the call to run, or
+//! refuse.
 
 use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason};
 
+use crate::policy::AskReason;
 use crate::run_limits;
 use crate::seam::ApprovalDecision;
 
@@ -22,18 +21,15 @@ const FLOOR_NOTE: &str =
 
 /// Why a call is parked — decides the card text and what approval records.
 pub(super) enum Prompt {
-    /// The mode graded it `Ask`.
-    Grade,
-    /// It reaches outside the project root (ADR-0109); `graded_ask` when the
-    /// mode would have asked anyway, so a wider approval also earns the
-    /// grade's grant (ADR-0228).
-    Escape { abs: PathBuf, graded_ask: bool },
+    /// The resolver graded it `Ask` — with its reason when it gave one
+    /// (#968: a path outside the project root).
+    Grade(Option<AskReason>),
     /// A credentialed `http` call to a host not yet approved this session.
     Host(String),
 }
 
 /// The card body and its reason line for a parked call. A floored write
-/// says so even when the escape-root warning is what carded it, so the user
+/// says so even when a resolver's reason is what carded it, so the user
 /// knows a wider grant is not on offer.
 fn card_text(
     prompt: &Prompt,
@@ -43,23 +39,19 @@ fn card_text(
     tool: &str,
 ) -> (String, String) {
     match prompt {
-        Prompt::Escape { abs, .. } => {
-            let abs = abs.display();
-            let mut reason = format!("accesses a path outside the project root: {abs}");
+        Prompt::Grade(Some(why)) => {
+            let mut reason = why.text.clone();
             if floored {
                 reason.push_str(&format!("; {FLOOR_NOTE}"));
             }
-            (
-                format!("{body}\n\n⚠ accesses a path OUTSIDE the project root: {abs}"),
-                reason,
-            )
+            (format!("{body}\n\n⚠ {}", why.text), reason)
         }
         Prompt::Host(host) => (
             format!("{body}\n\nauthenticated for {host}"),
             format!("authenticated for {host}"),
         ),
-        Prompt::Grade if floored => (body.to_string(), FLOOR_NOTE.to_string()),
-        Prompt::Grade => (
+        Prompt::Grade(None) if floored => (body.to_string(), FLOOR_NOTE.to_string()),
+        Prompt::Grade(None) => (
             body.to_string(),
             format!("mode `{mode}` grades `{tool}` Ask"),
         ),
@@ -67,12 +59,12 @@ fn card_text(
 }
 
 /// The structured reason a head decides on (ADR-0230). The floor wins over
-/// the escape: it is what makes a wider approval worthless.
+/// a resolver's reason: it is what makes a wider approval worthless.
 fn card_reason(prompt: &Prompt, floored: bool) -> Option<CardReason> {
     match prompt {
         _ if floored => Some(CardReason::FlooredWrite),
-        Prompt::Escape { .. } => Some(CardReason::RootEscape),
-        Prompt::Grade | Prompt::Host(_) => None,
+        Prompt::Grade(Some(why)) => Some(why.card),
+        Prompt::Grade(None) | Prompt::Host(_) => None,
     }
 }
 
@@ -140,43 +132,28 @@ impl Dispatcher {
         match decision.into_approval() {
             ApprovalDecision::Approve { scope, .. } => {
                 set_state(AgentState::Thinking);
-                // Every escape scope is recorded: a `Once` is the single-use
-                // token bound to this exact request id (#449). A host
-                // approval is the per-session unlock and, like a plain grade
-                // approval, also earns the script cache entry and any wider
-                // grant the user chose — as does an escape card that also
-                // cleared a graded `Ask`, or the next run would ask again
-                // for the grade alone (ADR-0228).
-                let graded_ask = match &prompt {
-                    Prompt::Escape { abs, graded_ask } => {
-                        if let Some(er) = &self.escape_root {
-                            er.store.record(&call.tool, abs, scope, &call.request_id);
-                        }
-                        *graded_ask
-                    }
-                    _ => true,
-                };
-                if graded_ask {
-                    let earner = self.earner(via);
-                    if let Prompt::Host(host) = &prompt {
-                        self.http_gate.approve(&earner, host);
-                    }
-                    if let Via::Script(sc) = via {
-                        sc.approve(&call.tool, &call.input);
-                    }
-                    if scope != ApprovalScope::Once && !floored {
-                        self.grants
-                            .record(
-                                &earner,
-                                &graded_name(&self.tools, &call.tool, &call.input),
-                                arg.as_deref(),
-                                scope,
-                                &self.mode,
-                            )
-                            .await;
-                    }
+                // A host approval is the per-session unlock and, like a
+                // plain grade approval, also earns the script cache entry
+                // and any wider grant the user chose (ADR-0228).
+                let earner = self.earner(via);
+                if let Prompt::Host(host) = &prompt {
+                    self.http_gate.approve(&earner, host);
                 }
-                Some(Cleared::Run(None))
+                if let Via::Script(sc) = via {
+                    sc.approve(&call.tool, &call.input);
+                }
+                if scope != ApprovalScope::Once && !floored {
+                    self.grants
+                        .record(
+                            &earner,
+                            &graded_name(&self.tools, &call.tool, &call.input),
+                            arg.as_deref(),
+                            scope,
+                            &self.mode,
+                        )
+                        .await;
+                }
+                Some(Cleared::Run)
             }
             ApprovalDecision::Reject { reason } => {
                 set_state(AgentState::Thinking);
@@ -196,39 +173,38 @@ impl Dispatcher {
 mod tests {
     use super::*;
 
+    fn escape() -> Prompt {
+        Prompt::Grade(Some(AskReason {
+            text: "accesses a path outside the project root: /elsewhere/s/x.rhai".into(),
+            card: CardReason::RootEscape,
+        }))
+    }
+
     #[test]
-    fn a_floored_escape_card_carries_both_reasons() {
-        let escape = Prompt::Escape {
-            abs: PathBuf::from("/elsewhere/s/x.rhai"),
-            graded_ask: false,
-        };
-        let (shown, reason) = card_text(&escape, "{}", true, "build", "write");
-        assert!(shown.contains("OUTSIDE the project root"), "{shown}");
+    fn a_floored_reasoned_card_carries_both_reasons() {
+        let (shown, reason) = card_text(&escape(), "{}", true, "build", "write");
+        assert!(shown.contains("⚠ accesses a path outside"), "{shown}");
         assert_eq!(
             reason,
             format!("accesses a path outside the project root: /elsewhere/s/x.rhai; {FLOOR_NOTE}")
         );
-        let (_, plain) = card_text(&escape, "{}", false, "build", "write");
+        let (_, plain) = card_text(&escape(), "{}", false, "build", "write");
         assert!(!plain.contains(FLOOR_NOTE), "{plain}");
-        let (_, graded) = card_text(&Prompt::Grade, "{}", true, "build", "write");
+        let (_, graded) = card_text(&Prompt::Grade(None), "{}", true, "build", "write");
         assert_eq!(graded, FLOOR_NOTE);
-        let (_, graded) = card_text(&Prompt::Grade, "{}", false, "build", "write");
+        let (_, graded) = card_text(&Prompt::Grade(None), "{}", false, "build", "write");
         assert_eq!(graded, "mode `build` grades `write` Ask");
     }
 
     #[test]
-    fn the_floor_outranks_the_escape_in_the_card_reason() {
-        let escape = Prompt::Escape {
-            abs: PathBuf::from("/elsewhere/x"),
-            graded_ask: true,
-        };
-        assert_eq!(card_reason(&escape, true), Some(CardReason::FlooredWrite));
-        assert_eq!(card_reason(&escape, false), Some(CardReason::RootEscape));
+    fn the_floor_outranks_a_resolver_reason_in_the_card_reason() {
+        assert_eq!(card_reason(&escape(), true), Some(CardReason::FlooredWrite));
+        assert_eq!(card_reason(&escape(), false), Some(CardReason::RootEscape));
         assert_eq!(
-            card_reason(&Prompt::Grade, true),
+            card_reason(&Prompt::Grade(None), true),
             Some(CardReason::FlooredWrite)
         );
-        assert_eq!(card_reason(&Prompt::Grade, false), None);
+        assert_eq!(card_reason(&Prompt::Grade(None), false), None);
         assert_eq!(card_reason(&Prompt::Host("h".into()), false), None);
     }
 }

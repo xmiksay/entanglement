@@ -152,13 +152,22 @@ async fn denies_still_win_where_everything_else_runs() {
     assert!(!root.join("no.txt").exists());
 }
 
-/// The escape-root gate still asks in `auto` (Run all / trust pass it).
+/// The escape-root check still asks in `auto` (Run all / trust pass it) —
+/// as any `Ask` there (#968): unattended, the first collapses to a refusal
+/// and an identical repeat parks a card.
 #[tokio::test]
 async fn auto_still_asks_before_a_script_reads_outside_the_root() {
     let (_tmp, root) = fixture();
-    let seen = run(&root, &[&inline(r#"read("../out.txt")"#)], auto()).await;
+    let script =
+        r#"let r = ""; try { read("../out.txt"); } catch (e) { r = e; } r + read("../out.txt")"#;
+    let seen = run(&root, &[&inline(script)], auto()).await;
     assert!(seen.launch_cards.is_empty(), "{:?}", seen.launch_cards);
     assert_eq!(seen.nested_cards.len(), 1, "{:?}", seen.nested_cards);
+    let out = &seen.outputs[0];
+    assert!(
+        out.contains("unattended") && out.contains("outside text"),
+        "{out}"
+    );
 }
 
 /// The write floor applies in `auto` too: unattended, a write of a trusted
