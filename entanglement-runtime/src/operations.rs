@@ -19,7 +19,7 @@
 use entanglement_core::{OperationInfo, OperationKind, OperationStatus, SessionId};
 
 use crate::agent_registry::{AgentRegistry, AgentStatus};
-use crate::host::jobs::{JobRegistry, JobStatus};
+use crate::jobs::{JobRegistry, JobStatus};
 use crate::script_ops::ScriptRegistry;
 
 /// Snapshot every pending job/agent/script operation, optionally scoped to
@@ -114,7 +114,7 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        crate::host::exec::own_process_group(&mut cmd);
+        crate::exec::own_process_group(&mut cmd);
         cmd
     }
 

@@ -35,11 +35,11 @@ mod grep_json;
 pub use grep_json::GrepJsonTool;
 
 /// Keep the serialized document safely under the host output cap
-/// ([`super::MAX_OUTPUT_BYTES`]): prose survives a byte-cap cut mid-line, a
+/// ([`crate::output::MAX_OUTPUT_BYTES`]): prose survives a byte-cap cut mid-line, a
 /// JSON document does not — an over-budget doc would arrive at the binding
 /// layer as unparseable text. Over-budget result arrays are trimmed from the
 /// tail with a notice naming the original count.
-const JSON_BUDGET: usize = super::MAX_OUTPUT_BYTES - 2 * 1024;
+const JSON_BUDGET: usize = crate::output::MAX_OUTPUT_BYTES - 2 * 1024;
 
 fn rel_path(p: &Path, root: &Path) -> String {
     p.strip_prefix(root)

@@ -3,12 +3,12 @@
 
 use rhai::{Dynamic, EvalAltResult};
 
-use crate::host::truncate_head_tail;
+use crate::output::truncate_head_tail;
 
 use super::spec;
 
 /// Compose the tool output: captured `print` lines, then the serialized return
-/// value (or the error), bounded to [`crate::host::MAX_OUTPUT_BYTES`] with a
+/// value (or the error), bounded to [`crate::output::MAX_OUTPUT_BYTES`] with a
 /// head+tail split (#622) — the return value/error is the load-bearing part at
 /// the end, the same shape `bash`/`agent` now share instead of the
 /// head-only truncation this used to get.

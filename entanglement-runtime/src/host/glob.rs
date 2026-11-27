@@ -2,9 +2,10 @@
 //! relative to the working directory. A bare directory pattern lists it
 //! recursively and a zero-result call always explains itself (ADR-0150).
 
-use super::{list_files_with_extra_roots, truncate_output};
+use super::list_files_with_extra_roots;
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
+use crate::output::truncate_output;
 use crate::tools::Tool;
 use crate::workdir::SessionWorkdirs;
 use anyhow::{Context, Result};

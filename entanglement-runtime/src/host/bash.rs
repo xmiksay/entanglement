@@ -5,11 +5,11 @@
 //! always closed, not inherited from the engine (#389); use
 //! shell-native `< file` redirection if a command needs input.
 
-use super::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
-use super::jobs::JobRegistry;
 use super::sandbox::{self, SandboxPolicy};
-use super::{bounded_result, tail_lines, DEFAULT_TAIL};
 use crate::capability::Capability;
+use crate::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
+use crate::jobs::JobRegistry;
+use crate::output::{bounded_result, tail_lines, DEFAULT_TAIL};
 use crate::policy::SandboxResolver;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
@@ -472,7 +472,7 @@ mod tests {
     #[tokio::test]
     async fn run_with_meta_background_launch_has_no_exit_code() {
         let dir = tempfile::tempdir().unwrap();
-        let jobs = crate::host::jobs::JobRegistry::new();
+        let jobs = crate::jobs::JobRegistry::new();
         let tool = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs);
         let run = tool
             .run_with_meta(
@@ -607,7 +607,7 @@ mod tests {
                 .poll(&id, &caller, false, 1)
                 .await
                 .expect("job registered");
-            if p.status == crate::host::jobs::JobStatus::Exited(Some(0)) {
+            if p.status == crate::jobs::JobStatus::Exited(Some(0)) {
                 return;
             }
         }
@@ -644,7 +644,7 @@ mod tests {
             .await
             .expect("job registered");
         assert!(p.timed_out, "job should have been killed by its timeout");
-        assert_eq!(p.status, crate::host::jobs::JobStatus::Exited(None));
+        assert_eq!(p.status, crate::jobs::JobStatus::Exited(None));
     }
 
     #[tokio::test]
@@ -697,7 +697,7 @@ mod tests {
     /// error survives — head-only truncation would drop it.
     #[tokio::test]
     async fn oversized_output_keeps_head_and_tail() {
-        use crate::host::MAX_OUTPUT_BYTES;
+        use crate::output::MAX_OUTPUT_BYTES;
         let dir = tempfile::tempdir().unwrap();
         let tool = BashTool::new(dir.path().to_path_buf());
         // Print a large body, then a distinctive final line (the "error").

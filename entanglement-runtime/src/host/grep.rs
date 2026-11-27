@@ -5,9 +5,10 @@
 //! itself (ADR-0150).
 
 use super::glob::suggest_files_pattern;
-use super::{list_files_with_extra_roots, truncate_output, FileList};
+use super::{list_files_with_extra_roots, FileList};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
+use crate::output::truncate_output;
 use crate::tools::Tool;
 use crate::workdir::SessionWorkdirs;
 use anyhow::{Context, Result};
@@ -20,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Cap on how much of a file `grep` is willing to read into memory and scan,
-/// **independent of** [`super::MAX_OUTPUT_BYTES`] (the *result-string* cap).
+/// **independent of** [`crate::output::MAX_OUTPUT_BYTES`] (the *result-string* cap).
 /// Conflating the two meant any file over 32 KiB was silently skipped even
 /// though it has nothing to do with how big the matched-lines output is
 /// (ADR-0091, superseding the grep clause of ADR-0008 point 4). A file over

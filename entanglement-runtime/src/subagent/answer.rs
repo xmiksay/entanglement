@@ -6,12 +6,12 @@ use std::time::Duration;
 use entanglement_core::{Holly, OutEvent, SessionId};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
-use crate::host::MAX_OUTPUT_BYTES;
+use crate::output::MAX_OUTPUT_BYTES;
 use crate::retained_output::RetainedOutputRegistry;
 
 /// Render a sub-agent's completion reply: the "completed in Xs" status line
 /// (kept verbatim) followed by its `answer`, bounded to
-/// [`crate::host::MAX_OUTPUT_BYTES`] with a head+tail split so a long answer's
+/// [`crate::output::MAX_OUTPUT_BYTES`] with a head+tail split so a long answer's
 /// conclusion survives truncation — the same shape `bash`/`rhai` now
 /// share instead of returning an unbounded answer (#622). Shared by the
 /// blocking `agent` path ([`launch`]) and `poll`.
@@ -35,7 +35,7 @@ pub fn format_agent_answer(
 }
 
 /// Shared truncation-with-a-handle shape for a sub-agent's answer: `status` is
-/// kept verbatim, `answer` gets [`crate::host::bounded_result`]'s head+tail
+/// kept verbatim, `answer` gets [`crate::output::bounded_result`]'s head+tail
 /// byte cap, and if the combined result would overflow, the *full* `answer`
 /// is registered with `retained` (scoped to `owner`) so `poll` can page past
 /// the cap instead of the excess vanishing (#614). Shared by
@@ -53,7 +53,7 @@ pub(crate) fn bound_answer(
             "[answer truncated — poll(handle=\"{handle}\") for the rest]\n"
         ));
     }
-    crate::host::bounded_result(&status, answer)
+    crate::output::bounded_result(&status, answer)
 }
 
 /// Watch the child's event stream, accumulating its assistant text until the
@@ -182,7 +182,7 @@ mod tests {
     /// reply unbounded — the status line always survives intact.
     #[test]
     fn format_agent_answer_bounds_a_huge_answer() {
-        use crate::host::MAX_OUTPUT_BYTES;
+        use crate::output::MAX_OUTPUT_BYTES;
         let mut answer = String::from("HEAD_MARKER");
         answer.push_str(&"x".repeat(MAX_OUTPUT_BYTES * 2));
         answer.push_str("TAIL_MARKER");
@@ -220,7 +220,7 @@ mod tests {
     /// handle so `poll` can page the rest, scoped to the given `owner`.
     #[test]
     fn format_agent_answer_truncation_mints_a_retained_handle() {
-        use crate::host::MAX_OUTPUT_BYTES;
+        use crate::output::MAX_OUTPUT_BYTES;
         let answer = "x".repeat(MAX_OUTPUT_BYTES * 2);
         let retained = RetainedOutputRegistry::new();
         let owner = SessionId::new("parent-1");

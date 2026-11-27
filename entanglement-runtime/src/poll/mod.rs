@@ -3,7 +3,7 @@
 //! Replaces `bash_output` and `agent_poll` outright — no aliases (and, with
 //! #606, is the only way to join a `background: true` `bash`/`agent`/
 //! `rhai` launch — `agent_spawn` is gone). Dispatches on
-//! the handle's kind prefix (ADR-0164) to [`crate::host::jobs::JobRegistry`]
+//! the handle's kind prefix (ADR-0164) to [`crate::jobs::JobRegistry`]
 //! (`j-`, a background `bash` job),
 //! [`crate::script_ops::ScriptRegistry`] (`x-`, a background `rhai` script —
 //! #637, ADR-0185),
@@ -74,7 +74,7 @@ use entanglement_core::{Holly, SessionId, ToolSpec};
 use tokio::sync::watch;
 
 use crate::agent_registry::{AgentRegistry, AgentStatus};
-use crate::host::jobs::{JobRegistry, JobStatus};
+use crate::jobs::{JobRegistry, JobStatus};
 use crate::retained_output::RetainedOutputRegistry;
 use crate::script_ops::ScriptRegistry;
 use crate::seam;
@@ -95,7 +95,7 @@ const MAX_TIMEOUT_SECS: u64 = 600;
 /// `bash`'s own `tail` uses, for the same reason (value concentrates at the
 /// end of a normal result, so an unbounded first page would reintroduce the
 /// context blow-up the cap exists to prevent).
-const DEFAULT_TAIL: u32 = crate::host::DEFAULT_TAIL;
+const DEFAULT_TAIL: u32 = crate::output::DEFAULT_TAIL;
 
 /// The `poll` tool schema advertised to the model.
 pub fn poll_spec() -> ToolSpec {

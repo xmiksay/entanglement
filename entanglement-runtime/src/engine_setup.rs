@@ -17,7 +17,7 @@ use crate::tool_runner::EscapeRoot;
 
 mod default_tools;
 use crate::{
-    config, extra_roots, file_backup, host, mcp, policy, retained_output, script_ops,
+    config, extra_roots, file_backup, host, jobs, mcp, policy, retained_output, script_ops,
     session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
 use default_tools::{register_default_tools, DefaultTools};
@@ -76,7 +76,7 @@ pub(crate) async fn build_config(
     Arc<mcp::AvailableMcp>,
     EscapeRoot,
     policy::SandboxConfig,
-    host::JobRegistry,
+    jobs::JobRegistry,
     retained_output::RetainedOutputRegistry,
     script_ops::ScriptRegistry,
     workdir::SessionWorkdirs,
@@ -160,7 +160,7 @@ pub(crate) async fn build_config(
     // and `poll`'s job-handle path, so a background job is always pollable
     // through whichever `BashTool` actually spawned it. This also closes #616's
     // job-orphaning — there is only ever one registry.
-    let jobs = host::JobRegistry::new();
+    let jobs = jobs::JobRegistry::new();
     // The one `RetainedOutputRegistry` for this process's whole lifetime
     // (#608): sub-agent answers write there and `poll`'s
     // retained-output-handle path reads it back — the same shared-instance

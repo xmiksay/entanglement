@@ -142,7 +142,7 @@ pub(super) struct LadderCtx {
     pub holly: Holly,
     pub registry: AgentRegistry,
     pub retained: crate::retained_output::RetainedOutputRegistry,
-    pub jobs: crate::host::jobs::JobRegistry,
+    pub jobs: crate::jobs::JobRegistry,
     pub scripts: crate::script_ops::ScriptRegistry,
     pub pending: crate::pending::PendingDecisions,
     pub open_questions: OpenQuestions,

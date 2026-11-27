@@ -13,7 +13,7 @@ use entanglement_core::{
     stream_from_response, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, MessageRole, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::host::jobs::JobRegistry;
+use entanglement_runtime::jobs::JobRegistry;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{GrantStore, ModeResolver, PermissionResolver};
 use entanglement_runtime::retained_output::RetainedOutputRegistry;
@@ -296,7 +296,7 @@ fn sleeper() -> tokio::process::Command {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    entanglement_runtime::host::exec::own_process_group(&mut cmd);
+    entanglement_runtime::exec::own_process_group(&mut cmd);
     cmd
 }
 

@@ -37,7 +37,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
 use super::payload::Payload;
-use crate::host::exec::{own_process_group, GroupKillGuard};
+use crate::exec::{own_process_group, GroupKillGuard};
 use crate::tui::event::Event;
 
 /// At most one run starts per this interval.

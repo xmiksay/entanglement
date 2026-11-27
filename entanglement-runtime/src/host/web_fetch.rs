@@ -30,7 +30,7 @@ use entanglement_core::web_fetch::{FetchBody, FetchOutcome, WebFetcher, DEFAULT_
 use entanglement_core::Permission;
 
 use crate::capability::Capability;
-use crate::host::MAX_OUTPUT_BYTES;
+use crate::output::MAX_OUTPUT_BYTES;
 use crate::tools::Tool;
 
 mod html;

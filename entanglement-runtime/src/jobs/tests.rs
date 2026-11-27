@@ -6,7 +6,7 @@ fn sh(script: &str) -> Command {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    super::super::exec::own_process_group(&mut cmd);
+    crate::exec::own_process_group(&mut cmd);
     cmd
 }
 

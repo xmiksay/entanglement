@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::{HookEvent, HookSpec};
-use crate::host::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
+use crate::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 
 /// The result of running one hook command.
 pub(super) struct Outcome {

@@ -205,7 +205,7 @@ impl JobRegistry {
             if still_running {
                 #[cfg(unix)]
                 if let Some(pid) = deadline_job.pgid {
-                    super::exec::kill_process_group(pid);
+                    crate::exec::kill_process_group(pid);
                 }
                 deadline_job
                     .state
@@ -253,7 +253,7 @@ impl JobRegistry {
         if kill {
             #[cfg(unix)]
             if let Some(pid) = job.pgid {
-                super::exec::kill_process_group(pid);
+                crate::exec::kill_process_group(pid);
             }
             return Some(snapshot(&job));
         }

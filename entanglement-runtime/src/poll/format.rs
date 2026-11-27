@@ -1,10 +1,10 @@
 //! Rendering for `poll` results — the status-line-then-body text a joined
 //! job (`j-`) or background script (`x-`, #637/ADR-0185) hands back to the
-//! model, byte-capped head+tail via [`crate::host::bounded_result`]. Split out
+//! model, byte-capped head+tail via [`crate::output::bounded_result`]. Split out
 //! of `poll/mod.rs` for the 400-line file cap.
 
 use super::retained::is_retained_handle;
-use crate::host::jobs::{JobStatus, Poll as JobPoll};
+use crate::jobs::{JobStatus, Poll as JobPoll};
 use crate::script_ops::ScriptPoll;
 
 /// The classified result of one `poll` call: the rendered text plus the two
@@ -84,7 +84,7 @@ pub(super) fn unknown_handle(handle: &str) -> String {
 }
 
 /// Render a job poll's status + drained output — the same shape `bash_output`
-/// used, byte-capped head+tail via [`crate::host::bounded_result`].
+/// used, byte-capped head+tail via [`crate::output::bounded_result`].
 pub(super) fn format_job_poll(id: &str, poll: JobPoll) -> String {
     let status = match poll.status {
         JobStatus::Running => "running".to_string(),
@@ -123,7 +123,7 @@ pub(super) fn format_job_poll(id: &str, poll: JobPoll) -> String {
     if stdout.is_empty() && stderr.is_empty() {
         body.push_str("(no new output)\n");
     }
-    crate::host::bounded_result(&header, body)
+    crate::output::bounded_result(&header, body)
 }
 
 /// Classify + render a script poll (#637, ADR-0185; classification #695):
@@ -183,5 +183,5 @@ fn format_script_poll(id: &str, poll: ScriptPoll, killed: bool) -> String {
     } else {
         body.push_str(&output);
     }
-    crate::host::bounded_result(&header, body)
+    crate::output::bounded_result(&header, body)
 }

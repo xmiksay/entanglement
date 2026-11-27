@@ -66,14 +66,14 @@ fn format_retained_page(id: &str, page: Page) -> String {
             page.dropped_bytes
         ));
     }
-    crate::host::bounded_result(&header, page.text)
+    crate::output::bounded_result(&header, page.text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent_registry::AgentRegistry;
-    use crate::host::jobs::JobRegistry;
+    use crate::jobs::JobRegistry;
     use crate::script_ops::ScriptRegistry;
 
     #[test]

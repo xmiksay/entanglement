@@ -173,7 +173,7 @@ fn print_output_is_captured() {
 /// return value/error at the end survives truncation.
 #[test]
 fn format_output_oversized_keeps_head_and_tail() {
-    use crate::host::MAX_OUTPUT_BYTES;
+    use crate::output::MAX_OUTPUT_BYTES;
     let prints = format!("HEAD_MARKER{}", "x".repeat(MAX_OUTPUT_BYTES * 2));
     let engine = sandbox_engine(Duration::from_secs(5));
     let v = engine.eval::<Dynamic>(r#""TAIL_MARKER""#).unwrap();

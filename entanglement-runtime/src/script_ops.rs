@@ -6,7 +6,7 @@
 //! contract as a `j-` job handle.
 //!
 //! Deliberately its own registry rather than a task-backed
-//! [`crate::host::jobs::JobRegistry`] variant: a script is an in-process
+//! [`crate::jobs::JobRegistry`] variant: a script is an in-process
 //! `spawn_blocking` task, not an OS process — there is no process group to
 //! SIGKILL, no exit code, and no stdout/stderr pipes to drain. "Kill" here is
 //! the **cooperative** stop flag the engine's progress callback polls (#167):
@@ -136,7 +136,7 @@ pub struct ScriptPoll {
 }
 
 /// One entry in a pending-operations listing (#607, ADR-0161 §6) — ownerless
-/// entries are never listed, mirroring [`crate::host::jobs::JobOpInfo`].
+/// entries are never listed, mirroring [`crate::jobs::JobOpInfo`].
 pub struct ScriptOpInfo {
     pub session: SessionId,
     pub handle: String,

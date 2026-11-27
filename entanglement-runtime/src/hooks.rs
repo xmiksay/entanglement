@@ -27,7 +27,7 @@
 //! (`{event, session, tool?, input?, output?, prompt?}`) and a few env vars
 //! (`ENTANGLEMENT_HOOK_EVENT`, `ENTANGLEMENT_SESSION_ID`, `ENTANGLEMENT_TOOL_NAME`
 //! for tool hooks). It runs under a timeout in its **own process group** — the
-//! same containment the exec tools use ([`crate::host::exec`]) — so a hook that
+//! same containment the exec tools use ([`crate::exec`]) — so a hook that
 //! spawns children can't orphan them past the timeout.
 //!
 //! Hooks are scoped to the **generic host-tool dispatch** only: the orchestration

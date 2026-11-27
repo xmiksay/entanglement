@@ -57,7 +57,7 @@ pub fn spawn_tool_executor_with_hooks(
 pub fn spawn_tool_executor_with_policy(
     holly: &Holly,
     tools: SharedRegistry,
-    jobs: crate::host::jobs::JobRegistry,
+    jobs: crate::jobs::JobRegistry,
     retained: crate::retained_output::RetainedOutputRegistry,
     scripts: crate::script_ops::ScriptRegistry,
     agents: Arc<RwLock<AgentCatalog>>,

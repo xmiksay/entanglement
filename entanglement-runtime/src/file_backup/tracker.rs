@@ -7,7 +7,7 @@ use entanglement_core::{AgentState, Holly, OutEvent, SessionId};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::{lock, FileBackups};
-use crate::host::jobs::{JobRegistry, JobStatus};
+use crate::jobs::{JobRegistry, JobStatus};
 use crate::script_ops::ScriptRegistry;
 
 /// "Is this session still running detached work?" — a background job or a

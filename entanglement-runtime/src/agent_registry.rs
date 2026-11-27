@@ -327,7 +327,7 @@ impl AgentRegistry {
     /// to that launcher only (the `poll` tool's own use, always scoped to the
     /// calling session); `None` spans every parent, mirroring
     /// [`crate::questions::OpenQuestions::snapshot`]'s filter convention.
-    /// Unlike [`JobRegistry`][crate::host::jobs::JobRegistry], a completed
+    /// Unlike [`JobRegistry`][crate::jobs::JobRegistry], a completed
     /// entry is never evicted here, so it stays listed until the model polls
     /// it by handle — the model sees an unclaimed answer sitting there rather
     /// than losing track of it. Sorted by handle for a deterministic reply.

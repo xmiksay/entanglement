@@ -24,7 +24,7 @@ use entanglement_core::SessionId;
 
 use crate::agent_registry::AgentRegistry;
 use crate::discover::subtree_sessions;
-use crate::host::jobs::JobRegistry;
+use crate::jobs::JobRegistry;
 use crate::pending::PendingDecisions;
 use crate::questions::OpenQuestions;
 use crate::retained_output::RetainedOutputRegistry;

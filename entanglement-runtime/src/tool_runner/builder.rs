@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use entanglement_core::{Agent, AgentCatalog, Holly, Permission, PermissionProfile, SessionId};
 
 use crate::hooks::Hooks;
-use crate::host::jobs::JobRegistry;
+use crate::jobs::JobRegistry;
 use crate::mcp::McpScopes;
 use crate::mode::ModeTable;
 use crate::plan_files::PlanFileRegistry;

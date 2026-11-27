@@ -13,7 +13,7 @@ pub(crate) struct DefaultTools {
     pub(crate) host: host::HostToolOptions,
     pub(crate) secret_env: Vec<String>,
     pub(crate) sandbox_resolver: Arc<dyn policy::SandboxResolver>,
-    pub(crate) jobs: host::JobRegistry,
+    pub(crate) jobs: crate::jobs::JobRegistry,
 }
 
 /// Assemble the tool registry: the root-contained sextet plus `bash`,
@@ -69,7 +69,7 @@ mod tests {
                 host: crate::host::HostToolOptions::default(),
                 secret_env: Vec::new(),
                 sandbox_resolver: std::sync::Arc::new(SandboxPolicy::none()),
-                jobs: crate::host::JobRegistry::new(),
+                jobs: crate::jobs::JobRegistry::new(),
             },
         )
         .specs()

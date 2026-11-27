@@ -17,7 +17,7 @@
 use entanglement_core::ContentPart;
 use serde_json::Value;
 
-use crate::host::truncate_output;
+use crate::output::truncate_output;
 
 /// Prefix on an `isError` result's text. Kept alongside the structured flag:
 /// `is_error` reaches heads, hooks and the transcript, but no provider wire
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn oversized_text_is_byte_capped() {
-        let big = "x".repeat(crate::host::MAX_OUTPUT_BYTES + 1024);
+        let big = "x".repeat(crate::output::MAX_OUTPUT_BYTES + 1024);
         let r = render_result(&json!({ "content": [ { "type": "text", "text": big } ] }));
         let out = texts(&r)[0];
         assert!(
@@ -326,7 +326,7 @@ mod tests {
             &out[out.len() - 60..]
         );
         assert!(
-            out.len() < crate::host::MAX_OUTPUT_BYTES + 128,
+            out.len() < crate::output::MAX_OUTPUT_BYTES + 128,
             "len={}",
             out.len()
         );

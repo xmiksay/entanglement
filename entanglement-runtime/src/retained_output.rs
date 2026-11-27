@@ -11,7 +11,7 @@
 //!
 //! Retention is capped per-operation ([`MAX_RETAINED_BYTES`]) and the whole
 //! registry is evicted on the same TTL/count shape
-//! [`crate::host::jobs::JobRegistry`] uses (#621) — output living in memory
+//! [`crate::jobs::JobRegistry`] uses (#621) — output living in memory
 //! rather than on disk is exactly the cost ADR-0161 §7 accepts, and past the
 //! cap the excess is reported dropped, never silently lost.
 
@@ -182,7 +182,7 @@ pub struct RetainedInfo {
 
 /// Whether `caller` may read an entry owned by `owner` — an ownerless entry
 /// (the session-less [`crate::tools::Tool::run`] path) is visible to anyone;
-/// an owned entry only to its owner. Mirrors `host::jobs::owner_allows`.
+/// an owned entry only to its owner. Mirrors `jobs::owner_allows`.
 fn owner_allows(owner: &Option<SessionId>, caller: &SessionId) -> bool {
     owner.as_ref().is_none_or(|o| o == caller)
 }

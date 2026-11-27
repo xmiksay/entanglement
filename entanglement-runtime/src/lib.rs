@@ -57,6 +57,7 @@ mod date;
 // executor too.
 pub mod discover;
 pub mod env_date;
+pub mod exec;
 pub mod extra_roots;
 pub mod file_backup;
 pub mod file_change;
@@ -71,6 +72,7 @@ pub mod host_ns;
 // the dispatch seam; ungated so the lean executor compiles the same ladder.
 pub mod http_gate;
 pub mod inspect;
+pub mod jobs;
 pub mod layers;
 // The identifier mapping for generated rhai namespaces (ADR-0227).
 #[cfg(feature = "rhai")]
@@ -101,6 +103,7 @@ pub mod narrate;
 // Pending-operations listing (#607, ADR-0161 §6): shared by `poll`'s
 // no-handle model surface and `InMsg::ListOperations`'s head surface.
 pub mod operations;
+pub mod output;
 pub mod pending;
 pub mod permission;
 mod permission_arg;

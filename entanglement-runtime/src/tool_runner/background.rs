@@ -99,7 +99,7 @@ pub(super) struct Router {
     pub(super) hooks: std::sync::Arc<crate::hooks::Hooks>,
     pub(super) pending: crate::pending::PendingDecisions,
     pub(super) open_questions: crate::questions::OpenQuestions,
-    pub(super) jobs: crate::host::jobs::JobRegistry,
+    pub(super) jobs: crate::jobs::JobRegistry,
     pub(super) agents: crate::agent_registry::AgentRegistry,
     pub(super) scripts: crate::script_ops::ScriptRegistry,
     pub(super) holly: entanglement_core::Holly,

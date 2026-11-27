@@ -3,9 +3,10 @@
 //! (detected by extension) comes back as a base64 image **content block** the
 //! provider renders to its native image format (#221).
 
-use super::{resolve_under_root, resolve_under_root_or_grant, truncate_output};
+use super::{resolve_under_root, resolve_under_root_or_grant};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
+use crate::output::truncate_output;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
