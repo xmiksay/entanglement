@@ -118,7 +118,7 @@ pub(super) async fn rhai(
     // canceller; `poll`'s `kill: true` trips the same flag.
     let background = crate::script::is_background(&input);
     let cancels = ctx.cancels.clone();
-    let handle = tokio::spawn(crate::file_backup::with_exec_seq(seq, async move {
+    let handle = tokio::spawn(crate::exec_scope::with_exec_seq(seq, async move {
         // The launch decision (trusted folder, card, unattended —
         // ADR-0228) runs in the detached task: it may park on the card, and
         // a pluggable resolver may hit a DB.
@@ -157,7 +157,7 @@ pub(super) async fn permission(
     // future drops an exec tool's child and fires its process-group SIGKILL
     // guard (#167/#168). The ToolExec seq rides the task so a file change
     // names its exact log record (ADR-0212).
-    let handle = tokio::spawn(crate::file_backup::with_exec_seq(
+    let handle = tokio::spawn(crate::exec_scope::with_exec_seq(
         seq,
         dispatcher.dispatch(call),
     ));

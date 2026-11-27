@@ -57,7 +57,7 @@ pub(super) async fn service_bindings(
         };
         let run = dispatcher.run(nested, Via::Script(script));
         let outcome = if adopted {
-            crate::file_backup::without_exec_seq(run).await
+            crate::exec_scope::without_exec_seq(run).await
         } else {
             run.await
         };

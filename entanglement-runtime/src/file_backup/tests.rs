@@ -4,6 +4,7 @@ use std::time::Duration;
 use entanglement_core::{InMsg, OutEvent, SessionId};
 
 use super::*;
+use crate::exec_scope::with_exec_seq;
 use crate::session_store::{LogPayload, LogRecord};
 use crate::tools::Tool;
 
@@ -359,20 +360,4 @@ async fn run(tool: &dyn Tool, session: &SessionId, input: &str) {
     tool.run_for_session(session, "r1", input)
         .await
         .unwrap_or_else(|e| panic!("{} failed: {e:#}", tool.name()));
-}
-
-/// A background script's call after its session compacted (ADR-0241) runs
-/// with the launch's `ToolExec` seq masked and marked adopted: the seq would
-/// name an unrelated record in the successor's log (ADR-0243).
-#[tokio::test]
-async fn without_exec_seq_masks_the_enclosing_seq() {
-    let seen = with_exec_seq(7, async {
-        let outer = current_exec_scope();
-        let inner = without_exec_seq(async { current_exec_scope() }).await;
-        (outer, inner, current_exec_scope())
-    })
-    .await;
-    let seq = Some(ExecScope::Seq(7));
-    assert_eq!(seen, (seq, Some(ExecScope::Adopted), seq));
-    assert_eq!(current_exec_scope(), None, "no scope at all");
 }

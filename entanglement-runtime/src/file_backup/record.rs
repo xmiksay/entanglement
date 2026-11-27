@@ -7,8 +7,9 @@ use anyhow::{Context, Result};
 use entanglement_core::SessionId;
 
 use super::manifest::{self, Change, Line, Prior, Stats, BLOBS, MANIFEST};
-use super::{current_exec_scope, lock, now_ms, sha256_hex, BackupLimits, ExecScope, FileBackups};
+use super::{lock, now_ms, sha256_hex, BackupLimits, FileBackups};
 use crate::config::undo::format_size;
+use crate::exec_scope::{current_exec_scope, ExecScope};
 
 /// What a change must know from *before* its write lands (ADR-0236 §2):
 /// the moment, and the live tree its session is in. Taken first, a move that

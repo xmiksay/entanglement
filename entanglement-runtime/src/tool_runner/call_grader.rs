@@ -3,7 +3,7 @@
 //! its argument — `web_fetch` follows redirects — and each such target must
 //! grade exactly like a fresh call would. The executor scopes a
 //! [`CallGrader`] around every graded dispatch as a tokio task-local (the
-//! same mechanism `file_backup::with_exec_seq` uses), so the `Tool` trait's
+//! same mechanism `exec_scope::with_exec_seq` uses), so the `Tool` trait's
 //! signature stays untouched for the many tools that never need it.
 //!
 //! Outside an executor (a tool called directly, an embedder's own loop)

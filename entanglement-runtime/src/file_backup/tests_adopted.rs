@@ -8,7 +8,8 @@ use entanglement_core::{AgentState, InMsg, OutEvent, SessionId};
 
 use super::tests::{tick, Fixture};
 use super::tracker::ancestry_walk;
-use super::{with_exec_seq, without_exec_seq, FileBackups};
+use super::FileBackups;
+use crate::exec_scope::{with_exec_seq, without_exec_seq};
 use crate::session_store::{LogPayload, LogRecord};
 
 /// A stand-in for Holly's session directory: who is under whom right now.

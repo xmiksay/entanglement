@@ -58,6 +58,8 @@ mod date;
 pub mod discover;
 pub mod env_date;
 pub mod exec;
+// The running call's `ToolExec` seq, read by the per-write backups.
+pub mod exec_scope;
 pub mod extra_roots;
 pub mod file_backup;
 pub mod file_change;
