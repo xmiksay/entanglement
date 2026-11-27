@@ -4,8 +4,9 @@ How the headless engine is structured and how the four interfaces share one
 contract. Overview & roadmap in [`../README.md`](../README.md). The *why* behind
 each choice here is recorded in the [decision log](adr/README.md) (ADRs).
 
-This document describes the current *what is* — the three-layer dependency
-direction `provider ← core ← runtime`
+This document describes the current *what is* — the four-crate dependency
+direction `provider ← core ← runtime ← skutter`, with `skutter` the coding CLI
+built on the runtime's public API (#931)
 ([ADR-0053](adr/archive/0053-invert-core-provider-seam.md), superseding the direction
 of [ADR-0006](adr/archive/0006-core-dependency-hygiene-gate.md)'s original gate).
 Decided-but-pending work lives in GitHub issues, not inline here.
@@ -20,7 +21,7 @@ numbers (§0–§10) referenced throughout the docs and ADRs map as follows:
 
 | Module | §§ | Topic |
 | --- | --- | --- |
-| [Layers & the actor model](architecture/layers-and-abi.md) | §0–1 | core/provider/runtime layering + the actor ABI |
+| [Layers & the actor model](architecture/layers-and-abi.md) | §0–1 | core/provider/runtime/skutter layering + the actor ABI |
 | [Wire protocol & structured outputs](architecture/protocol.md) | §2, §4 | `InMsg`/`OutEvent`, Plan/TaskList events |
 | [Agents, permissions, skills & prompt](architecture/agents-and-permissions.md) | §3 | agent profiles (identity), permission modes (authority), spawn limits, skills, prompt assembly |
 | [Per-session engine](architecture/engine.md) | §5 | turn loop, tool round-trip, steering, cancellation |

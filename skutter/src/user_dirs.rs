@@ -8,7 +8,9 @@
 //!
 //! Both the library and the binary declare this module: each crate root has
 //! its own `cfg(test)`, so a module shared through the library would not
-//! guard the binary's unit tests.
+//! guard the binary's unit tests. The converse gap: library code a bin
+//! test calls (e.g. `skutter::logging`) is compiled without `cfg(test)`, so
+//! only `scripts/test-isolated.sh` covers it there.
 
 // Each crate root uses a different subset of the accessors.
 #![allow(dead_code)]

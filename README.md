@@ -13,7 +13,8 @@ Actor core + stdio head + TUI + local WebSocket `serve` head, with real LLM
 backends wired (`entanglement-provider`: z.ai/OpenAI/Ollama + Anthropic +
 Gemini). All
 four interfaces now ship. The three-layer re-architecture (core / provider /
-runtime) has landed — see
+runtime) has landed, and the CLI now lives in its own `skutter` crate (#931) —
+see
 [`docs/adr/0006`](docs/adr/archive/0006-core-dependency-hygiene-gate.md) and the crate
 table below.
 
