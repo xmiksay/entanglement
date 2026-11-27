@@ -90,7 +90,8 @@ one warns at config load with `skutter`'s `tool_vocab::non_maskable_reason`
 (`config::mode_warn`, alongside the stale-name check) — the library's
 reasons plus `skutter`'s script-only `read_raw`/`glob_json`/`grep_json`,
 which grade as `read`/`glob`/`grep` through their `Tool::call_grading`
-(#968), so a rule naming one never matches either.
+(#968; an out-of-root `read_raw` grades as itself and always fails), so a
+rule naming one never decides a call that runs.
 Per-tool MCP control is a `mcp__<server>__<tool>` rule (rule keys match
 the tool part exactly, so a mode/ceiling rule spelling a name glob such as
 `mcp__<server>__*` warns as never matching): it grades an envelope call and a script's

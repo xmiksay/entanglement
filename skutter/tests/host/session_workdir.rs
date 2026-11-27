@@ -17,7 +17,9 @@ use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::path_grading::SessionWorkdirs;
 use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver, PermissionResolver};
 use entanglement_runtime::tool_runner::ToolExecutor;
-use skutter::host::{host_tools_with, workdir, BashTool, EscapeResolver, HostToolOptions};
+use skutter::host::{
+    host_tools_with, workdir, BashTool, EscapeResolver, HostToolOptions, ReadRawTool,
+};
 use skutter::state::ExtraRootStore;
 use tokio::sync::broadcast::Receiver;
 
@@ -102,6 +104,8 @@ pub(crate) fn harness(calls: Vec<ToolCall>, mode_table: Arc<ModeTable>) -> Harne
         },
     );
     reg.register(BashTool::new(root.clone()));
+    // Script-only, as `default_tools` registers it: callable, not advertised.
+    reg.register(ReadRawTool::new(root.clone()));
     let tools = reg.shared();
     let modes = perm_modes();
     // As `services` wires it: the mode grade, wrapped in the escape-root
@@ -168,6 +172,12 @@ impl Harness {
 
     /// Run one turn, rejecting any approval prompt; returns every event.
     pub(crate) async fn turn(&self) -> Vec<OutEvent> {
+        self.turn_answering(None).await
+    }
+
+    /// [`Self::turn`], approving every non-`rhai` card at `approve` instead
+    /// when it is `Some`.
+    pub(crate) async fn turn_answering(&self, approve: Option<ApprovalScope>) -> Vec<OutEvent> {
         let mut sub = self.holly.subscribe();
         self.holly
             .send(InMsg::prompt(self.sid.clone(), "go"))
@@ -182,11 +192,16 @@ impl Harness {
                 // A `rhai` launch card (ADR-0228) is answered Ask per
                 // command, so the script's nested calls meet the gates
                 // under test; every other card is rejected.
-                let msg = if tool == "rhai" {
+                let scope = if tool == "rhai" {
+                    Some(Default::default())
+                } else {
+                    approve
+                };
+                let msg = if let Some(scope) = scope {
                     InMsg::Approve {
                         session: self.sid.clone(),
                         request_id: request_id.clone(),
-                        scope: Default::default(),
+                        scope,
                         mode: None,
                         run_all: false,
                     }

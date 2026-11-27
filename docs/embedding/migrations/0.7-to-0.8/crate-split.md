@@ -76,9 +76,10 @@ changes:
   run wherever the resolver is asked (`propose_plan` and an in-call
   redirect hop included). Known limitation until #936: a sub-agent's call
   runs them once per session in its ancestor chain, each run naming that
-  ancestor. They match the graded tool name (`read_raw` → `read`,
-  `glob_json` → `glob`, `grep_json` → `grep`, a `call_grading` target), so a
-  `tools: [read_raw]` filter never matches. `post_tool_use` is observe-only
+  ancestor. They match the graded tool name (`read_raw` → `read` inside
+  the root, `glob_json` → `glob`, `grep_json` → `grep`, a `call_grading`
+  target), so a `tools: [read_raw]` filter matches only an out-of-root
+  `read_raw`, which fails. `post_tool_use` is observe-only
   telemetry. After #964 alone it fired on the `ToolOutput` of a host-tool
   call the runtime ran, asynchronously; #968 changes that: it now runs
   synchronously inside `skutter`'s own tools, before their result returns,
@@ -351,7 +352,10 @@ names no host tool. Site and nexial use none of the moved items; nexial's
   honoured. `glob`/`grep` still never ask and drop an out-of-root match
   unless a durable `read` entry in that store covers it — the scratch dir
   or a `read` grant an earlier release persisted; a `read` approved now is
-  a mode grant, which they do not ride (ADR-0132). `post_tool_use` runs
+  a mode grant, which they do not ride (ADR-0132). `read_raw` is
+  unchanged: an out-of-root path gets no card and fails with `escapes
+  working directory` (it grades as `read` only inside the root, so its
+  call never raises or records a `read#outside-root` grant). `post_tool_use` runs
   inside `skutter`'s own tools, before their result returns, a script's
   calls included; an MCP tool's still fires from the event stream.
 - **Left for #932:** `Mode::sandbox` and `Mode::sandbox_network` stay on

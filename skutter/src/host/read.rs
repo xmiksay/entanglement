@@ -3,7 +3,7 @@
 //! (detected by extension) comes back as a base64 image **content block** the
 //! provider renders to its native image format (#221).
 
-use super::containment::resolve_under_root;
+use super::containment::{escaping_path, resolve_under_root};
 use super::resolve_path;
 use crate::capability::Capability;
 use crate::output::truncate_output;
@@ -221,8 +221,17 @@ impl Tool for ReadRawTool {
         Cow::Borrowed("read_raw")
     }
     /// Graded as `read`, the tool it rides on (ADR-0098/0206): a
-    /// structured-output variant is never a permission escape hatch.
-    fn call_grading(&self, _input: &str) -> Option<CallGrading> {
+    /// structured-output variant is never a permission escape hatch. An
+    /// out-of-root path grades as `read_raw` itself, as the 0.7 escape gate
+    /// judged it: under `read` the escape-root check would offer a card
+    /// whose approval [`run`](Tool::run) still refuses, and record a
+    /// `read#outside-root` grant the user never gave a `read` (#968 review).
+    /// `read_raw` names no escape target, so the call gets no card and fails.
+    fn call_grading(&self, input: &str) -> Option<CallGrading> {
+        let path = crate::path_grading::str_arg(input, "path");
+        if path.is_some_and(|p| escaping_path(&self.root, &p).is_some()) {
+            return None;
+        }
         Some(CallGrading {
             name: "read".to_string(),
             capabilities: &[Capability::Read],
@@ -239,7 +248,7 @@ impl Tool for ReadRawTool {
         let parsed: ReadRawInput = serde_json::from_str(input)
             .context("invalid input to read_raw: expected {\"path\": string}")?;
         // `read_raw` is rhai-internal; it stays strictly root-contained even
-        // when the escape-root check cleared the call it grades as (`read`).
+        // when a path checked as contained at grading resolves outside now.
         let full = resolve_under_root(&self.root, &parsed.path)?;
         let bytes = tokio::fs::read(&full)
             .await
@@ -428,6 +437,24 @@ mod tests {
         let tool = ReadRawTool::new(dir.path().to_path_buf());
         let out = tool.run(r#"{"path":"cfg.json"}"#).await.unwrap();
         assert_eq!(out, r#"{"a":1}"#);
+    }
+
+    /// Out of the root `read_raw` grades as itself, so the escape-root check
+    /// (keyed on `read`'s escape target) never offers it a card.
+    #[test]
+    fn read_raw_grades_as_read_only_inside_the_root() {
+        let dir = tmp();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let tool = ReadRawTool::new(root);
+        let graded = |path: &str| {
+            let input = serde_json::json!({ "path": path }).to_string();
+            tool.call_grading(&input).map(|cg| cg.name)
+        };
+        assert_eq!(graded("cfg.json").as_deref(), Some("read"));
+        assert_eq!(graded("../outer").as_deref(), None);
+        let abs = dir.path().join("outer").display().to_string();
+        assert_eq!(graded(&abs).as_deref(), None);
     }
 
     #[tokio::test]
