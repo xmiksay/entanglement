@@ -94,8 +94,15 @@ pub async fn run_one(
         if json {
             writeln!(out, "{}", serde_json::to_string(&ev)?)?;
         } else {
-            let tools = tools.read().expect("tool registry lock poisoned");
-            render::render_text(&mut out, &tools, &ev)?;
+            // Rendered into memory so the registry lock is released before the
+            // stdout write: a slow pipe must not stall a lazy MCP connect
+            // waiting on the write lock.
+            let mut text = Vec::new();
+            {
+                let tools = tools.read().expect("tool registry lock poisoned");
+                render::render_text(&mut text, &tools, &ev)?;
+            }
+            out.write_all(&text)?;
         }
         out.flush()?;
         // No interactive user on the one-shot head: auto-answer every `ask_user`
