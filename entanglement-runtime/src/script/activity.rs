@@ -9,6 +9,7 @@ use std::time::Instant;
 use entanglement_core::{Holly, OutEvent, SessionId};
 
 use crate::permission;
+use crate::tools::{ArgKind, ToolRegistry};
 
 /// How many nested calls of one script run are reported individually. A
 /// script can loop over thousands of bindings; past this, per-call events
@@ -88,11 +89,11 @@ impl NestedCalls {
     /// A binding call is about to run. The args summary is computed here,
     /// before the input moves into the dispatcher, and only for a call that
     /// will be reported — a large `write` past the cap is never copied.
-    pub(super) fn begin(&mut self, tool: &str, input: &str) {
+    pub(super) fn begin(&mut self, tools: &ToolRegistry, tool: &str, input: &str) {
         let report = self
             .tally
             .next()
-            .map(|index| (index, tool.to_string(), args_summary(tool, input)));
+            .map(|index| (index, tool.to_string(), args_summary(tools, tool, input)));
         self.in_flight = Some(InFlight {
             report,
             started: Instant::now(),
@@ -140,32 +141,29 @@ impl Drop for NestedCalls {
 }
 
 /// A one-line, bounded summary of a call's input that never carries a
-/// credential. `bash` shows only the program's name — the rest of a
-/// command line is where a `curl -H 'Authorization: …'` rides, and under
-/// Allow/`auto`/Run all no card ever showed it. Any other tool shows its
-/// permission-graded argument (a path, `{METHOD} {url}`) with every URL's
-/// userinfo, query and fragment cut; a tool with none, the input's top-level
-/// key names only. `http_auth` credentials never reach a script's input at
-/// all — the `http` tool adds them at send time.
-pub(crate) fn args_summary(tool: &str, input: &str) -> String {
-    let text = match tool {
-        "bash" => program_name(input),
-        _ => match permission::permission_arg(tool, input) {
-            Some(arg) => strip_url_secrets(&arg),
-            None => key_names(input),
-        },
+/// credential. A command-line argument ([`ArgKind::Command`]) shows only
+/// the program's name — the rest of a command line is where a
+/// `curl -H 'Authorization: …'` rides, and under Allow/`auto`/Run all no
+/// card ever showed it. Any other tool shows its permission-graded argument
+/// (a path, `{METHOD} {url}`) with every URL's userinfo, query and fragment
+/// cut; a tool with none, the input's top-level key names only.
+/// `http_auth` credentials never reach a script's input at all — the
+/// `http` tool adds them at send time.
+pub(crate) fn args_summary(tools: &ToolRegistry, tool: &str, input: &str) -> String {
+    let text = match permission::permission_arg(tools, tool, input) {
+        Some(arg) if permission::permission_scope(tools, tool).arg == ArgKind::Command => {
+            program_name(&arg)
+        }
+        Some(arg) => strip_url_secrets(&arg),
+        None => key_names(input),
     };
     bound(&text)
 }
 
-/// The basename of the program a `bash` input runs, plus ` …` when
+/// The basename of the program a command line runs, plus ` …` when
 /// anything follows it. Leading `NAME=value` assignments are
 /// skipped, never shown — a value is exactly what must not leak.
-fn program_name(input: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
-        return String::new();
-    };
-    let command = value.get("command").and_then(|c| c.as_str()).unwrap_or("");
+fn program_name(command: &str) -> String {
     let mut words = command.split_whitespace().skip_while(|w| w.contains('='));
     let Some(program) = words.next() else {
         return String::new();
@@ -220,6 +218,10 @@ fn bound(text: &str) -> String {
 mod tests {
     use super::*;
 
+    fn summarize(tool: &str, input: &str) -> String {
+        args_summary(&crate::host::every_tool("/p".into()), tool, input)
+    }
+
     /// Run `calls` calls through a tally, every `error_every`-th failing;
     /// returns `(reported indexes, summary)`.
     fn run(calls: u64, error_every: u64) -> (Vec<u64>, Option<(u64, u64)>) {
@@ -260,7 +262,7 @@ mod tests {
     #[test]
     fn a_summary_shows_the_graded_argument() {
         assert_eq!(
-            args_summary("read", r#"{"path":"src/main.rs"}"#),
+            summarize("read", r#"{"path":"src/main.rs"}"#),
             "src/main.rs"
         );
     }
@@ -271,26 +273,26 @@ mod tests {
             "command": "curl -H 'Authorization: Bearer s3cret' https://x.example/?token=t"
         })
         .to_string();
-        assert_eq!(args_summary("bash", &bearer), "curl …");
+        assert_eq!(summarize("bash", &bearer), "curl …");
         assert_eq!(
-            args_summary("bash", r#"{"command":"TOKEN=s3cret /usr/bin/make"}"#),
+            summarize("bash", r#"{"command":"TOKEN=s3cret /usr/bin/make"}"#),
             "make"
         );
-        assert_eq!(args_summary("bash", r#"{"command":"ls"}"#), "ls");
+        assert_eq!(summarize("bash", r#"{"command":"ls"}"#), "ls");
     }
 
     #[test]
     fn a_quoted_program_is_unquoted_before_its_basename() {
         assert_eq!(
-            args_summary("bash", r#"{"command":"'/usr/bin/curl' -s"}"#),
+            summarize("bash", r#"{"command":"'/usr/bin/curl' -s"}"#),
             "curl …"
         );
-        assert_eq!(args_summary("bash", r#"{"command":"\"/bin/ls\""}"#), "ls");
+        assert_eq!(summarize("bash", r#"{"command":"\"/bin/ls\""}"#), "ls");
     }
 
     #[test]
     fn a_url_in_any_tools_argument_is_stripped() {
-        let summary = args_summary("read", r#"{"path":"https://me:pw@h.example/a?token=t#f"}"#);
+        let summary = summarize("read", r#"{"path":"https://me:pw@h.example/a?token=t#f"}"#);
         assert_eq!(summary, "https://h.example/a");
     }
 
@@ -298,23 +300,23 @@ mod tests {
     fn a_url_summary_drops_userinfo_query_and_fragment() {
         let input =
             r#"{"method":"get","url":"https://me:pw@api.example.com/v1/x?token=s3cret#frag"}"#;
-        let summary = args_summary("http", input);
+        let summary = summarize("http", input);
         assert_eq!(summary, "GET https://api.example.com/v1/x");
         assert!(!summary.contains("s3cret") && !summary.contains("pw"));
     }
 
     #[test]
     fn an_unknown_tool_summary_lists_keys_never_values() {
-        let summary = args_summary("mcp__gh__search", r#"{"query":"secret-ish","limit":5}"#);
+        let summary = summarize("mcp__gh__search", r#"{"query":"secret-ish","limit":5}"#);
         assert_eq!(summary, "limit, query");
-        assert_eq!(args_summary("mcp__gh__search", "not json"), "");
+        assert_eq!(summarize("mcp__gh__search", "not json"), "");
     }
 
     #[test]
     fn a_summary_is_one_bounded_line() {
         let path = format!("dir {}\nmore", "x".repeat(200));
         let input = serde_json::json!({ "path": path }).to_string();
-        let summary = args_summary("read", &input);
+        let summary = summarize("read", &input);
         assert!(!summary.contains('\n'));
         assert_eq!(summary.chars().count(), ARGS_SUMMARY_CHARS);
         assert!(summary.ends_with('…'));

@@ -736,11 +736,22 @@ fn approval_tail_bash_shows_full_multiline_command() {
     assert!(text.contains("workdir: sub"), "{text:?}");
 }
 
+/// Wire the host tools a head registers: the card asks them whether an
+/// argument is a path (#962).
+fn with_host_tools(app: &mut App) {
+    app.set_mcp_handles(crate::mcp::McpHandles {
+        avail: Default::default(),
+        registry: crate::run::summary::test_tools().shared(),
+        active: Default::default(),
+    });
+}
+
 #[test]
 fn approval_tail_read_shows_structured_path_not_empty() {
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
     app.init_head_context(std::path::PathBuf::from("/work/proj"));
+    with_host_tools(&mut app);
     feed_tool_request(&mut app, &sid, 1, "t1", "read", r#"{"path":"src/main.rs"}"#);
 
     let body = render_body_lines(&mut app, 80);
@@ -760,6 +771,7 @@ fn approval_tail_names_the_root_only_for_path_tools() {
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
     app.init_head_context(std::path::PathBuf::from("/work/proj"));
+    with_host_tools(&mut app);
     feed_tool_request(&mut app, &sid, 1, "t1", "bash", r#"{"command":"ls"}"#);
     let body = render_body_lines(&mut app, 80);
     assert!(

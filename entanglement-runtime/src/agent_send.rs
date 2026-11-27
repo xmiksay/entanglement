@@ -291,7 +291,8 @@ mod tests {
         let p = parse_input(input).unwrap();
         assert_eq!(p.agent_id, "s-abc");
         assert_eq!(
-            crate::permission::permission_arg(AGENT_SEND_TOOL, input).as_deref(),
+            crate::permission::permission_arg(&crate::ToolRegistry::new(), AGENT_SEND_TOOL, input)
+                .as_deref(),
             Some(p.agent_id.as_str())
         );
         assert!(parse_input(r#"{"agent_id":"   ","prompt":"hi"}"#).is_none());

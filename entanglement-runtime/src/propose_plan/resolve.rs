@@ -66,7 +66,7 @@ pub(super) struct PlanResolution {
 }
 
 /// Root-relative, lexically clean, and inside `root` — rejects an absolute
-/// out-of-root path (`permission_path::rooted_arg` leaves those verbatim) and a
+/// out-of-root path (`permission_path::rooted_path` leaves those verbatim) and a
 /// relative path that walks above root via leading `..` components.
 fn escapes_root(rel: &str) -> bool {
     Path::new(rel).is_absolute() || rel == ".." || rel.starts_with("../")
@@ -104,7 +104,7 @@ pub(super) fn resolve_plan(
             Ok(PlanResolution { content, rel_path })
         }
         PlanInput::Path(raw_path) => {
-            let rel_path = permission_path::rooted_arg(root, "write", &raw_path);
+            let rel_path = permission_path::rooted_path(root, &raw_path);
             if !rel_path.ends_with(".md") {
                 return Err(format!(
                     "propose_plan `path` must name a `.md` file: `{raw_path}`"

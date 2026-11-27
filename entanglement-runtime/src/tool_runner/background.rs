@@ -30,7 +30,7 @@ pub(super) fn spawn_file_change_listener(background: &mut JoinSet<()>, ctx: &Lad
                     hash,
                     ..
                 }) => {
-                    let rel = crate::permission_path::rooted_arg(&plan_root, "write", &path);
+                    let rel = crate::permission_path::rooted_path(&plan_root, &path);
                     plan_files.note_file_change(&session, &rel, &hash);
                 }
                 Ok(_) => {}

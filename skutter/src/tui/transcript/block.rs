@@ -1,4 +1,5 @@
 use crate::tui::wrap;
+use entanglement_runtime::ToolRegistry;
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -19,6 +20,7 @@ use super::segment::Block;
 /// unchanged across frames until its content hash ([`Block::key`]) shifts.
 pub(super) fn render_block(
     block: &Block,
+    tools: &ToolRegistry,
     md: &MarkdownRenderer,
     theme: Theme,
     user: RoleColors,
@@ -48,6 +50,7 @@ pub(super) fn render_block(
         } => {
             let mut lines = flush_tool_call(
                 md,
+                tools,
                 tool,
                 input,
                 output.as_deref(),
@@ -76,6 +79,7 @@ pub(super) fn render_block(
         }
         Block::User { text, pending } => render_user(text, *pending, theme, user, available_width),
         Block::ToolOutput { tool, output } => render_tool_output(
+            tools,
             tool.as_deref(),
             output,
             theme,
@@ -139,6 +143,7 @@ fn render_user(
 }
 
 fn render_tool_output(
+    tools: &ToolRegistry,
     tool: Option<&str>,
     output: &str,
     theme: Theme,
@@ -153,6 +158,7 @@ fn render_tool_output(
     // slot is empty and the header falls back to the bare tool name.
     let header = tool_header_spans(
         &theme,
+        tools,
         tool.unwrap_or("output"),
         "",
         '▸',

@@ -27,7 +27,7 @@ use crate::capability::Capability;
 use crate::http_gate::HttpGate;
 use crate::policy::Grade;
 use crate::tool_names::HTTP_TOOL;
-use crate::tools::Tool;
+use crate::tools::{ArgKind, PermissionScope, Tool};
 
 /// Response bytes kept — a Rhai string is capped at 256 KiB anyway.
 const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -79,6 +79,21 @@ impl Tool for HttpTool {
 
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Exec]
+    }
+
+    /// ADR-0227: `{METHOD} {url}`, so a rule can allow reads only —
+    /// `http(GET https://api.github.com/*)`. Both halves normalized as sent;
+    /// either unparseable → no argument (the call would fail).
+    fn permission_scope(&self) -> PermissionScope {
+        PermissionScope::arg(ArgKind::Text)
+    }
+
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        let value: serde_json::Value = serde_json::from_str(input).ok()?;
+        let method =
+            entanglement_core::web_fetch::parse_method(value.get("method")?.as_str()?).ok()?;
+        let url = entanglement_core::web_fetch::normalize_url(value.get("url")?.as_str()?)?;
+        Some(format!("{method} {url}"))
     }
 
     fn description(&self) -> &str {
@@ -263,12 +278,12 @@ mod tests {
                 check_hop("GET".into(), "https://evil.example/x".into()).await,
             )
         };
-        let mut grader = grader_for(mode(), crate::tools::ToolRegistry::new());
+        let mut grader = grader_for(mode(), crate::host::every_tool("/p".into()));
         grader.run_all = true;
         let (ask, deny) = scope(grader, hops()).await;
         assert!(ask.is_ok(), "{ask:?}");
         assert!(deny.unwrap_err().to_string().contains("denied"));
-        let grader = grader_for(mode(), crate::tools::ToolRegistry::new());
+        let grader = grader_for(mode(), crate::host::every_tool("/p".into()));
         let (ask, _) = scope(grader, hops()).await;
         assert!(ask.unwrap_err().to_string().contains("needs approval"));
     }

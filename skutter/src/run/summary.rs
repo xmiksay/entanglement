@@ -6,6 +6,7 @@
 use std::borrow::Cow;
 
 use entanglement_runtime::permission;
+use entanglement_runtime::ToolRegistry;
 use serde_json::Value;
 
 /// Character budget for a prose hint (an `agent` prompt, an `ask_user`
@@ -67,24 +68,24 @@ pub(crate) fn display_name(tool: &str) -> Cow<'_, str> {
     Cow::Borrowed(tool)
 }
 
-/// The primary argument of a call: the permission-graded value for the file
-/// and exec tools (the same string an argument-scoped rule matches), a
+/// The primary argument of a call: the permission argument the registered
+/// tool declares (the same string an argument-scoped rule matches), a
 /// readable hint for the orchestration/discovery tools, else a `pattern` or
 /// the first scalar argument. `None` when nothing informative exists.
-pub(crate) fn primary_arg(tool: &str, input: &str) -> Option<String> {
+pub(crate) fn primary_arg(tools: &ToolRegistry, tool: &str, input: &str) -> Option<String> {
     // The spawning pair has a permission argument too (ADR-0235), but its
     // header reads better as the target plus a prompt hint. It heads with
     // the graded target (`agent`'s default profile when the input names
     // none, `agent_send`'s trimmed handle) so a card always names what a
     // grant would record.
     if tool == "agent" || tool == "agent_send" {
-        let head = permission::permission_arg(tool, input)?;
+        let head = permission::permission_arg(tools, tool, input)?;
         return match serde_json::from_str::<Value>(input) {
             Ok(value) => with_prompt_hint(&head, &value),
             Err(_) => Some(head),
         };
     }
-    if let Some(arg) = permission::permission_arg(tool, input) {
+    if let Some(arg) = permission::permission_arg(tools, tool, input) {
         return Some(arg);
     }
     let value: Value = serde_json::from_str(input).ok()?;
@@ -160,10 +161,10 @@ pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
 
 /// `name  arg` on one line (a multi-line arg keeps its first line, marked
 /// `…`) — the text head's `→`/`?` summary.
-pub(crate) fn call_line(tool: &str, input: &str) -> String {
+pub(crate) fn call_line(tools: &ToolRegistry, tool: &str, input: &str) -> String {
     let (tool, input) = unwrap_envelope(tool, input);
     let name = display_name(&tool);
-    let Some(arg) = primary_arg(&tool, &input) else {
+    let Some(arg) = primary_arg(tools, &tool, &input) else {
         return name.into_owned();
     };
     let mut lines = arg.lines();
@@ -257,6 +258,15 @@ fn dash_item(value: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The host tools a head registers, for tests that render their calls.
+#[cfg(test)]
+pub(crate) fn test_tools() -> ToolRegistry {
+    let root = std::path::PathBuf::from("/p");
+    let mut tools = entanglement_runtime::host::host_tools(root.clone());
+    tools.register(entanglement_runtime::host::BashTool::new(root));
+    tools
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,7 +276,7 @@ mod tests {
     /// card for a spawn that names none reads `general`, not the prompt.
     #[test]
     fn an_agent_header_names_the_graded_profile() {
-        let arg = |input| primary_arg("agent", input);
+        let arg = |input| primary_arg(&test_tools(), "agent", input);
         assert_eq!(
             arg(r#"{"agent":"plan","prompt":"do it"}"#).as_deref(),
             Some("plan  do it")
@@ -283,7 +293,7 @@ mod tests {
 
     #[test]
     fn an_agent_send_header_names_the_graded_handle() {
-        let arg = |input| primary_arg("agent_send", input);
+        let arg = |input| primary_arg(&test_tools(), "agent_send", input);
         assert_eq!(
             arg(r#"{"agent_id":" s-1 ","prompt":"go on"}"#).as_deref(),
             Some("s-1  go on")
@@ -347,7 +357,7 @@ mod tests {
 
     #[test]
     fn primary_arg_covers_discovery_and_script_tools() {
-        let arg = |tool, input| primary_arg(tool, input);
+        let arg = |tool, input| primary_arg(&test_tools(), tool, input);
         assert_eq!(
             arg("mcp_tools", r#"{"name":"github"}"#).as_deref(),
             Some("github")
@@ -395,17 +405,21 @@ mod tests {
     #[test]
     fn call_line_is_one_readable_line() {
         assert_eq!(
-            call_line("bash", r#"{"command":"echo a\necho b"}"#),
+            call_line(&test_tools(), "bash", r#"{"command":"echo a\necho b"}"#),
             "bash  echo a …"
         );
         assert_eq!(
             call_line(
+                &test_tools(),
                 "invoke",
                 r#"{"name":"mcp__gh__issue","args":{"title":"Bug"}}"#
             ),
             "gh › issue  Bug"
         );
-        assert_eq!(call_line("propose_plan", "not json"), "propose_plan");
+        assert_eq!(
+            call_line(&test_tools(), "propose_plan", "not json"),
+            "propose_plan"
+        );
     }
 
     #[test]

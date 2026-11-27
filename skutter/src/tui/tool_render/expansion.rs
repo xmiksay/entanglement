@@ -8,6 +8,8 @@
 use std::path::Path;
 
 use entanglement_runtime::permission;
+use entanglement_runtime::tools::ArgKind;
+use entanglement_runtime::ToolRegistry;
 use ratatui::text::{Line, Span, Text};
 
 use crate::tui::diff::DiffRenderer;
@@ -16,22 +18,23 @@ use crate::tui::wrap;
 
 use super::{collect_line, parse_input};
 
-/// A full, untruncated `  {label}: {value}` line for a path/command tool's
-/// body (#519) — reuses [`permission::permission_arg`], the same value the
-/// collapsed header truncates to fit `available_width` and an
-/// argument-scoped permission rule matches against, so the body can never
-/// show something other than what was actually graded. `None` when the input
-/// carries nothing for this tool (malformed JSON, missing field).
-pub(super) fn location_line(tool: &str, input: &str, label: &str) -> Option<Line<'static>> {
-    permission::permission_arg(tool, input).map(|arg| Line::from(format!("  {label}: {arg}")))
+/// A full, untruncated `  {label}: {value}` line for the string field `key`
+/// of a tool's input (#519) — the collapsed header truncates its argument to
+/// fit `available_width`, the body never does. `None` when the input carries
+/// no such field (malformed JSON, missing field).
+pub(super) fn field_line(input: &str, key: &str) -> Option<Line<'static>> {
+    let v = parse_input(input);
+    let value = v.get(key)?.as_str()?;
+    Some(Line::from(format!("  {key}: {value}")))
 }
 
-/// The `  root: <dir>` line a path tool's approval prompt carries (#762): a
-/// relative `path:` is only meaningful against the root it resolves under,
-/// and the user may be looking at a session started somewhere else. `None`
-/// for every non-path tool.
-pub fn root_line(tool: &str, root: &Path) -> Option<Line<'static>> {
-    entanglement_runtime::permission_path::is_path_arg_tool(tool)
+/// The `  root: <dir>` line an approval card carries for a tool whose
+/// argument is a path resolved against the root (#762): a relative `path:`
+/// is only meaningful against the root it resolves under, and the user may
+/// be looking at a session started somewhere else. Whether the argument is a
+/// path is the registered tool's answer (#962); `None` for every other tool.
+pub fn root_line(tools: &ToolRegistry, tool: &str, root: &Path) -> Option<Line<'static>> {
+    (permission::permission_scope(tools, tool).arg == ArgKind::Path)
         .then(|| Line::from(format!("  root: {}", root.display())))
 }
 
@@ -39,7 +42,7 @@ pub fn root_line(tool: &str, root: &Path) -> Option<Line<'static>> {
 /// never left to the truncatable header alone (#519).
 pub(super) fn render_read_input(input: &str) -> Vec<Line<'static>> {
     let v = parse_input(input);
-    let mut lines: Vec<Line<'static>> = location_line("read", input, "path").into_iter().collect();
+    let mut lines: Vec<Line<'static>> = field_line(input, "path").into_iter().collect();
     if let Some(offset) = v.get("offset").and_then(|o| o.as_u64()) {
         lines.push(Line::from(format!("  offset: {offset}")));
     }
@@ -55,7 +58,7 @@ pub(super) fn render_edit_input(input: &str, theme: &Theme) -> Vec<Line<'static>
     let v = parse_input(input);
     let old = v.get("oldString").and_then(|s| s.as_str()).unwrap_or("");
     let new = v.get("newString").and_then(|s| s.as_str()).unwrap_or("");
-    let mut lines: Vec<Line<'static>> = location_line("edit", input, "path").into_iter().collect();
+    let mut lines: Vec<Line<'static>> = field_line(input, "path").into_iter().collect();
     lines.extend(DiffRenderer::render_change(old, new, theme).lines);
     lines
 }
@@ -70,7 +73,7 @@ pub(super) fn render_write_expansion(input: &str) -> Text<'static> {
     let v = parse_input(input);
     let content = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
     let mut lines = Vec::new();
-    lines.extend(location_line("write", input, "path"));
+    lines.extend(field_line(input, "path"));
     lines.extend(
         content
             .lines()
@@ -116,7 +119,7 @@ pub(super) fn render_apply_patch_expansion(input: &str, theme: &Theme) -> Text<'
     let v: serde_json::Value = serde_json::from_str(input).unwrap_or(serde_json::Value::Null);
     let patch = v.get("patch").and_then(|s| s.as_str()).unwrap_or("");
     let mut lines = Vec::new();
-    lines.extend(location_line("apply_patch", input, "path"));
+    lines.extend(field_line(input, "path"));
     let diff = DiffRenderer::render_unified(patch, theme);
     if diff.lines.is_empty() {
         lines.extend(patch.lines().map(|line| Line::from(format!("  {line}"))));
@@ -130,13 +133,12 @@ pub(super) fn render_apply_patch_expansion(input: &str, theme: &Theme) -> Text<'
 /// never left to the truncated one-line header, #519) plus `workdir` when set
 /// (permission-relevant since #425).
 pub(super) fn render_command_input(input: &str, available_width: u16) -> Vec<Line<'static>> {
+    let v = parse_input(input);
     let mut lines = Vec::new();
-    if let Some(command) = permission::permission_arg("bash", input) {
-        lines.extend(render_wrapped_labeled("command", &command, available_width));
+    if let Some(command) = v.get("command").and_then(|c| c.as_str()) {
+        lines.extend(render_wrapped_labeled("command", command, available_width));
     }
-    if let Some(workdir) = permission::permission_workdir("bash", input) {
-        lines.push(Line::from(format!("  workdir: {workdir}")));
-    }
+    lines.extend(field_line(input, "workdir"));
     lines
 }
 
@@ -156,13 +158,12 @@ pub(super) fn render_rhai_input(input: &str, available_width: u16) -> Vec<Line<'
     lines
 }
 
-/// A `glob` body: the full pattern (+ `exclude` list when set) as labeled
-/// lines instead of an empty/raw-JSON body (#519).
+/// A `glob` body: the full pattern, the optional base `path`, and any
+/// `exclude` list as labeled lines instead of an empty/raw-JSON body (#519).
 pub(super) fn render_glob_input(input: &str) -> Vec<Line<'static>> {
     let v = parse_input(input);
-    let mut lines: Vec<Line<'static>> = location_line("glob", input, "pattern")
-        .into_iter()
-        .collect();
+    let mut lines: Vec<Line<'static>> = field_line(input, "pattern").into_iter().collect();
+    lines.extend(field_line(input, "path"));
     if let Some(exclude) = non_empty_str_array(&v, "exclude") {
         lines.push(Line::from(format!("  exclude: {}", exclude.join(", "))));
     }
@@ -170,8 +171,9 @@ pub(super) fn render_glob_input(input: &str) -> Vec<Line<'static>> {
 }
 
 /// A `grep` body: the regex `pattern`, the optional file-filter `path`, and
-/// any `exclude` list as labeled lines (#519) — `permission_arg` alone only
-/// ever surfaces one of `pattern`/`path`, but a reviewer needs both.
+/// any `exclude` list as labeled lines (#519) — the permission argument
+/// alone only ever surfaces one of `pattern`/`path`, but a reviewer needs
+/// both.
 pub(super) fn render_grep_input(input: &str) -> Vec<Line<'static>> {
     let v = parse_input(input);
     let mut lines = Vec::new();
@@ -548,5 +550,19 @@ mod tests {
                 "  42"
             ]
         );
+    }
+
+    /// #762/#962: the root line follows the registered tool's argument
+    /// kind — a path tool gets it, a command-line tool and an unregistered
+    /// one do not.
+    #[test]
+    fn the_root_line_is_for_path_arguments_only() {
+        let tools = crate::run::summary::test_tools();
+        let root = Path::new("/p");
+        let line = root_line(&tools, "read", root).expect("read takes a path");
+        assert_eq!(collect_line(&line), "  root: /p");
+        assert!(root_line(&tools, "bash", root).is_none());
+        assert!(root_line(&tools, "mcp__gh__x", root).is_none());
+        assert!(root_line(&entanglement_runtime::ToolRegistry::new(), "read", root).is_none());
     }
 }

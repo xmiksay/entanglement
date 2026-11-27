@@ -10,7 +10,7 @@ use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
 use crate::path_grading::SessionWorkdirs;
-use crate::tools::Tool;
+use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
@@ -238,6 +238,16 @@ impl Tool for GrepTool {
         base: &str,
     ) -> bool {
         crate::path_grading::join_or_default(args, "path", base)
+    }
+
+    /// The optional file filter `path` (#417): a path, unlike the regex
+    /// `pattern`.
+    fn permission_scope(&self) -> PermissionScope {
+        PermissionScope::arg(ArgKind::Path)
+    }
+
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "path")
     }
 
     fn name(&self) -> Cow<'static, str> {

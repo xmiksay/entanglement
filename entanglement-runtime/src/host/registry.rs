@@ -85,3 +85,25 @@ pub fn host_tools_with(root: PathBuf, opts: HostToolOptions) -> ToolRegistry {
     reg.register(apply_patch);
     reg
 }
+
+/// Every registry tool a head registers (the sextet, `bash`, the
+/// script-only read variants, `web_fetch` and `http`), for tests that ask
+/// the registered tools rather than a name list (#962).
+#[cfg(test)]
+pub(crate) fn every_tool(root: PathBuf) -> ToolRegistry {
+    let mut reg = host_tools(root.clone());
+    reg.register(super::ReadRawTool::new(root.clone()));
+    reg.register(super::GlobJsonTool::new(root.clone()));
+    reg.register(super::GrepJsonTool::new(root.clone()));
+    reg.register(super::BashTool::new(root));
+    #[cfg(feature = "web-fetch")]
+    reg.register(super::WebFetchTool::new().expect("web_fetch client builds"));
+    #[cfg(feature = "rhai")]
+    reg.register(
+        crate::http_tool::HttpTool::new(std::sync::Arc::new(crate::http_gate::HttpGate::new(
+            Default::default(),
+        )))
+        .expect("http client builds"),
+    );
+    reg
+}

@@ -2,40 +2,25 @@
 //! [ADR-0125](../../../docs/adr/archive/0125-permission-arguments-for-path-tools-are-normalized-root-relative.md)).
 //!
 //! [`permission_arg`][crate::permission::permission_arg] extracts a call's
-//! tool-specific argument **verbatim** — the model may spell a `read`/`edit`/
-//! `grep`/`glob` path either relatively (`src/main.rs`) or as an absolute path
-//! that happens to resolve inside the project root
-//! (`/home/user/project/src/main.rs`). Arg-scoped permission rules (#173,
-//! `read(src/*)`) and grants (#174) are authored root-relative, so the two
-//! spellings used to grade differently even though they name the same file.
+//! tool-specific argument **verbatim** — the model may spell a path either
+//! relatively (`src/main.rs`) or as an absolute path that happens to resolve
+//! inside the project root (`/home/user/project/src/main.rs`). Arg-scoped
+//! permission rules (#173, `tool(src/*)`) and grants (#174) are authored
+//! root-relative, so the two spellings used to grade differently even though
+//! they name the same file.
 //!
 //! This module is a grading-only wrapper layered *on top of* `permission_arg`
-//! — that function stays the pure verbatim extractor (the TUI transcript
-//! render still shows the model's literal input, `tui/transcript/render_run.rs`)
-//! — so only the call sites that feed a permission/grant decision route through
-//! [`grading_arg`].
+//! — that function stays the pure verbatim extractor (a head's transcript
+//! render still shows the model's literal input) — so only the call sites
+//! that feed a permission/grant decision route through [`grading_arg`].
+//! Which arguments are paths is the registered tool's answer
+//! ([`ArgKind::Path`], #962), never a name list here.
 
 use std::path::{Component, Path, PathBuf};
 
-/// Tools whose [`permission_arg`][crate::permission::permission_arg] value is a
-/// filesystem path (or path glob), and therefore eligible for root-relative
-/// normalization. `bash` (a shell command line) is deliberately absent
-/// — a command line is never a path, so it must never be rewritten.
-const PATH_ARG_TOOLS: &[&str] = &[
-    "read",
-    "edit",
-    "write",
-    "apply_patch",
-    "glob",
-    "grep",
-    "rhai",
-];
-
-/// Whether `tool`'s argument is a path resolved against the project root —
-/// the tools whose approval prompt names that root (#762).
-pub fn is_path_arg_tool(tool: &str) -> bool {
-    PATH_ARG_TOOLS.contains(&tool)
-}
+use crate::permission::{permission_arg, permission_scope};
+use crate::tool_names::RHAI_TOOL;
+use crate::tools::{ArgKind, ToolRegistry};
 
 /// Fold `.`/`..`/`//` out of `path` **lexically** — no filesystem access, so a
 /// symlink component is left exactly as written (resolving those is the
@@ -71,28 +56,29 @@ pub fn normalize_lexical(path: &str) -> String {
     result.to_string_lossy().into_owned()
 }
 
-/// Normalize a path-arg tool's argument root-relative when it names a location
-/// inside `root` (#485): lexically normalize, then — if the result is
-/// absolute and resolves under `root` — strip the root prefix (`root` itself
-/// becomes `"."`). An out-of-root absolute path stays verbatim (lexically
-/// normalized): a root-relative rule matching an outside path would be wrong,
-/// and the escape-root gate (ADR-0109) already owns that case. A tool with no
-/// path-arg concept (`bash`, or any tool `permission_arg` returns
-/// `None` for) is untouched.
-pub fn rooted_arg(root: &Path, tool: &str, arg: &str) -> String {
-    if !PATH_ARG_TOOLS.contains(&tool) {
-        return arg.to_string();
+/// Normalize a path argument root-relative when it names a location inside
+/// `root` (#485): lexically normalize, then — if the result is absolute and
+/// resolves under `root` — strip the root prefix (`root` itself becomes
+/// `"."`). An out-of-root absolute path stays verbatim (lexically
+/// normalized): a root-relative rule matching an outside path would be
+/// wrong, and the escape-root gate (ADR-0109) already owns that case.
+pub fn rooted_path(root: &Path, path: &str) -> String {
+    root_relative(root, normalize_lexical(path))
+}
+
+/// [`rooted_path`] for a script path, graded on its *canonical* file
+/// (ADR-0228): a script's grade must follow the code that runs, so a
+/// symlink in `scripts/deploy/` pointing elsewhere grades as where it
+/// points. The launch re-checks the file it read against this. Unresolvable
+/// (missing) falls back to the lexical form — the read then fails anyway.
+pub fn rooted_script(root: &Path, path: &str) -> String {
+    match root.join(path).canonicalize() {
+        Ok(canonical) => rooted_path(root, &canonical.to_string_lossy()),
+        Err(_) => rooted_path(root, path),
     }
-    // A script's grade must follow the code that runs, so `rhai` is the one
-    // tool graded on its *canonical* file (ADR-0228): a symlink in
-    // `scripts/deploy/` pointing elsewhere grades as where it points. The
-    // launch re-checks the file it read against this. Unresolvable (missing)
-    // falls back to the lexical form — the read then fails anyway.
-    let resolved = (tool == crate::tool_names::RHAI_TOOL)
-        .then(|| root.join(arg).canonicalize().ok())
-        .flatten()
-        .map(|p| p.to_string_lossy().into_owned());
-    let normalized = normalize_lexical(resolved.as_deref().unwrap_or(arg));
+}
+
+fn root_relative(root: &Path, normalized: String) -> String {
     let path = Path::new(&normalized);
     if path.is_absolute() {
         if let Ok(stripped) = path.strip_prefix(root) {
@@ -107,24 +93,37 @@ pub fn rooted_arg(root: &Path, tool: &str, arg: &str) -> String {
 }
 
 /// The grading-time argument for a permission/grant decision:
-/// [`permission_arg`][crate::permission::permission_arg] mapped through
-/// [`rooted_arg`] when a project `root` is wired. `root: None` — a `ToolExecutor::builder`
-/// with no `.escape_root(..)` — yields the verbatim argument, byte-identical to
-/// pre-#485 behavior. This is the function every arg-scoped rule match and
-/// grant-key lookup should use; `permission_arg` itself stays reserved for
-/// display (the TUI transcript) and the escape-root/workdir extractors, which
-/// have their own, unrelated normalization needs.
-pub fn grading_arg(tool: &str, input: &str, root: Option<&Path>) -> Option<String> {
-    let verbatim = crate::permission::permission_arg(tool, input)?;
+/// [`permission_arg`] mapped through [`rooted_path`] (a `rhai` script path
+/// through [`rooted_script`]) when the tool declares a [`ArgKind::Path`]
+/// argument and a project `root` is wired. `root: None` — a
+/// `ToolExecutor::builder` with no `.escape_root(..)` — yields the verbatim
+/// argument, byte-identical to pre-#485 behavior. This is the function every
+/// arg-scoped rule match and grant-key lookup should use; `permission_arg`
+/// itself stays reserved for display and the escape-root/workdir
+/// extractors, which have their own, unrelated normalization needs.
+pub fn grading_arg(
+    tools: &ToolRegistry,
+    tool: &str,
+    input: &str,
+    root: Option<&Path>,
+) -> Option<String> {
+    let verbatim = permission_arg(tools, tool, input)?;
     Some(match root {
-        Some(root) => rooted_arg(root, tool, &verbatim),
-        None => verbatim,
+        Some(root) if tool == RHAI_TOOL => rooted_script(root, &verbatim),
+        Some(root) if permission_scope(tools, tool).arg == ArgKind::Path => {
+            rooted_path(root, &verbatim)
+        }
+        _ => verbatim,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tools() -> ToolRegistry {
+        crate::host::every_tool("/home/user/project".into())
+    }
 
     #[test]
     fn normalize_lexical_folds_dot_and_dotdot() {
@@ -143,60 +142,48 @@ mod tests {
     }
 
     #[test]
-    fn rooted_arg_strips_an_in_root_absolute_path_per_tool() {
+    fn rooted_path_strips_an_in_root_absolute_path() {
         let root = Path::new("/home/user/project");
-        for tool in ["read", "edit", "write", "apply_patch"] {
-            assert_eq!(
-                rooted_arg(root, tool, "/home/user/project/src/main.rs"),
-                "src/main.rs",
-                "tool {tool}"
-            );
-        }
-        // glob's `pattern` and grep's file-filter `path` are path-shaped too,
-        // wildcards survive the strip untouched.
         assert_eq!(
-            rooted_arg(root, "glob", "/home/user/project/src/*.rs"),
-            "src/*.rs"
+            rooted_path(root, "/home/user/project/src/main.rs"),
+            "src/main.rs"
         );
+        // A path glob is path-shaped too: wildcards survive the strip
+        // untouched.
+        assert_eq!(rooted_path(root, "/home/user/project/src/*.rs"), "src/*.rs");
+        assert_eq!(rooted_path(root, "/home/user/project/src/*"), "src/*");
+    }
+
+    #[test]
+    fn rooted_path_leaves_a_relative_path_unchanged() {
+        let root = Path::new("/home/user/project");
+        assert_eq!(rooted_path(root, "src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn rooted_path_maps_root_itself_to_dot() {
+        let root = Path::new("/home/user/project");
+        assert_eq!(rooted_path(root, "/home/user/project"), ".");
+        assert_eq!(rooted_path(root, "/home/user/project/"), ".");
+    }
+
+    #[test]
+    fn rooted_path_leaves_an_out_of_root_absolute_path_verbatim() {
+        let root = Path::new("/home/user/project");
         assert_eq!(
-            rooted_arg(root, "grep", "/home/user/project/src/*"),
-            "src/*"
-        );
-    }
-
-    #[test]
-    fn rooted_arg_leaves_a_relative_path_unchanged() {
-        let root = Path::new("/home/user/project");
-        assert_eq!(rooted_arg(root, "read", "src/main.rs"), "src/main.rs");
-    }
-
-    #[test]
-    fn rooted_arg_maps_root_itself_to_dot() {
-        let root = Path::new("/home/user/project");
-        assert_eq!(rooted_arg(root, "read", "/home/user/project"), ".");
-        assert_eq!(rooted_arg(root, "read", "/home/user/project/"), ".");
-    }
-
-    #[test]
-    fn rooted_arg_leaves_an_out_of_root_absolute_path_verbatim() {
-        let root = Path::new("/home/user/project");
-        assert_eq!(
-            rooted_arg(root, "read", "/etc/passwd"),
+            rooted_path(root, "/etc/passwd"),
             "/etc/passwd",
             "out-of-root paths are the escape-root gate's problem, not this one"
         );
         // Still lexically normalized, just not root-relativized.
-        assert_eq!(
-            rooted_arg(root, "read", "/etc/../etc/passwd"),
-            "/etc/passwd"
-        );
+        assert_eq!(rooted_path(root, "/etc/../etc/passwd"), "/etc/passwd");
     }
 
     /// ADR-0228: a script path grades on its canonical target —
     /// root-relative inside the root, absolute outside it.
     #[cfg(unix)]
     #[test]
-    fn rooted_arg_canonicalizes_a_rhai_script_path() {
+    fn rooted_script_canonicalizes_a_script_path() {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let root = base.join("proj");
@@ -210,42 +197,39 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(base.join("out.rhai"), root.join("scripts/out.rhai")).unwrap();
         assert_eq!(
-            rooted_arg(&root, "rhai", "scripts/deploy/x.rhai"),
+            rooted_script(&root, "scripts/deploy/x.rhai"),
             "scripts/real.rhai"
         );
         let abs = root.join("scripts/./real.rhai");
         assert_eq!(
-            rooted_arg(&root, "rhai", abs.to_str().unwrap()),
+            rooted_script(&root, abs.to_str().unwrap()),
             "scripts/real.rhai"
         );
         assert_eq!(
-            rooted_arg(&root, "rhai", "scripts/out.rhai"),
+            rooted_script(&root, "scripts/out.rhai"),
             base.join("out.rhai").to_string_lossy()
         );
         assert_eq!(
-            rooted_arg(&root, "rhai", "scripts/./gone.rhai"),
+            rooted_script(&root, "scripts/./gone.rhai"),
             "scripts/gone.rhai"
         );
-        // `read` stays lexical (ADR-0125).
+        // A plain path stays lexical (ADR-0125).
         assert_eq!(
-            rooted_arg(&root, "read", "scripts/deploy/x.rhai"),
+            rooted_path(&root, "scripts/deploy/x.rhai"),
             "scripts/deploy/x.rhai"
-        );
-    }
-
-    #[test]
-    fn rooted_arg_never_touches_a_command_line() {
-        let root = Path::new("/home/user/project");
-        assert_eq!(
-            rooted_arg(root, "bash", "cat /home/user/project/src/main.rs"),
-            "cat /home/user/project/src/main.rs"
         );
     }
 
     #[test]
     fn grading_arg_is_verbatim_with_no_root_wired() {
         assert_eq!(
-            grading_arg("read", r#"{"path":"/home/user/project/src/main.rs"}"#, None).as_deref(),
+            grading_arg(
+                &tools(),
+                "read",
+                r#"{"path":"/home/user/project/src/main.rs"}"#,
+                None
+            )
+            .as_deref(),
             Some("/home/user/project/src/main.rs"),
             "no root wired must stay byte-identical to plain permission_arg"
         );
@@ -256,6 +240,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         assert_eq!(
             grading_arg(
+                &tools(),
                 "read",
                 r#"{"path":"/home/user/project/src/main.rs"}"#,
                 Some(root)
@@ -265,12 +250,12 @@ mod tests {
         );
         // Already-relative input is passed through unchanged either way.
         assert_eq!(
-            grading_arg("read", r#"{"path":"src/main.rs"}"#, Some(root)).as_deref(),
+            grading_arg(&tools(), "read", r#"{"path":"src/main.rs"}"#, Some(root)).as_deref(),
             Some("src/main.rs")
         );
         // bash's command-line arg is untouched even with a root wired.
         assert_eq!(
-            grading_arg("bash", r#"{"command":"git status"}"#, Some(root)).as_deref(),
+            grading_arg(&tools(), "bash", r#"{"command":"git status"}"#, Some(root)).as_deref(),
             Some("git status")
         );
     }

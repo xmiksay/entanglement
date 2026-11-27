@@ -250,8 +250,7 @@ impl GlobJsonTool {
     fn search(&self, input: &str, shown: &Path) -> Result<String> {
         let parsed: GlobJsonInput = serde_json::from_str(input)
             .context("invalid input to glob_json: expected {\"pattern\": string, ...}")?;
-        let pattern =
-            crate::permission_arg::joined_pattern(parsed.path.as_deref(), &parsed.pattern);
+        let pattern = crate::host::glob::joined_pattern(parsed.path.as_deref(), &parsed.pattern);
         let list = list_files_with_extra_roots(
             &self.root,
             &pattern,

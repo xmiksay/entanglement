@@ -7,6 +7,7 @@ use std::io::Write;
 
 use anyhow::Result;
 use entanglement_core::{AgentState, CompactionMode, OutEvent};
+use entanglement_runtime::ToolRegistry;
 
 use super::summary;
 
@@ -28,7 +29,11 @@ pub(crate) fn persistence_notice(ev: &OutEvent) -> Option<String> {
 }
 
 /// Human-friendly rendering of a single event.
-pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
+pub(crate) fn render_text<W: Write>(
+    out: &mut W,
+    tools: &ToolRegistry,
+    ev: &OutEvent,
+) -> Result<()> {
     match ev {
         OutEvent::SessionStarted { .. } => {}
         OutEvent::SessionEnded { .. } => {}
@@ -109,10 +114,10 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
         // The real tool name plus a one-line readable summary, shared with the
         // TUI header (ADR-0204 §6) — never the raw JSON input.
         OutEvent::ToolCall { tool, input, .. } => {
-            writeln!(out, "→ {}", summary::call_line(tool, input))?
+            writeln!(out, "→ {}", summary::call_line(tools, tool, input))?
         }
         OutEvent::ToolRequest { tool, input, .. } => {
-            writeln!(out, "? {}", summary::call_line(tool, input))?
+            writeln!(out, "? {}", summary::call_line(tools, tool, input))?
         }
         // A card's end (ADR-0240): the call's `ToolOutput` tells the story.
         OutEvent::ApprovalResolved { .. } => {}

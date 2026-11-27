@@ -185,6 +185,7 @@ impl Dispatcher {
             None => graded_name(tool),
         };
         let inputs = GradeInputs {
+            tools,
             resolver: &*self.resolver,
             chain: &self.chain,
             grants: &*self.grants,
@@ -211,7 +212,7 @@ impl Dispatcher {
         let tool = graded_name(&call.tool);
         let rule = self.mode_table.get(&self.mode).and_then(|mode| {
             let capabilities = capability::capability_of(tool, &self.tools).unwrap_or(&[]);
-            let workdir = crate::permission::permission_workdir(tool, &call.input);
+            let workdir = crate::permission::permission_workdir(&self.tools, tool, &call.input);
             mode.deciding_rule(tool, capabilities, arg, workdir.as_deref())
         });
         match rule {

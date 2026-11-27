@@ -53,6 +53,12 @@ impl Tool for EchoBash {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("bash")
     }
+    fn permission_scope(&self) -> entanglement_runtime::tools::PermissionScope {
+        crate::mode_support::command_scope()
+    }
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        entanglement_runtime::path_grading::str_arg(input, "command")
+    }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))
     }

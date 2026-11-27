@@ -82,6 +82,7 @@ mod tests {
             http_auth: Default::default(),
             untrusted_http_rules: Default::default(),
             rhai_trusted: Default::default(),
+            scoped_rules: Vec::new(),
             max_turns: None,
             idle_ttl: None,
             auto_compact: None,

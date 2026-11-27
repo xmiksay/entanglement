@@ -81,6 +81,7 @@ impl Dispatcher {
         // The call's own grading context, reachable mid-run for targets it
         // reaches beyond its argument (redirect hops, #808/ADR-0225).
         let grader = CallGrader {
+            tools: tools.clone(),
             resolver: self.resolver.clone(),
             chain: self.chain.clone(),
             grants: self.grants.clone(),

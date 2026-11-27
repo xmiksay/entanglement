@@ -153,8 +153,13 @@ impl ModeResolver {
         input: &str,
         caps: &[capability::Capability],
     ) -> Permission {
-        let arg = grading_arg(tool, input, self.root.as_deref());
-        let workdir = permission_workdir(tool, input);
+        let (arg, workdir) = {
+            let registry = self.registry.read().expect("tool registry lock poisoned");
+            (
+                grading_arg(&registry, tool, input, self.root.as_deref()),
+                permission_workdir(&registry, tool, input),
+            )
+        };
         // Fail-closed (#156, carried into ADR-0207): a session whose
         // `ModeChanged` broadcast was dropped is unseen here, and an unseen
         // session must never resolve to allow-all.
@@ -239,6 +244,10 @@ mod tests {
         Arc::new(RwLock::new(ToolRegistry::new()))
     }
 
+    fn host_registry() -> SharedRegistry {
+        crate::host::host_tools(PathBuf::from("/r")).shared()
+    }
+
     /// #485, ADR-0125: an absolute path resolving inside a wired `root` must
     /// grade identically to its root-relative spelling — regression pin for the
     /// bug (an arg-scoped rule authored root-relative silently fell through to
@@ -249,7 +258,7 @@ mod tests {
         let resolver = ModeResolver::new(
             modes_map(&session),
             table_with_scoped_read(),
-            empty_registry(),
+            host_registry(),
             PermissionProfile::new(Permission::Allow),
             Some(PathBuf::from("/r")),
         );
@@ -277,7 +286,7 @@ mod tests {
         let resolver = ModeResolver::new(
             modes_map(&session),
             table_with_scoped_read(),
-            empty_registry(),
+            host_registry(),
             PermissionProfile::new(Permission::Allow),
             None,
         );
@@ -306,5 +315,51 @@ mod tests {
             resolver.resolve(&session, "read", r#"{"path":"x"}"#).await,
             Grade::Deny(None)
         );
+    }
+
+    /// #962: an embedder tool that declares a path argument is the target
+    /// of `tool(path)` rules, graded root-relative like a host tool — no
+    /// name list to join.
+    #[tokio::test]
+    async fn an_embedder_path_tool_is_the_target_of_scoped_rules() {
+        use crate::tools::{ArgKind, PermissionScope, Tool};
+        struct Doc;
+        #[async_trait]
+        impl Tool for Doc {
+            fn name(&self) -> std::borrow::Cow<'static, str> {
+                "doc".into()
+            }
+            async fn run(&self, _input: &str) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+            fn permission_scope(&self) -> PermissionScope {
+                PermissionScope::arg(ArgKind::Path)
+            }
+            fn permission_arg(&self, input: &str) -> Option<String> {
+                crate::path_grading::str_arg(input, "file")
+            }
+        }
+        let mode = Mode {
+            name: "test".to_string(),
+            default: Permission::Ask,
+            rules: Rules::from_lists(&[], &["doc(notes/*)".to_string()], &[]),
+            limits: Limits::default(),
+            sandbox: None,
+            sandbox_network: false,
+        };
+        let table = Arc::new(ModeTable::new(vec![mode]).expect("single-mode table is valid"));
+        let mut registry = ToolRegistry::new();
+        registry.register(Doc);
+        let session = SessionId::new("s1");
+        let resolver = ModeResolver::new(
+            modes_map(&session),
+            table,
+            registry.shared(),
+            PermissionProfile::new(Permission::Allow),
+            Some(PathBuf::from("/r")),
+        );
+        let grade = |input: &'static str| resolver.resolve(&session, "doc", input);
+        assert_eq!(grade(r#"{"file":"/r/notes/a.md"}"#).await, Grade::Allow);
+        assert_eq!(grade(r#"{"file":"src/a.rs"}"#).await, Grade::Ask);
     }
 }

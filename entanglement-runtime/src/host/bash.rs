@@ -10,7 +10,7 @@ use crate::capability::Capability;
 use crate::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
 use crate::jobs::JobRegistry;
 use crate::output::{bounded_result, tail_lines, DEFAULT_TAIL};
-use crate::tools::Tool;
+use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
@@ -184,6 +184,17 @@ impl Tool for BashTool {
 
     fn escape_target(&self, input: &str) -> Option<String> {
         crate::path_grading::str_arg(input, "workdir")
+    }
+
+    fn permission_scope(&self) -> PermissionScope {
+        PermissionScope {
+            arg: ArgKind::Command,
+            workdir: true,
+        }
+    }
+
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "command")
     }
 
     fn name(&self) -> Cow<'static, str> {

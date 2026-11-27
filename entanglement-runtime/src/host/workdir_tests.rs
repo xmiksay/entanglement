@@ -5,21 +5,14 @@
 //!
 //! [`path_grading`]: crate::path_grading
 
-use super::{host_tools, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool};
 use crate::path_grading::{escape_target, rewrite};
 use crate::tools::ToolRegistry;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// Every host tool with a path argument, as `engine_setup` registers them.
+/// Every host tool, as a head registers them.
 fn registry() -> ToolRegistry {
-    let root = PathBuf::from(ROOT);
-    let mut reg = host_tools(root.clone());
-    reg.register(ReadRawTool::new(root.clone()));
-    reg.register(GlobJsonTool::new(root.clone()));
-    reg.register(GrepJsonTool::new(root.clone()));
-    reg.register(BashTool::new(root));
-    reg
+    super::every_tool(PathBuf::from(ROOT))
 }
 
 const ROOT: &str = "/p";

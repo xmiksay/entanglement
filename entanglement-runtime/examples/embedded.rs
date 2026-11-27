@@ -31,7 +31,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::permission::permission_arg;
 use entanglement_runtime::policy::{Grade, GrantStore, PermissionResolver};
-use entanglement_runtime::{host, tool_runner};
+use entanglement_runtime::{host, tool_runner, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Grades each tool call by the calling session's tenant — the part of the
@@ -44,12 +44,15 @@ use tokio::sync::broadcast::error::RecvError;
 /// key durable grants by the tenant in your own store.
 struct TenantResolver {
     tenants: HashMap<&'static str, PermissionProfile>,
+    /// The registry the executor dispatches against: each tool declares its
+    /// own permission argument (#962), so a resolver asks it.
+    tools: ToolRegistry,
 }
 
 #[async_trait]
 impl PermissionResolver for TenantResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
-        let arg = permission_arg(tool, input);
+        let arg = permission_arg(&self.tools, tool, input);
         // An unknown tenant's deny says why (#964), instead of the mode-deny
         // text a mode grade gets.
         match self.tenants.get(tenant_of(session)) {
@@ -111,7 +114,10 @@ async fn main() -> anyhow::Result<()> {
     let mut tenants = HashMap::new();
     tenants.insert("acme", PermissionProfile::new(Permission::Allow));
     tenants.insert("globex", PermissionProfile::new(Permission::Deny));
-    let resolver: Arc<dyn PermissionResolver> = Arc::new(TenantResolver { tenants });
+    let resolver: Arc<dyn PermissionResolver> = Arc::new(TenantResolver {
+        tenants,
+        tools: tools.clone(),
+    });
     let grants: Arc<dyn GrantStore> = Arc::new(NoGrants);
 
     // Session-keyed per-user MCP scopes (#684): each tenant gets its own MCP

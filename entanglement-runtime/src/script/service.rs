@@ -50,7 +50,7 @@ pub(super) async fn service_bindings(
         }
         // The nested call's own id: the head's Approve/Reject matches it, and
         // a `Once` escape-root grant is bound to it (#449).
-        report.begin(&call.tool, &input);
+        report.begin(&dispatcher.tools, &call.tool, &input);
         let nested = Call {
             request_id: format!("{request_id}:rhai:{}", call.tool),
             tool: call.tool.clone(),

@@ -220,6 +220,7 @@ impl SessionView {
     /// from the memo. Returns the owned lines plus per-line block provenance.
     pub(crate) fn render_body(
         &mut self,
+        tools: &entanglement_runtime::ToolRegistry,
         md: &MarkdownRenderer,
         theme: Theme,
         user: RoleColors,
@@ -234,6 +235,7 @@ impl SessionView {
         render_cache.render(
             transcript,
             |id| expanded_blocks.contains(&id),
+            tools,
             md,
             theme,
             user,

@@ -6,7 +6,7 @@ use super::resolve_under_root_or_grant;
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::file_backup::FileBackups;
-use crate::tools::Tool;
+use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
@@ -81,6 +81,14 @@ impl Tool for EditTool {
     }
 
     fn escape_target(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "path")
+    }
+
+    fn permission_scope(&self) -> PermissionScope {
+        PermissionScope::arg(ArgKind::Path)
+    }
+
+    fn permission_arg(&self, input: &str) -> Option<String> {
         crate::path_grading::str_arg(input, "path")
     }
 

@@ -69,6 +69,12 @@ impl Tool for EchoBash {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("bash")
     }
+    fn permission_scope(&self) -> entanglement_runtime::tools::PermissionScope {
+        crate::mode_support::command_scope()
+    }
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        entanglement_runtime::path_grading::str_arg(input, "command")
+    }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))
     }
@@ -706,6 +712,14 @@ struct EchoRead;
 impl Tool for EchoRead {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read")
+    }
+    fn permission_scope(&self) -> entanglement_runtime::tools::PermissionScope {
+        entanglement_runtime::tools::PermissionScope::arg(
+            entanglement_runtime::tools::ArgKind::Path,
+        )
+    }
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        entanglement_runtime::path_grading::str_arg(input, "path")
     }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))

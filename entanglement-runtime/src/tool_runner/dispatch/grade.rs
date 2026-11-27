@@ -15,6 +15,7 @@ use crate::permission::min_permission;
 use crate::permission_path::grading_arg;
 use crate::policy::{Grade, GrantStore, PermissionResolver};
 use crate::rhai_trust::Trust;
+use crate::tools::ToolRegistry;
 
 /// Everything a call's grade depends on besides the call itself — what
 /// [`grade_call`] composes. Borrowed so `dispatch` builds it from its own
@@ -22,6 +23,9 @@ use crate::rhai_trust::Trust;
 /// the same set and lends it out, so a redirect hop grades *exactly* like a
 /// dispatched call.
 pub(crate) struct GradeInputs<'a> {
+    /// The registry the call dispatches against: its tools declare their
+    /// permission arguments (#962).
+    pub tools: &'a ToolRegistry,
     pub resolver: &'a dyn PermissionResolver,
     pub chain: &'a [SessionId],
     pub grants: &'a dyn GrantStore,
@@ -52,7 +56,7 @@ pub(crate) async fn grade_call(
     tool: &str,
     input: &str,
 ) -> (Grade, Option<String>) {
-    let arg = grading_arg(tool, input, g.root);
+    let arg = grading_arg(g.tools, tool, input, g.root);
     let base = resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await;
     if let Grade::Deny(_) = base {
         return (base, arg);

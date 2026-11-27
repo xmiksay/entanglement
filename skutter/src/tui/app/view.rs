@@ -18,11 +18,14 @@ impl App {
         let Self {
             markdown_renderer,
             sessions,
+            mcp_handles,
             ..
         } = self;
-        sessions
-            .active_view_mut()
-            .render_body(markdown_renderer, theme, user, width)
+        super::mcp::with_registry(mcp_handles.as_ref(), |tools| {
+            sessions
+                .active_view_mut()
+                .render_body(tools, markdown_renderer, theme, user, width)
+        })
     }
 
     /// Blocks re-rendered on the active session's last body render (a #342 test

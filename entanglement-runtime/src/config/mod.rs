@@ -111,6 +111,7 @@ pub mod lock;
 mod mode_warn;
 mod raw;
 mod rhai_trusted;
+mod scope_warn;
 pub mod state_dir;
 pub mod statusline;
 pub mod theme;
@@ -120,6 +121,7 @@ pub(crate) mod warn_once;
 pub mod write_key;
 
 pub use layers::{scaffold_if_missing, user_config_path, ConfigLayer};
+pub use scope_warn::ScopedRule;
 pub use tui::TuiConfig;
 
 #[cfg(test)]
@@ -181,6 +183,12 @@ pub struct Config {
     /// `rhai(path)` inside one runs with no launch card, force-allowed —
     /// a user-layer one not in a mode the project config prompts in.
     pub rhai_trusted: crate::rhai_trust::TrustedFolders,
+    /// Every `modes:`/`permissions:` rule key carrying an argument or
+    /// workdir scope, per layer — checked by
+    /// [`warn_unscopable_rules`](Self::warn_unscopable_rules) once a tool
+    /// registry exists, since whether a tool takes a scope is its own answer
+    /// (#962).
+    pub scoped_rules: Vec<ScopedRule>,
     /// Cap on the inner LLM→tool loop within a single turn (#177). `None` ⇒
     /// the engine default (200). User-configurable so a long autonomous run can
     /// be loosened (or a runaway tightened) without a recompile.
@@ -294,6 +302,7 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
     warnings.extend(http_rule_warnings);
     ceiling_warn::warn_project_permission_overrides(raw_layers, root);
     mode_warn::warn_stale_rule_names(raw_layers, root);
+    let scoped_rules = mode_warn::scoped_rules(raw_layers);
     let mut merged = Value::Null;
     for rl in raw_layers {
         merged = merge_value(merged, rl.doc.clone());
@@ -313,6 +322,7 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
         http_auth: raw.http_auth,
         untrusted_http_rules,
         rhai_trusted,
+        scoped_rules,
         max_turns: raw.max_turns,
         idle_ttl: raw.idle_ttl_secs.map(Duration::from_secs),
         auto_compact: raw.auto_compact,

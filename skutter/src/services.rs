@@ -117,6 +117,9 @@ pub(crate) fn start(
     let perm_modes = sandbox_config.modes.clone();
     let mode_table = Arc::new({
         let registry = tools.read().expect("tool registry lock poisoned");
+        // A scoped rule's tool must take that scope — the registered tool's
+        // answer (#962), so checked here rather than at config load.
+        user_config.warn_unscopable_rules(&registry);
         mode::build_table(&user_config.modes, &|name| {
             capability::capability_of(name, &registry)
         })

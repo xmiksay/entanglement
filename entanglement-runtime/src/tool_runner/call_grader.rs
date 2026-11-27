@@ -18,9 +18,13 @@ use entanglement_core::SessionId;
 
 use super::dispatch::grade::{grade_call, GradeInputs};
 use crate::policy::{Grade, GrantStore, PermissionResolver};
+use crate::tools::ToolRegistry;
 
 /// The owned twin of [`GradeInputs`].
 pub(crate) struct CallGrader {
+    /// The registry the call dispatched against (#962: its tools declare
+    /// their permission arguments).
+    pub tools: ToolRegistry,
     pub resolver: Arc<dyn PermissionResolver>,
     pub chain: Vec<SessionId>,
     pub grants: Arc<dyn GrantStore>,
@@ -38,6 +42,7 @@ impl CallGrader {
     /// what can't apply mid-call (the escape-root gate, parking).
     pub(crate) async fn grade(&self, tool: &str, input: &str) -> Grade {
         let inputs = GradeInputs {
+            tools: &self.tools,
             resolver: &*self.resolver,
             chain: &self.chain,
             grants: &*self.grants,
@@ -82,7 +87,6 @@ pub(crate) mod test_support {
     use entanglement_core::{Permission, PermissionProfile};
 
     use super::*;
-    use crate::tools::ToolRegistry;
 
     /// A grader over a single-mode table, for tests that drive a tool
     /// directly but need the in-call grading seam.
@@ -94,6 +98,7 @@ pub(crate) mod test_support {
             [(session.clone(), name.clone())].into_iter().collect(),
         ));
         CallGrader {
+            tools: tools.clone(),
             resolver: Arc::new(crate::policy::ModeResolver::new(
                 modes,
                 table,
@@ -116,7 +121,6 @@ mod tests {
     use super::test_support::grader_for;
     use super::*;
     use crate::mode::{Limits, Mode, Rules};
-    use crate::tools::ToolRegistry;
     use entanglement_core::Permission;
 
     fn mode() -> Mode {
@@ -137,13 +141,16 @@ mod tests {
     #[tokio::test]
     async fn grades_like_dispatch_inside_a_scope_and_is_absent_outside() {
         assert_eq!(grade("ls").await, None, "no executor scope");
-        let graded = scope(grader_for(mode(), ToolRegistry::new()), async {
-            (
-                grade("rm -rf x").await,
-                grade("ls -la").await,
-                grade("make").await,
-            )
-        })
+        let graded = scope(
+            grader_for(mode(), crate::host::every_tool("/p".into())),
+            async {
+                (
+                    grade("rm -rf x").await,
+                    grade("ls -la").await,
+                    grade("make").await,
+                )
+            },
+        )
         .await;
         let research = || "research".to_string();
         assert_eq!(graded.0, Some((Grade::Deny(None), research())));
@@ -155,7 +162,7 @@ mod tests {
     /// call itself did; a `Deny` still stops it.
     #[tokio::test]
     async fn run_all_passes_an_ask_but_never_a_deny() {
-        let mut grader = grader_for(mode(), ToolRegistry::new());
+        let mut grader = grader_for(mode(), crate::host::every_tool("/p".into()));
         grader.run_all = true;
         let graded = scope(grader, async { (grade("make").await, grade("rm x").await) }).await;
         assert_eq!(graded.0.map(|g| g.0), Some(Grade::Allow));

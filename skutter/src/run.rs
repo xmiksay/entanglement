@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use entanglement_core::{CardReason, Holly, InMsg, OutEvent, SessionId};
+use entanglement_runtime::SharedRegistry;
 use tokio::sync::broadcast::error::RecvError;
 
 pub(crate) mod render;
@@ -29,11 +30,20 @@ pub(crate) mod summary;
 /// `--mode auto` is the unattended posture; this head takes no flag to
 /// approve on the user's behalf.
 ///
+/// `tools` is the registry the executor dispatches against: a call's
+/// summary line names the argument its tool declares (#962).
+///
 /// `session` must already exist — resumed, or bound by the caller's own
 /// `InMsg::Spawn` (ADR-0207 §9: an agent is chosen once, at spawn, so that
 /// choice is the caller's job, not this loop's) — this only ever sends the
 /// plain follow-up `Prompt` and drives the turn to `Done`.
-pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &str) -> Result<()> {
+pub async fn run_one(
+    holly: &Holly,
+    tools: &SharedRegistry,
+    session: &SessionId,
+    prompt: &str,
+    format: &str,
+) -> Result<()> {
     let json = format == "json";
     let mut sub = holly.subscribe();
 
@@ -84,7 +94,8 @@ pub async fn run_one(holly: &Holly, session: &SessionId, prompt: &str, format: &
         if json {
             writeln!(out, "{}", serde_json::to_string(&ev)?)?;
         } else {
-            render::render_text(&mut out, &ev)?;
+            let tools = tools.read().expect("tool registry lock poisoned");
+            render::render_text(&mut out, &tools, &ev)?;
         }
         out.flush()?;
         // No interactive user on the one-shot head: auto-answer every `ask_user`

@@ -10,7 +10,7 @@ use super::unified_diff::{apply_hunks, parse_hunks};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::file_backup::FileBackups;
-use crate::tools::Tool;
+use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::protocol::FileChangeKind;
@@ -67,6 +67,14 @@ impl Tool for ApplyPatchTool {
     }
 
     fn escape_target(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "path")
+    }
+
+    fn permission_scope(&self) -> PermissionScope {
+        PermissionScope::arg(ArgKind::Path)
+    }
+
+    fn permission_arg(&self, input: &str) -> Option<String> {
         crate::path_grading::str_arg(input, "path")
     }
 

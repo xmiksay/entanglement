@@ -211,14 +211,14 @@ fn graded_input(root: &Path, input: &str) -> String {
     let Some(path) = obj.get("path").and_then(|p| p.as_str()) else {
         return input.to_string();
     };
-    let canon = crate::permission_path::rooted_arg(root, RHAI_TOOL, path);
+    let canon = crate::permission_path::rooted_script(root, path);
     obj.insert("path".into(), canon.into());
     serde_json::Value::Object(obj).to_string()
 }
 
 /// Whether the file read (canonical `canon`) is the one graded as `arg`.
 fn read_is_graded(root: &Path, canon: &Path, arg: &str) -> bool {
-    crate::permission_path::rooted_arg(root, RHAI_TOOL, &canon.to_string_lossy()) == arg
+    crate::permission_path::rooted_script(root, &canon.to_string_lossy()) == arg
 }
 
 /// The absolute file a script `path` names: the out-of-root target when it

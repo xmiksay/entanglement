@@ -6,6 +6,8 @@
 
 use entanglement_core::{McpAction, McpAuthAction, McpAuthStatus, McpServerStatus};
 
+use entanglement_runtime::ToolRegistry;
+
 use super::App;
 
 impl App {
@@ -18,6 +20,13 @@ impl App {
     /// The MCP roster handles.
     pub(in crate::tui) fn mcp_handles(&self) -> Option<&crate::mcp::McpHandles> {
         self.mcp_handles.as_ref()
+    }
+
+    /// Run `f` over the registry the executor dispatches against — a call's
+    /// header and card name the argument its tool declares (#962). Empty
+    /// before the handles are wired (tests).
+    pub(in crate::tui) fn with_tools<R>(&self, f: impl FnOnce(&ToolRegistry) -> R) -> R {
+        with_registry(self.mcp_handles.as_ref(), f)
     }
 
     pub fn showing_mcp_panel(&self) -> bool {
@@ -154,6 +163,21 @@ impl App {
             };
             self.record_mcp_status(format!("mcp: {verb} `{name}` — {state}"));
         }
+    }
+}
+
+/// [`App::with_tools`] over a borrowed handle, for a caller that has split
+/// `App` into disjoint borrows.
+pub(in crate::tui) fn with_registry<R>(
+    handles: Option<&crate::mcp::McpHandles>,
+    f: impl FnOnce(&ToolRegistry) -> R,
+) -> R {
+    match handles {
+        Some(handles) => f(&handles
+            .registry
+            .read()
+            .expect("tool registry lock poisoned")),
+        None => f(&ToolRegistry::new()),
     }
 }
 

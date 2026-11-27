@@ -171,7 +171,7 @@ fn grading_uses_the_normalized_url_so_spelling_tricks_cannot_dodge_a_deny() {
         " https://pastebin.com/x",
     ] {
         let input = serde_json::json!({ "url": raw }).to_string();
-        let arg = crate::permission::permission_arg(WEB_FETCH_TOOL, &input);
+        let arg = WebFetchTool::new().unwrap().permission_arg(&input);
         let grade = mode.resolve(WEB_FETCH_TOOL, &caps, arg.as_deref(), None);
         assert_eq!(grade, Permission::Deny, "{raw:?} must stay denied");
     }

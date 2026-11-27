@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use entanglement_core::{Permission, SessionId};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
+use entanglement_runtime::tools::{ArgKind, PermissionScope};
 
 /// A single mode named `"build"` (matching `entanglement_core::DEFAULT_MODE`,
 /// so a session that never sends `SetMode` resolves against it) with
@@ -31,4 +32,14 @@ pub fn allow_all_table() -> Arc<ModeTable> {
 /// `ToolExec`, folding it in before any call is ever graded.
 pub fn perm_modes() -> Arc<Mutex<HashMap<SessionId, String>>> {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// The scope a stub standing in for `bash` declares, so scoped `bash(...)`
+/// and `bash{...}` rules grade it like the real tool: the registered tool
+/// answers, never its name (#962).
+pub fn command_scope() -> PermissionScope {
+    PermissionScope {
+        arg: ArgKind::Command,
+        workdir: true,
+    }
 }

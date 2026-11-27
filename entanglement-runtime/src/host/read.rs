@@ -8,7 +8,7 @@ use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
 use crate::path_grading::resolve_under_root;
-use crate::tools::Tool;
+use crate::tools::{ArgKind, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -90,6 +90,14 @@ impl Tool for ReadTool {
     }
 
     fn escape_target(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "path")
+    }
+
+    fn permission_scope(&self) -> PermissionScope {
+        PermissionScope::arg(ArgKind::Path)
+    }
+
+    fn permission_arg(&self, input: &str) -> Option<String> {
         crate::path_grading::str_arg(input, "path")
     }
 

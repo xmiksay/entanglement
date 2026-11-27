@@ -87,7 +87,7 @@ pub(crate) async fn dispatch(
             }
             // `/name args` expands a user slash command, as in the TUI (#733).
             let prompt = slash_commands::expand_argv_or_literal(&head.live_commands, &prompt);
-            run_one(holly, &session_id, &prompt, &format).await
+            run_one(holly, &head.mcp.registry, &session_id, &prompt, &format).await
         }
         Some(Cmd::Pipe { session }) => {
             let session_id =
@@ -155,7 +155,7 @@ pub(crate) async fn dispatch(
                 start_fresh(holly, &session_id, agent, launch.mode).await?;
                 let prompt =
                     slash_commands::expand_argv_or_literal(&head.live_commands, &cli.prompt);
-                run_one(holly, &session_id, &prompt, "text").await
+                run_one(holly, &head.mcp.registry, &session_id, &prompt, "text").await
             }
         }
     }

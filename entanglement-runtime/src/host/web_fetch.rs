@@ -31,7 +31,7 @@ use entanglement_core::web_fetch::{FetchBody, FetchOutcome, WebFetcher, DEFAULT_
 use crate::capability::Capability;
 use crate::output::MAX_OUTPUT_BYTES;
 use crate::policy::Grade;
-use crate::tools::Tool;
+use crate::tools::{ArgKind, PermissionScope, Tool};
 
 mod html;
 
@@ -81,6 +81,17 @@ impl Tool for WebFetchTool {
 
     fn advertised(&self) -> bool {
         true
+    }
+
+    /// #736: the URL *as it will be fetched* (WHATWG-normalized), so a
+    /// `web_fetch(https://pastebin.com/*)` rule can't be dodged by
+    /// `HTTPS://PASTEBIN.COM./x`. Unparseable → no argument (it can't fetch).
+    fn permission_scope(&self) -> PermissionScope {
+        PermissionScope::arg(ArgKind::Text)
+    }
+
+    fn permission_arg(&self, input: &str) -> Option<String> {
+        entanglement_core::web_fetch::normalize_url(&crate::path_grading::str_arg(input, "url")?)
     }
 
     fn description(&self) -> &str {

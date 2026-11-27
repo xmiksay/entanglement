@@ -1,5 +1,6 @@
 use std::hash::{Hash, Hasher};
 
+use entanglement_runtime::ToolRegistry;
 use ratatui::text::Line;
 
 use crate::tui::markdown::MarkdownRenderer;
@@ -54,10 +55,12 @@ impl RenderCache {
     /// Renders the transcript body, reusing every block whose content hash is
     /// unchanged. Returns the assembled lines plus per-line block provenance
     /// (for click hit-testing). `expanded` reports a block's collapse state.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
         &mut self,
         transcript: &[TranscriptEntry],
         expanded: impl Fn(usize) -> bool,
+        tools: &ToolRegistry,
         md: &MarkdownRenderer,
         theme: Theme,
         user: RoleColors,
@@ -79,7 +82,7 @@ impl RenderCache {
             let key = blk.key();
             let reuse = self.blocks.get(i).is_some_and(|c| c.key == key);
             if !reuse {
-                let rendered = render_block(blk, md, theme, user, width);
+                let rendered = render_block(blk, tools, md, theme, user, width);
                 let cached = CachedBlock {
                     key,
                     block_id: blk.provenance(),

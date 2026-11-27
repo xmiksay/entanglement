@@ -45,7 +45,12 @@ pub(crate) fn background_attention(app: &App) -> Vec<AttentionItem> {
             let (word, _) = attention_word(view)?;
             let summary = if let Some(req) = view.pending_tool_request() {
                 let tool = &req.tool;
-                let arg = crate::tui::transcript::render_run::tool_primary_arg(tool, &req.input)
+                let arg = app
+                    .with_tools(|tools| {
+                        crate::tui::transcript::render_run::tool_primary_arg(
+                            tools, tool, &req.input,
+                        )
+                    })
                     .map(|a| format!(" {a}"))
                     .unwrap_or_default();
                 format!("{word}: {tool}{arg}")

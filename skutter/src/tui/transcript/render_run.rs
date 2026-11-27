@@ -10,6 +10,7 @@ use crate::run::summary;
 use crate::tui::markdown::MarkdownRenderer;
 use crate::tui::theme::{RoleColors, Slot, Theme};
 use crate::tui::tool_render;
+use entanglement_runtime::ToolRegistry;
 
 /// Reforge a `Line` whose spans the markdown renderer produced under `&self`'s
 /// lifetime into an owned `Line<'static>`. Every span's content is already an
@@ -198,11 +199,11 @@ pub(super) fn flush_reasoning(
 
 /// The primary argument shown on a tool op's collapsed header — the shared
 /// [`summary::primary_arg`] the `run` text head prints too (ADR-0204 §6): the
-/// permission-graded path/command/pattern for the file and exec tools, a
-/// readable hint for the orchestration and discovery tools, else a `pattern`
-/// or the first scalar argument. `None` when nothing informative is available.
-pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
-    summary::primary_arg(tool, input)
+/// permission argument the registered tool declares, a readable hint for the
+/// orchestration and discovery tools, else a `pattern` or the first scalar
+/// argument. `None` when nothing informative is available.
+pub(crate) fn tool_primary_arg(tools: &ToolRegistry, tool: &str, input: &str) -> Option<String> {
+    summary::primary_arg(tools, tool, input)
 }
 
 /// The shared collapsed-header spans for one tool op: `{arrow} {tool}
@@ -210,8 +211,10 @@ pub(crate) fn tool_primary_arg(tool: &str, input: &str) -> Option<String> {
 /// never wraps. Shared by the block header ([`flush_tool_call`]), the approval
 /// tail (`transcript.rs`), and the standalone tool-output header (`block.rs`),
 /// so the same idiom shows up wherever a tool call renders (#487).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tool_header_spans(
     theme: &Theme,
+    tools: &ToolRegistry,
     tool: &str,
     input: &str,
     arrow: char,
@@ -229,7 +232,7 @@ pub(super) fn tool_header_spans(
         Span::styled(format!("{arrow} "), Style::default().fg(fg)),
         Span::styled(name.to_string(), theme.fg(Slot::Accent).bold()),
     ];
-    if let Some(arg) = tool_primary_arg(&tool, &input) {
+    if let Some(arg) = tool_primary_arg(tools, &tool, &input) {
         // Budget the arg so the header stays on one line: strip the bar (2),
         // arrow (2), tool name, the two-space gaps, and the trailing status.
         let status_w = status_suffix
@@ -256,6 +259,7 @@ pub(super) fn tool_header_spans(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn flush_tool_call(
     md: &MarkdownRenderer,
+    tools: &ToolRegistry,
     tool: &str,
     input: &str,
     output: Option<&str>,
@@ -285,6 +289,7 @@ pub(super) fn flush_tool_call(
     let count_w = count.as_deref().map_or(0, UnicodeWidthStr::width);
     let mut header = tool_header_spans(
         &theme,
+        tools,
         tool,
         input,
         arrow,
@@ -349,29 +354,34 @@ fn truncate_to_width(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run::summary::test_tools;
 
     #[test]
     fn file_tools_keep_their_existing_primary_arg() {
         // `permission_arg` still drives these; the orchestration fallback must
         // not intercept them.
         assert_eq!(
-            tool_primary_arg("read", r#"{"path":"src/main.rs"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "read", r#"{"path":"src/main.rs"}"#).as_deref(),
             Some("src/main.rs")
         );
         assert_eq!(
-            tool_primary_arg("bash", r#"{"command":"git status"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "bash", r#"{"command":"git status"}"#).as_deref(),
             Some("git status")
         );
         assert_eq!(
-            tool_primary_arg("glob", r#"{"pattern":"**/*.rs"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "glob", r#"{"pattern":"**/*.rs"}"#).as_deref(),
             Some("**/*.rs")
         );
     }
 
     #[test]
     fn agent_returns_target_and_truncated_prompt() {
-        let arg = tool_primary_arg("agent", r#"{"agent":"explore","prompt":"find the thing"}"#)
-            .expect("agent should yield a primary arg");
+        let arg = tool_primary_arg(
+            &test_tools(),
+            "agent",
+            r#"{"agent":"explore","prompt":"find the thing"}"#,
+        )
+        .expect("agent should yield a primary arg");
         assert!(
             arg.contains("explore"),
             "agent header must name the target: {arg:?}"
@@ -386,7 +396,7 @@ mod tests {
     fn agent_long_prompt_is_truncated() {
         let long_prompt = "x".repeat(80);
         let input = format!(r#"{{"agent":"explore","prompt":"{long_prompt}"}}"#);
-        let arg = tool_primary_arg("agent", &input).expect("primary arg");
+        let arg = tool_primary_arg(&test_tools(), "agent", &input).expect("primary arg");
         // The prompt portion is budgeted to 40 display columns + ellipsis.
         assert!(arg.contains("explore"));
         assert!(arg.contains('…'), "long prompt must be truncated: {arg:?}");
@@ -395,15 +405,19 @@ mod tests {
     #[test]
     fn poll_returns_the_handle() {
         assert_eq!(
-            tool_primary_arg("poll", r#"{"handle":"abc123"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "poll", r#"{"handle":"abc123"}"#).as_deref(),
             Some("abc123")
         );
     }
 
     #[test]
     fn ask_user_returns_truncated_question() {
-        let arg = tool_primary_arg("ask_user", r#"{"question":"Which option do you prefer?"}"#)
-            .expect("ask_user should yield a primary arg");
+        let arg = tool_primary_arg(
+            &test_tools(),
+            "ask_user",
+            r#"{"question":"Which option do you prefer?"}"#,
+        )
+        .expect("ask_user should yield a primary arg");
         assert!(
             arg.contains("Which option"),
             "ask_user header should surface the question: {arg:?}"
@@ -413,7 +427,7 @@ mod tests {
     #[test]
     fn propose_plan_returns_label() {
         assert_eq!(
-            tool_primary_arg("propose_plan", r##"{"content":"# Goal"}"##).as_deref(),
+            tool_primary_arg(&test_tools(), "propose_plan", r##"{"content":"# Goal"}"##).as_deref(),
             Some("plan")
         );
     }
@@ -421,7 +435,7 @@ mod tests {
     #[test]
     fn update_tasks_returns_snapshot_label() {
         assert_eq!(
-            tool_primary_arg("update_tasks", r#"{"content":"- [ ] a"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "update_tasks", r#"{"content":"- [ ] a"}"#).as_deref(),
             Some("snapshot")
         );
     }
@@ -429,7 +443,7 @@ mod tests {
     #[test]
     fn load_skill_returns_the_skill_name() {
         assert_eq!(
-            tool_primary_arg("load_skill", r#"{"skill_name":"arch"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "load_skill", r#"{"skill_name":"arch"}"#).as_deref(),
             Some("arch")
         );
     }
@@ -437,15 +451,21 @@ mod tests {
     #[test]
     fn unknown_tool_surfaces_its_first_scalar() {
         assert_eq!(
-            tool_primary_arg("mystery", r#"{"x":1}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "mystery", r#"{"x":1}"#).as_deref(),
             Some("1")
         );
-        assert_eq!(tool_primary_arg("mystery", r#"{"x":{}}"#), None);
+        assert_eq!(
+            tool_primary_arg(&test_tools(), "mystery", r#"{"x":{}}"#),
+            None
+        );
     }
 
     #[test]
     fn malformed_input_yields_none() {
-        assert_eq!(tool_primary_arg("ask_user", "not json"), None);
+        assert_eq!(
+            tool_primary_arg(&test_tools(), "ask_user", "not json"),
+            None
+        );
     }
 
     #[test]
@@ -453,7 +473,8 @@ mod tests {
         // An MCP tool call's input shape is server-defined, so the header surfaces
         // the first scalar argument rather than a bare `mcp__<server>__<tool>` name.
         assert_eq!(
-            tool_primary_arg("mcp__chess__makemove", r#"{"move":"e2e4"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "mcp__chess__makemove", r#"{"move":"e2e4"}"#)
+                .as_deref(),
             Some("e2e4")
         );
     }
@@ -462,14 +483,15 @@ mod tests {
     fn mcp_tool_primary_arg_truncates_long_scalar() {
         let long = "x".repeat(80);
         let input = format!(r#"{{"move":"{long}"}}"#);
-        let arg = tool_primary_arg("mcp__chess__makemove", &input).expect("primary arg");
+        let arg =
+            tool_primary_arg(&test_tools(), "mcp__chess__makemove", &input).expect("primary arg");
         assert!(arg.contains('…'), "long MCP scalar must truncate: {arg:?}");
     }
 
     #[test]
     fn mcp_tool_with_no_scalar_yields_none() {
         assert_eq!(
-            tool_primary_arg("mcp__chess__board", r#"{"state":{}}"#),
+            tool_primary_arg(&test_tools(), "mcp__chess__board", r#"{"state":{}}"#),
             None
         );
     }
@@ -479,7 +501,7 @@ mod tests {
         // `read` must still win over the MCP arm (the MCP arm is only reached when
         // all earlier branches return None).
         assert_eq!(
-            tool_primary_arg("read", r#"{"path":"src/a.rs"}"#).as_deref(),
+            tool_primary_arg(&test_tools(), "read", r#"{"path":"src/a.rs"}"#).as_deref(),
             Some("src/a.rs")
         );
     }

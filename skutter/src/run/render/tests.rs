@@ -3,7 +3,8 @@ use entanglement_core::SessionId;
 
 fn render(ev: &OutEvent) -> String {
     let mut buf = Vec::new();
-    render_text(&mut buf, ev).expect("render into a Vec never fails");
+    render_text(&mut buf, &super::summary::test_tools(), ev)
+        .expect("render into a Vec never fails");
     String::from_utf8(buf).expect("rendered text is UTF-8")
 }
 

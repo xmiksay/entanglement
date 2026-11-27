@@ -196,15 +196,19 @@ pub(crate) fn render_approval_tool_body(
         bg: theme.c(Slot::MessageBg),
     };
 
-    let mut header = render_run::tool_header_spans(
-        &theme,
-        tool,
-        input,
-        '▾',
-        theme.c(Slot::Approval),
-        available_width,
-        None,
-    );
+    let (mut header, root) = app.with_tools(|tools| {
+        let header = render_run::tool_header_spans(
+            &theme,
+            tools,
+            tool,
+            input,
+            '▾',
+            theme.c(Slot::Approval),
+            available_width,
+            None,
+        );
+        (header, tool_render::root_line(tools, tool, app.root()))
+    });
     // Core batch-emits tool calls (#270), so more approvals may be parked
     // behind this one (#273) — show how many are waiting.
     let queued = app.queued_approvals();
@@ -215,7 +219,7 @@ pub(crate) fn render_approval_tool_body(
         ));
     }
     let mut lines = vec![theme.decorate(Line::from(header), approval_colors, available_width)];
-    if let Some(root) = tool_render::root_line(tool, app.root()) {
+    if let Some(root) = root {
         lines.push(theme.decorate(root, approval_colors, available_width));
     }
 

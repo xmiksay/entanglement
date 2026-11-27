@@ -17,10 +17,11 @@
 //!   `permission_chain`/`permission_for`) that used to serve `rhai` alone is
 //!   retired along with it, since nothing resolves a session's mode from
 //!   `Agent.permission` any more. Resolution takes the call's
-//!   tool-specific argument (command/path, #173) so an argument-scoped rule
-//!   matches the actual input; [`permission_arg`] extracts it. A `bash`
-//!   call also carries its `workdir` (#425) so a `tool{pattern}`
-//!   workdir-scoped rule matches too; [`permission_workdir`] extracts it.
+//!   tool-specific argument (#173) so an argument-scoped rule matches the
+//!   actual input; [`permission_arg`] asks the registered tool for it (#962).
+//!   A tool whose scope has a `workdir` (#425) offers it to a
+//!   `tool{pattern}` workdir-scoped rule too; [`permission_workdir`]
+//!   extracts it.
 //!
 //! The **tool mask** (#116, ADR-0038: `tools`/`disallowed_tools` making a
 //! tool not *exist* for a session) is retired (ADR-0207 §8, "the mask
@@ -36,8 +37,7 @@ use std::collections::HashSet;
 
 use entanglement_core::{AgentCatalog, Permission, PermissionProfile, SessionId};
 
-pub use crate::permission_arg::permission_arg;
-pub(crate) use crate::permission_arg::takes_permission_arg;
+pub use crate::permission_arg::{permission_arg, permission_scope, permission_workdir};
 use crate::subagent::SpawnGuard;
 
 /// Target-existence gate for a spawn to `target` (ADR-0207 §6): the only
@@ -129,10 +129,11 @@ pub fn resolve_model(
 /// ADR-0047). The effective grade is the least-privileged of the agent-chain
 /// result and the config's rule for the `tool` call — so the user/repo config
 /// `permissions` section is a *ceiling*: it can tighten what an agent allows
-/// (`bash: ask` forces every agent to ask), never loosen it. `arg` carries the
-/// tool-specific argument (#173) and `workdir` the `bash` working
-/// directory (#425) so an argument-/workdir-scoped ceiling rule like
-/// `bash(rm *): deny` or `bash{/etc/*}: deny` resolves against the actual call.
+/// (a bare `tool: ask` forces every agent to ask), never loosen it. `arg`
+/// carries the tool-specific argument (#173) and `workdir` the call's
+/// working directory (#425) so an argument-/workdir-scoped ceiling rule like
+/// `tool(rm *): deny` or `tool{/etc/*}: deny` resolves against the actual
+/// call.
 /// The embedded default is allow-all, so an untouched config is a no-op. This is
 /// a pure ceiling (it only tightens); the orthogonal "always allow" grants (#174,
 /// [`crate::policy::GrantStore`]) that *raise* an `Ask` are applied by the executor *after*
@@ -190,29 +191,6 @@ pub(crate) fn ancestor_chain(guard: &SpawnGuard, session: &SessionId) -> Vec<Ses
         }
     }
     chain
-}
-
-/// The `workdir` a `bash` invocation would run in, for a workdir-scoped
-/// permission rule (#425, `tool{pattern}`,
-/// [`entanglement_core::PermissionProfile::resolve_scoped`]) — distinct from
-/// [`permission_arg`] (which yields the *command* line for it).
-/// `None` for any other tool, an absent `workdir` (the tool then defaults to
-/// root), or on malformed input — a workdir-scoped rule then never matches,
-/// falling through to the tool's other rules.
-pub fn permission_workdir(tool: &str, input: &str) -> Option<String> {
-    if !takes_workdir_scope(tool) {
-        return None;
-    }
-    let value: serde_json::Value = serde_json::from_str(input).ok()?;
-    value.get("workdir")?.as_str().map(String::from)
-}
-
-/// Whether `tool` ever has a [`permission_workdir`] — when not, a
-/// workdir-scoped `tool{pattern}` rule can never match a call
-/// (`config::mode_warn` warns on one, #881). The gate `permission_workdir`
-/// itself checks, so the warning can't drift from what grading sees.
-pub(crate) fn takes_workdir_scope(tool: &str) -> bool {
-    tool == "bash"
 }
 
 /// The least-privileged of two permissions, ordered `Deny < Ask < Allow`.
@@ -550,213 +528,6 @@ mod tests {
             ),
             Permission::Allow
         );
-    }
-
-    /// ADR-0228: a `path` run is graded and escape-checked on its path; an
-    /// inline script has no argument, so only a bare `rhai` rule matches it.
-    #[test]
-    fn rhai_path_is_its_permission_argument_and_escape_target() {
-        use crate::path_grading::escape_target;
-        let none = crate::tools::ToolRegistry::new();
-        let path = r#"{"path":"scripts/x.rhai","args":{"n":1}}"#;
-        assert_eq!(
-            permission_arg("rhai", path).as_deref(),
-            Some("scripts/x.rhai")
-        );
-        assert_eq!(
-            escape_target("rhai", &none, path).as_deref(),
-            Some("scripts/x.rhai")
-        );
-        let inline = r#"{"script":"read(\"/etc/x\")"}"#;
-        assert_eq!(escape_target("rhai", &none, inline), None);
-        assert_eq!(permission_arg("rhai", inline), None);
-    }
-
-    #[test]
-    fn permission_arg_extracts_per_tool_shape() {
-        // bash → the raw command.
-        assert_eq!(
-            permission_arg("bash", r#"{"command":"git status"}"#).as_deref(),
-            Some("git status")
-        );
-        // edit/write/read/apply_patch → the target path.
-        assert_eq!(
-            permission_arg(
-                "edit",
-                r#"{"path":"src/main.rs","oldString":"a","newString":"b"}"#
-            )
-            .as_deref(),
-            Some("src/main.rs")
-        );
-        assert_eq!(
-            permission_arg("write", r#"{"path":"README.md","content":"x"}"#).as_deref(),
-            Some("README.md")
-        );
-        assert_eq!(
-            permission_arg(
-                "apply_patch",
-                r#"{"path":"src/lib.rs","patch":"@@ -1 +1 @@"}"#
-            )
-            .as_deref(),
-            Some("src/lib.rs")
-        );
-        // web_fetch → the URL (#736).
-        assert_eq!(
-            permission_arg("web_fetch", r#"{"url":"https://docs.rs/x"}"#).as_deref(),
-            Some("https://docs.rs/x")
-        );
-        // …normalized exactly as the fetcher will request it.
-        assert_eq!(
-            permission_arg("web_fetch", r#"{"url":" HTTPS://PASTEBIN.COM.:443/x"}"#).as_deref(),
-            Some("https://pastebin.com/x")
-        );
-        assert_eq!(permission_arg("web_fetch", r#"{"url":"nope"}"#), None);
-        // http → `{METHOD} {url}`, both normalized (ADR-0227).
-        assert_eq!(
-            permission_arg(
-                "http",
-                r#"{"method":"get","url":"HTTPS://API.github.com./r"}"#
-            )
-            .as_deref(),
-            Some("GET https://api.github.com/r")
-        );
-        assert_eq!(
-            permission_arg("http", r#"{"method":"TRACE","url":"https://a/"}"#),
-            None
-        );
-        // glob → the pattern itself, since a glob pattern is a path.
-        assert_eq!(
-            permission_arg("glob", r#"{"pattern":"src/*.rs"}"#).as_deref(),
-            Some("src/*.rs")
-        );
-        // grep → the optional file filter, which is a path; the regex `pattern`
-        // is never returned, since it isn't one.
-        assert_eq!(
-            permission_arg("grep", r#"{"pattern":"foo","path":"src/*"}"#).as_deref(),
-            Some("src/*")
-        );
-        // grep without a `path` filter yields None — resolution falls through
-        // to grep's name-only rules.
-        assert_eq!(permission_arg("grep", r#"{"pattern":"foo"}"#), None);
-        // Tools without a meaningful argument, and malformed input, yield None.
-        assert_eq!(permission_arg("bash", "not json"), None);
-    }
-
-    /// ADR-0235: `agent` grades on the profile the spawn runs — the default
-    /// when the input names none or isn't JSON — and `agent_send` on its
-    /// trimmed handle.
-    #[test]
-    fn spawning_pair_permission_args_are_their_targets() {
-        let agent = |input| permission_arg(crate::tool_names::AGENT_TOOL, input);
-        assert_eq!(
-            agent(r#"{"agent":"plan","prompt":"x"}"#).as_deref(),
-            Some("plan")
-        );
-        for defaulted in [
-            r#"{"prompt":"x"}"#,
-            r#"{"agent":"","prompt":"x"}"#,
-            "raw prompt",
-        ] {
-            assert_eq!(agent(defaulted).as_deref(), Some("general"), "{defaulted}");
-        }
-        let send = |input| permission_arg(crate::tool_names::AGENT_SEND_TOOL, input);
-        assert_eq!(
-            send(r#"{"agent_id":" s-1 ","prompt":"x"}"#).as_deref(),
-            Some("s-1")
-        );
-        assert_eq!(send(r#"{"agent_id":"  ","prompt":"x"}"#), None);
-        assert_eq!(send(r#"{"prompt":"x"}"#), None);
-        assert_eq!(send("not json"), None);
-    }
-
-    /// The scoped rule reaches the mode matcher: `agent(plan)` grades a
-    /// `plan` spawn and leaves every other target to the rest of the table.
-    #[test]
-    fn a_scoped_agent_rule_grades_only_its_target() {
-        use crate::mode::Rules;
-        let rules = Rules::from_lists(
-            &["agent(plan)".to_string()],
-            &[],
-            &["agent_send(acme:*)".to_string()],
-        );
-        let control = [crate::capability::Capability::Control];
-        let grade = |tool: &str, input: &str| {
-            let arg = permission_arg(tool, input);
-            crate::mode::rules::resolve(
-                &rules,
-                Permission::Allow,
-                tool,
-                &control,
-                arg.as_deref(),
-                None,
-            )
-        };
-        assert_eq!(grade("agent", r#"{"agent":"plan"}"#), Permission::Deny);
-        assert_eq!(grade("agent", r#"{"agent":"general"}"#), Permission::Allow);
-        assert_eq!(
-            grade("agent_send", r#"{"agent_id":"acme:s-1"}"#),
-            Permission::Ask
-        );
-        assert_eq!(
-            grade("agent_send", r#"{"agent_id":"s-1"}"#),
-            Permission::Allow
-        );
-    }
-
-    /// ADR-0150: glob's optional `path` base dir joins onto the pattern for
-    /// grading, matching what the tool actually walks.
-    #[test]
-    fn glob_path_plus_pattern_grades_joined() {
-        assert_eq!(
-            permission_arg("glob", r#"{"pattern":"**/*.rs","path":"src"}"#).as_deref(),
-            Some("src/**/*.rs")
-        );
-    }
-
-    /// ADR-0150 regression: grep's graded arg stays the raw `path` even when
-    /// it names a directory — the walk's `dir/**/*` auto-expansion happens
-    /// after grading and must never leak into it.
-    #[test]
-    fn grep_graded_arg_is_raw_path_even_for_directory() {
-        assert_eq!(
-            permission_arg("grep", r#"{"pattern":"foo","path":"src/tui"}"#).as_deref(),
-            Some("src/tui")
-        );
-    }
-
-    #[test]
-    fn permission_workdir_extracts_bash_only() {
-        assert_eq!(
-            permission_workdir("bash", r#"{"command":"ls","workdir":"/tmp"}"#).as_deref(),
-            Some("/tmp")
-        );
-        // No `workdir` field, a tool with no workdir concept, and malformed
-        // input all yield None.
-        assert_eq!(permission_workdir("bash", r#"{"command":"ls"}"#), None);
-        assert_eq!(
-            permission_workdir("read", r#"{"path":"x","workdir":"/tmp"}"#),
-            None
-        );
-        assert_eq!(permission_workdir("bash", "not json"), None);
-    }
-
-    /// #881: `takes_workdir_scope` agrees with what `permission_workdir`
-    /// actually extracts, for every known tool and for an MCP tool.
-    #[test]
-    fn takes_workdir_scope_matches_what_permission_workdir_extracts() {
-        let input = r#"{"command":"x","path":"a","workdir":"/tmp"}"#;
-        for tool in crate::tool_names::known_tool_names()
-            .iter()
-            .copied()
-            .chain(["mcp__gh__create"])
-        {
-            assert_eq!(
-                takes_workdir_scope(tool),
-                permission_workdir(tool, input).is_some(),
-                "{tool}"
-            );
-        }
-        assert!(takes_workdir_scope("bash"));
     }
 
     /// The config ceiling's own workdir-scoped rule (#425) — the one

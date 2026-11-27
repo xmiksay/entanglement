@@ -51,6 +51,8 @@ pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use read::{ReadRawTool, ReadTool};
+#[cfg(test)]
+pub(crate) use registry::every_tool;
 pub use registry::{host_tools, host_tools_with, host_tools_with_extra_roots, HostToolOptions};
 pub use sandbox::{SandboxBackend, SandboxConfig, SandboxPolicy, SandboxResolver};
 pub use search_json::{GlobJsonTool, GrepJsonTool};
@@ -124,6 +126,8 @@ pub fn resolve_workdir_or_grant(
     }
 }
 
+#[cfg(test)]
+mod permission_arg_tests;
 #[cfg(test)]
 mod workdir_tests;
 
