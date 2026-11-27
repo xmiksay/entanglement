@@ -219,7 +219,14 @@ mod tests {
     use super::*;
 
     fn summarize(tool: &str, input: &str) -> String {
-        args_summary(&crate::host::every_tool("/p".into()), tool, input)
+        let mut tools = crate::test_tools::stub_tools();
+        tools.register(
+            crate::http_tool::HttpTool::new(std::sync::Arc::new(crate::http_gate::HttpGate::new(
+                Default::default(),
+            )))
+            .expect("http client builds"),
+        );
+        args_summary(&tools, tool, input)
     }
 
     /// Run `calls` calls through a tally, every `error_every`-th failing;
@@ -262,7 +269,7 @@ mod tests {
     #[test]
     fn a_summary_shows_the_graded_argument() {
         assert_eq!(
-            summarize("read", r#"{"path":"src/main.rs"}"#),
+            summarize("peek", r#"{"path":"src/main.rs"}"#),
             "src/main.rs"
         );
     }
@@ -273,26 +280,26 @@ mod tests {
             "command": "curl -H 'Authorization: Bearer s3cret' https://x.example/?token=t"
         })
         .to_string();
-        assert_eq!(summarize("bash", &bearer), "curl …");
+        assert_eq!(summarize("sh", &bearer), "curl …");
         assert_eq!(
-            summarize("bash", r#"{"command":"TOKEN=s3cret /usr/bin/make"}"#),
+            summarize("sh", r#"{"command":"TOKEN=s3cret /usr/bin/make"}"#),
             "make"
         );
-        assert_eq!(summarize("bash", r#"{"command":"ls"}"#), "ls");
+        assert_eq!(summarize("sh", r#"{"command":"ls"}"#), "ls");
     }
 
     #[test]
     fn a_quoted_program_is_unquoted_before_its_basename() {
         assert_eq!(
-            summarize("bash", r#"{"command":"'/usr/bin/curl' -s"}"#),
+            summarize("sh", r#"{"command":"'/usr/bin/curl' -s"}"#),
             "curl …"
         );
-        assert_eq!(summarize("bash", r#"{"command":"\"/bin/ls\""}"#), "ls");
+        assert_eq!(summarize("sh", r#"{"command":"\"/bin/ls\""}"#), "ls");
     }
 
     #[test]
     fn a_url_in_any_tools_argument_is_stripped() {
-        let summary = summarize("read", r#"{"path":"https://me:pw@h.example/a?token=t#f"}"#);
+        let summary = summarize("peek", r#"{"path":"https://me:pw@h.example/a?token=t#f"}"#);
         assert_eq!(summary, "https://h.example/a");
     }
 
@@ -316,7 +323,7 @@ mod tests {
     fn a_summary_is_one_bounded_line() {
         let path = format!("dir {}\nmore", "x".repeat(200));
         let input = serde_json::json!({ "path": path }).to_string();
-        let summary = summarize("read", &input);
+        let summary = summarize("peek", &input);
         assert!(!summary.contains('\n'));
         assert_eq!(summary.chars().count(), ARGS_SUMMARY_CHARS);
         assert!(summary.ends_with('…'));

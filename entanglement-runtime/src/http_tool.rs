@@ -278,14 +278,30 @@ mod tests {
                 check_hop("GET".into(), "https://evil.example/x".into()).await,
             )
         };
-        let mut grader = grader_for(mode(), crate::host::every_tool("/p".into()));
+        let tools = || {
+            let mut reg = crate::tools::ToolRegistry::new();
+            reg.register(tool());
+            reg
+        };
+        let mut grader = grader_for(mode(), tools());
         grader.run_all = true;
         let (ask, deny) = scope(grader, hops()).await;
         assert!(ask.is_ok(), "{ask:?}");
         assert!(deny.unwrap_err().to_string().contains("denied"));
-        let grader = grader_for(mode(), crate::host::every_tool("/p".into()));
+        let grader = grader_for(mode(), tools());
         let (ask, _) = scope(grader, hops()).await;
         assert!(ask.unwrap_err().to_string().contains("needs approval"));
+    }
+
+    /// The argument is `{METHOD} {url}`, both normalized (ADR-0227).
+    #[test]
+    fn the_argument_is_the_normalized_method_and_url() {
+        let arg = |input: &str| tool().permission_arg(input);
+        assert_eq!(
+            arg(r#"{"method":"get","url":"HTTPS://API.github.com./r"}"#).as_deref(),
+            Some("GET https://api.github.com/r")
+        );
+        assert_eq!(arg(r#"{"method":"TRACE","url":"https://a/"}"#), None);
     }
 
     fn tool() -> HttpTool {

@@ -17,7 +17,6 @@ use entanglement_core::{
     LlmStream, OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
-use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::tool_names::{AGENT_SEND_TOOL, AGENT_TOOL};
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
@@ -166,7 +165,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
     };
     let holly = Holly::spawn(cfg);
     let store = Arc::new(ExtraRootStore::ephemeral());
-    let tools = host_tools_with_extra_roots(root.to_path_buf(), Some(store.clone()));
+    let tools = entanglement_runtime::ToolRegistry::new();
     let base = entanglement_core::PermissionProfile::new(entanglement_core::Permission::Allow);
     let active = Arc::new(Mutex::new(std::collections::HashMap::new()));
     let perm_modes = crate::mode_support::perm_modes();

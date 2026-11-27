@@ -1,6 +1,6 @@
 [package]
 name = "entanglement-runtime"
-description = "Embeddable runtime for the entanglement agent engine: host tools, tool execution, permission dispatch, sub-agent spawn, user config and event-sourced persistence. No CLI, TUI or web-server deps; the `skutter` CLI is built on it."
+description = "Embeddable runtime for the entanglement agent engine: tool execution, permission dispatch, sub-agent spawn and event-sourced persistence. No CLI, TUI or web-server deps; the `skutter` CLI is built on it."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -28,15 +28,9 @@ name = "mcp_http"
 path = "examples/mcp_http.rs"
 required-features = ["mcp-http"]
 
-# The `rhai` tool integration suite needs the (now optional, #502) `rhai`
-# feature — gated the same way `mcp_http` is gated above.
-[[test]]
-name = "rhai"
-path = "tests/rhai.rs"
-required-features = ["rhai"]
 
 [features]
-default = ["provider", "mcp-http", "rhai", "web-fetch"]
+default = ["provider", "mcp-http", "rhai"]
 # The provider-backed aux-LLM helpers (session titles, the narrator, the
 # throttle relay): they drain an `entanglement-provider` `LlmStream` for a
 # one-shot call, and `futures::StreamExt` is the iterator.
@@ -55,11 +49,6 @@ mcp-http = []
 # `--no-default-features` (no `rhai` in that build's feature list). Every
 # existing default-feature build (incl. `skutter`) is unaffected.
 rhai = ["dep:rhai"]
-# The SSRF-guarded `web_fetch` host tool (#736, ADR-0220; default-on). The
-# fetch mechanism itself is provider-owned and always compiled; this gate
-# carries only the tool and its HTML->Markdown converter (`htmd`, which pulls
-# html5ever), so a lean embedder that never fetches pages can drop both.
-web-fetch = ["dep:htmd", "dep:html5ever", "dep:markup5ever_rcdom"]
 
 [dependencies]
 entanglement-core = { workspace = true }
@@ -67,9 +56,8 @@ entanglement-provider = { workspace = true, optional = true }
 # Per-crate feature trim (#502, ADR-0135): `rt`+`rt-multi-thread`+`macros`
 # back the examples' `#[tokio::main]` and the one `flavor = "multi_thread"`
 # test (`src/extra_roots.rs`); `sync`/`time` the mpsc/broadcast/oneshot/watch
-# + sleep/timeout/interval usage throughout; `fs`/`process`/`io-util` the host
-# tools (`host::edit`/`write`/`read`/`bash`/mcp stdio, the exec tools'
-# piping); `net` the MCP transport tests' stub servers. The `tokio`
+# + sleep/timeout/interval usage throughout; `fs`/`process`/`io-util` the
+# file backups, mcp stdio and the exec helpers' piping; `net` the MCP transport tests' stub servers. The `tokio`
 # dev-dependency adds only `test-util`.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util"] }
 anyhow = { workspace = true }
@@ -79,17 +67,13 @@ serde_yaml = { workspace = true }
 tracing = { workspace = true }
 # The `provider` feature's one-shot aux-LLM drain.
 futures = { workspace = true, optional = true }
-# Host tool dependencies
-glob = { workspace = true }
+# `load_skill`'s path-token rewrite.
 regex = { workspace = true }
-ignore = { workspace = true }
-# Process-group kill for the exec tool `bash` on timeout/cancel (#168).
+# Process-group kill on timeout/cancel (#168) and `O_NOFOLLOW` opens.
 libc = { workspace = true }
 async-trait = { workspace = true }
 # `FileChange` audit content hash (#202). Pure Rust — rides in the lean library.
 sha2 = { workspace = true }
-# `read` inline-base64-encodes an image file for its image content block (#221).
-base64 = { workspace = true }
 # `rhai` host tool — embedded sandboxed script engine (ADR-0046). Optional,
 # default-on (behind the `rhai` feature, #502/ADR-0135): pure Rust so it stays
 # lean-build/cross-compile clean when enabled, but is one of the heaviest
@@ -100,10 +84,6 @@ base64 = { workspace = true }
 # comment not followed by `fn`; lib doc comments are read as text
 # (`skills::lib_docs`, ADR-0228).
 rhai = { workspace = true, optional = true, features = ["internals"] }
-# HTML -> Markdown for `web_fetch` (behind the `web-fetch` feature, #736).
-htmd = { workspace = true, optional = true }
-markup5ever_rcdom = { workspace = true, optional = true }
-html5ever = { workspace = true, optional = true }
 # The debounced file-watch primitive (`watch`, #329) behind `plan_watch`.
 # Pure-Rust/inotify, no transport deps — rides in the lean library.
 notify = { workspace = true }

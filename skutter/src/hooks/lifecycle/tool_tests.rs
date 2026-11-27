@@ -184,7 +184,7 @@ fn a_prompt_fires_user_prompt_submit_with_its_text() {
 #[test]
 fn a_workdir_call_carries_its_root_relative_paths() {
     let root = std::path::PathBuf::from("/proj");
-    let tools = entanglement_runtime::host::host_tools(root.clone()).shared();
+    let tools = crate::host::host_tools(root.clone()).shared();
     let mut t = Tracker {
         paths: Some(CallPaths { tools, root }),
         ..Tracker::default()

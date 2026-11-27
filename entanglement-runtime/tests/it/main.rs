@@ -1,7 +1,7 @@
 //! Single integration-test harness (ADR-0180): every former per-file test
 //! binary is a module here, so the crate + deps compile and link once instead
 //! of 33 times. Run one module via `cargo test -p entanglement-runtime --test it <mod>`.
-//! `tests/rhai.rs` stays its own binary for its `required-features` gate.
+//! Suites that drive `skutter`'s host tools live in `skutter/tests/` (#968).
 
 /// An empty user definitions layer under `root`, so a test never reads the
 /// host's real user agents/skills (#773).
@@ -38,7 +38,6 @@ mod agent_definitions;
 mod agent_invariant_tools;
 mod agent_model;
 mod agent_send;
-mod apply_patch;
 mod approval_resolved;
 mod arg_validate;
 mod ask_user;
@@ -48,10 +47,8 @@ mod attended_resume;
 mod compact_fork;
 mod discovery_tools;
 mod executor_builder;
-mod host_tools;
 mod list_operations;
 mod list_pending;
-mod load_skill;
 mod log_compat_v060;
 #[cfg(feature = "mcp-http")]
 mod mcp_compat;
@@ -62,7 +59,6 @@ mod mcp_http;
 mod mcp_lazy_connect;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_device;
-mod mcp_schema_violation;
 #[cfg(feature = "mcp-http")]
 mod mcp_scoped;
 mod misaimed_decisions;
@@ -72,10 +68,8 @@ mod parked_prompt_persistence;
 mod permission_dispatch;
 mod persistence_signal;
 mod plan_tasks;
-mod plan_watch;
 mod policy_seam;
 mod poll_subtree;
-mod propose_plan;
 mod record_sink;
 mod reoffer_dedupe;
 mod reparent_persistence;
@@ -85,12 +79,9 @@ mod request_mode;
 mod resumable_prefix;
 mod resume_config_mode;
 mod resume_mode_narrowing;
-mod revert_files;
 mod session_fork;
 #[cfg(feature = "provider")]
 mod session_title;
-mod session_workdir;
-mod skill_posture;
 mod spawn_grading;
 mod spawn_grading_park;
 mod spawn_grading_scoped;
@@ -102,6 +93,3 @@ mod subagent_tenant_prefix;
 mod system_prompt_assembly;
 mod tool_mask;
 mod unattended_mode;
-mod undo_config;
-#[cfg(feature = "web-fetch")]
-mod web_fetch;

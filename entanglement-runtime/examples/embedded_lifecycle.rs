@@ -23,7 +23,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{Agent, EngineConfig, Holly, InMsg, OutEvent, SessionId, ToolSpec};
-use entanglement_runtime::host;
 use entanglement_runtime::persistence::{spawn_persistence_subscriber_with_sink, RecordSink};
 use entanglement_runtime::session_store::{integrity_gap, pair_records, LogRecord};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -62,7 +61,12 @@ impl MemorySink {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let tool_specs = host::host_tools(std::env::temp_dir()).specs();
+    // The embedder's own tool specs (the library ships no tool).
+    let tool_specs = vec![ToolSpec::with_schema(
+        "clock",
+        "The server's current Unix time in seconds.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+    )];
     let session = SessionId::new("lifecycle-demo");
 
     // Snapshot caches behind the two sync resolvers (guide §4). Seeded once

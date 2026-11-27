@@ -27,7 +27,7 @@ use crate::tool_names::RHAI_TOOL;
 use crate::tools::ToolRegistry;
 
 mod containment;
-pub(crate) use containment::resolve_and_contained;
+pub use containment::resolve_and_contained;
 pub use containment::{escaping_path, resolve_under_root};
 
 /// What `tool`'s input becomes for a session working in `workdir` (absolute)
@@ -56,7 +56,7 @@ pub fn rewrite(
 /// The filesystem path a call to `tool` would touch, for the escape-root
 /// gate: `rhai`'s script `path`, else whatever the registered tool declares.
 /// `None` for a tool with none, an unregistered one, or malformed input.
-pub(crate) fn escape_target(tool: &str, tools: &ToolRegistry, input: &str) -> Option<String> {
+pub fn escape_target(tool: &str, tools: &ToolRegistry, input: &str) -> Option<String> {
     if tool == RHAI_TOOL {
         return str_arg(input, "path");
     }
@@ -138,7 +138,7 @@ impl SessionWorkdirs {
     /// The directory a search tool prints paths relative to: the session's
     /// workdir, else `root`. A path outside it prints absolute, which the
     /// tools accept back unchanged.
-    pub(crate) fn display_root(this: Option<&Self>, session: &SessionId, root: &Path) -> PathBuf {
+    pub fn display_root(this: Option<&Self>, session: &SessionId, root: &Path) -> PathBuf {
         this.and_then(|w| w.get(session))
             .unwrap_or_else(|| root.to_path_buf())
     }

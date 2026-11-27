@@ -43,7 +43,16 @@ fd-lock = { workspace = true }
 # The definitions watcher's content fingerprint (#329).
 sha2 = { workspace = true }
 base64 = { workspace = true }
+# The host tools (#968): `glob`/`grep` walking and matching, process-group
+# kill for `bash`.
+glob = { workspace = true }
+regex = { workspace = true }
+ignore = { workspace = true }
 libc = { workspace = true }
+# HTML -> Markdown for `web_fetch` (#736).
+htmd = { workspace = true }
+markup5ever_rcdom = { workspace = true }
+html5ever = { workspace = true }
 futures = { workspace = true }
 clap = { workspace = true }
 tracing-subscriber = { workspace = true }

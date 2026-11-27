@@ -20,11 +20,11 @@ use entanglement_core::{
 };
 use entanglement_runtime::agents::built_in_registry;
 use entanglement_runtime::extra_roots::ExtraRootStore;
-use entanglement_runtime::host::host_tools;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::policy::{ModeResolver, PermissionResolver};
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 use skutter::hooks::{CallPaths, HookResolver, HookSpec, Hooks};
+use skutter::host::host_tools;
 use tokio::task::JoinHandle;
 
 mod rhai;

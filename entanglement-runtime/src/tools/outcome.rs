@@ -35,7 +35,7 @@ impl ToolRun {
 /// One text part for a non-empty string, none for an empty one — the same fold
 /// [`entanglement_core::Message::tool`] applies, so a text-only result keeps its
 /// exact prior shape.
-pub(crate) fn text_parts(text: String) -> Vec<ContentPart> {
+pub fn text_parts(text: String) -> Vec<ContentPart> {
     if text.is_empty() {
         Vec::new()
     } else {

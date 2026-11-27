@@ -127,7 +127,7 @@ mod tests {
         Mode {
             name: "research".into(),
             default: Permission::Ask,
-            rules: Rules::from_lists(&["bash(rm*)".into()], &["bash(ls*)".into()], &[]),
+            rules: Rules::from_lists(&["sh(rm*)".into()], &["sh(ls*)".into()], &[]),
             limits: Limits::default(),
             sandbox: None,
             sandbox_network: false,
@@ -135,22 +135,19 @@ mod tests {
     }
 
     async fn grade(cmd: &str) -> Option<(Grade, String)> {
-        grade_in_scope("bash", &format!(r#"{{"command":"{cmd}"}}"#)).await
+        grade_in_scope("sh", &format!(r#"{{"command":"{cmd}"}}"#)).await
     }
 
     #[tokio::test]
     async fn grades_like_dispatch_inside_a_scope_and_is_absent_outside() {
         assert_eq!(grade("ls").await, None, "no executor scope");
-        let graded = scope(
-            grader_for(mode(), crate::host::every_tool("/p".into())),
-            async {
-                (
-                    grade("rm -rf x").await,
-                    grade("ls -la").await,
-                    grade("make").await,
-                )
-            },
-        )
+        let graded = scope(grader_for(mode(), crate::test_tools::stub_tools()), async {
+            (
+                grade("rm -rf x").await,
+                grade("ls -la").await,
+                grade("make").await,
+            )
+        })
         .await;
         let research = || "research".to_string();
         assert_eq!(graded.0, Some((Grade::Deny(None), research())));
@@ -162,7 +159,7 @@ mod tests {
     /// call itself did; a `Deny` still stops it.
     #[tokio::test]
     async fn run_all_passes_an_ask_but_never_a_deny() {
-        let mut grader = grader_for(mode(), crate::host::every_tool("/p".into()));
+        let mut grader = grader_for(mode(), crate::test_tools::stub_tools());
         grader.run_all = true;
         let graded = scope(grader, async { (grade("make").await, grade("rm x").await) }).await;
         assert_eq!(graded.0.map(|g| g.0), Some(Grade::Allow));

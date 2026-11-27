@@ -29,12 +29,12 @@ mod user_dirs;
 
 use entanglement_runtime::{
     agents, arg_validate, aux_llm, capability, discover, exec, extra_roots, file_backup, history,
-    host, jobs, mcp, mode, narrate, path_grading, persistence, plan_files, plan_watch, policy,
+    jobs, mcp, mode, narrate, path_grading, persistence, plan_files, plan_watch, policy,
     retained_output, script_ops, session_store, session_title, skills, subagent, system_prompt,
     system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, workdir,
     SharedRegistry, ToolRegistry,
 };
-use skutter::{config, hooks, inspect, logging, serve, slash_commands, state, watch};
+use skutter::{config, hooks, host, inspect, logging, serve, slash_commands, state, watch};
 
 use anyhow::{Context, Result};
 use clap::Parser;

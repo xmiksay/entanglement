@@ -122,7 +122,7 @@ mod tests {
     use super::*;
 
     fn tools() -> ToolRegistry {
-        crate::host::every_tool("/home/user/project".into())
+        crate::test_tools::stub_tools()
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(
             grading_arg(
                 &tools(),
-                "read",
+                "peek",
                 r#"{"path":"/home/user/project/src/main.rs"}"#,
                 None
             )
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(
             grading_arg(
                 &tools(),
-                "read",
+                "peek",
                 r#"{"path":"/home/user/project/src/main.rs"}"#,
                 Some(root)
             )
@@ -250,12 +250,12 @@ mod tests {
         );
         // Already-relative input is passed through unchanged either way.
         assert_eq!(
-            grading_arg(&tools(), "read", r#"{"path":"src/main.rs"}"#, Some(root)).as_deref(),
+            grading_arg(&tools(), "peek", r#"{"path":"src/main.rs"}"#, Some(root)).as_deref(),
             Some("src/main.rs")
         );
-        // bash's command-line arg is untouched even with a root wired.
+        // A command-line arg is untouched even with a root wired.
         assert_eq!(
-            grading_arg(&tools(), "bash", r#"{"command":"git status"}"#, Some(root)).as_deref(),
+            grading_arg(&tools(), "sh", r#"{"command":"git status"}"#, Some(root)).as_deref(),
             Some("git status")
         );
     }

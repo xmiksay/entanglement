@@ -2,16 +2,17 @@
 //!
 //! The binary (`src/main.rs`) holds the heads (`run`/`pipe`/`tui`) and the
 //! startup wiring. This library carries the pieces its integration tests
-//! drive directly: the WebSocket `serve` head, user slash commands, the
-//! engine-less `inspect` views, the layered config and managed files, the
-//! definitions watcher and the log setup. Everything below is built on
+//! drive directly: the host tools, the WebSocket `serve` head, user slash
+//! commands, the engine-less `inspect` views, the layered config and managed
+//! files, the definitions watcher and the log setup. Everything below is built on
 //! `entanglement-runtime`'s public API only.
 
 // The moved modules name runtime modules as `crate::<name>`, exactly as they
 // did inside `entanglement-runtime`.
 use entanglement_runtime::{
-    agents, attendance, capability, discover, file_backup, frontmatter, layers, mcp, mode,
-    permission, rhai_trust, secret_env, session_store, skills, system_prompt, tool_names, tools,
+    agents, attendance, capability, discover, exec, extra_roots, file_backup, file_change,
+    frontmatter, jobs, layers, mcp, mode, output, path_grading, permission, policy, rhai_trust,
+    secret_env, session_store, skills, system_prompt, tool_names, tool_runner, tools,
 };
 
 // The layered `config.yml`, the managed state files' paths and the key
@@ -19,6 +20,9 @@ use entanglement_runtime::{
 pub mod config;
 // Lifecycle hooks (#199, #964): run by `skutter`, never by the library.
 pub mod hooks;
+// The host tools (#968): file, search, shell and fetch tools, their root
+// containment and the bubblewrap sandbox.
+pub mod host;
 pub mod inspect;
 pub mod logging;
 pub mod serve;

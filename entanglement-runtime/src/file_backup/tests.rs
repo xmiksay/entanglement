@@ -6,7 +6,6 @@ use entanglement_core::{InMsg, OutEvent, SessionId};
 use super::*;
 use crate::exec_scope::with_exec_seq;
 use crate::session_store::{LogPayload, LogRecord};
-use crate::tools::Tool;
 
 /// A tempdir holding the session store and a separate working tree.
 pub(super) struct Fixture {
@@ -319,45 +318,4 @@ fn summary_names_restored_skipped_and_the_exec_caveat() {
         summary(1, &[], &[]),
         "no tracked file edits to revert after turn 1"
     );
-}
-
-/// The three file tools each record a change when run for a session.
-#[tokio::test]
-async fn write_edit_and_apply_patch_are_backed_up() {
-    let f = Fixture::new();
-    let root = f.work.clone();
-    std::fs::write(f.path("p.txt"), "one\ntwo\n").unwrap();
-    std::fs::write(f.path("e.txt"), "hello world").unwrap();
-    f.prompt(&f.sid, "use the tools");
-
-    let write = crate::host::WriteTool::new(root.clone()).with_backups(f.backups.clone());
-    let edit = crate::host::EditTool::new(root.clone()).with_backups(f.backups.clone());
-    let patch = crate::host::ApplyPatchTool::new(root).with_backups(f.backups.clone());
-    run(&write, &f.sid, r#"{"path":"w.txt","content":"fresh"}"#).await;
-    run(
-        &edit,
-        &f.sid,
-        r#"{"path":"e.txt","oldString":"world","newString":"there"}"#,
-    )
-    .await;
-    run(
-        &patch,
-        &f.sid,
-        r#"{"path":"p.txt","patch":"@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n"}"#,
-    )
-    .await;
-    tick();
-
-    assert_eq!(f.backups.turns(&f.sid).unwrap()[0].files, 3);
-    let report = f.backups.revert(&f.sid, Some(0)).unwrap();
-    assert_eq!(report.restored.len(), 3, "{report:?}");
-    assert_eq!(f.read("w.txt"), None);
-    assert_eq!(f.read("e.txt").unwrap(), b"hello world");
-    assert_eq!(f.read("p.txt").unwrap(), b"one\ntwo\n");
-}
-
-async fn run(tool: &dyn Tool, session: &SessionId, input: &str) {
-    tool.run_for_session(session, "r1", input)
-        .await
-        .unwrap_or_else(|e| panic!("{} failed: {e:#}", tool.name()));
 }

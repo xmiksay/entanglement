@@ -392,8 +392,26 @@ async fn wait_complete(rx: &mut watch::Receiver<AgentStatus>) -> AgentStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::bash::BashTool;
-    use crate::tools::Tool;
+
+    /// Start `command` as a background job owned by `owner`, the way an
+    /// exec tool does, and return its handle.
+    fn start_job(jobs: &JobRegistry, owner: &SessionId, command: &str) -> String {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(command)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        crate::exec::own_process_group(&mut cmd);
+        jobs.spawn(
+            command.to_string(),
+            cmd,
+            Duration::from_secs(30),
+            Some(owner.clone()),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn parse_input_reads_handle_timeout_and_kill() {
@@ -586,21 +604,9 @@ mod tests {
     /// waits it to completion and sees the exit status + output (#605).
     #[tokio::test]
     async fn job_handle_is_pollable_end_to_end() {
-        let dir = tempfile::tempdir().unwrap();
         let jobs = JobRegistry::new();
-        let bash = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
         let session = SessionId::new("s1");
-        let started = bash
-            .run_for_session(&session, "r1", r#"{"command":"echo hi","background":true}"#)
-            .await
-            .unwrap();
-        let started_text = entanglement_core::content_text(&started);
-        let id = started_text
-            .split_whitespace()
-            .find(|w| w.starts_with("j-"))
-            .unwrap()
-            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
-            .to_string();
+        let id = start_job(&jobs, &session, "echo hi");
 
         // The wait ends on new output *or* exit, whichever comes first (#605)
         // — for a fast `echo`, the output notification can win the race
@@ -646,21 +652,9 @@ mod tests {
     /// real status in `exit_code`.
     #[tokio::test]
     async fn job_nonzero_exit_is_content_not_error() {
-        let dir = tempfile::tempdir().unwrap();
         let jobs = JobRegistry::new();
-        let bash = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
         let session = SessionId::new("s-exit7");
-        let started = bash
-            .run_for_session(&session, "r1", r#"{"command":"exit 7","background":true}"#)
-            .await
-            .unwrap();
-        let started_text = entanglement_core::content_text(&started);
-        let id = started_text
-            .split_whitespace()
-            .find(|w| w.starts_with("j-"))
-            .unwrap()
-            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
-            .to_string();
+        let id = start_job(&jobs, &session, "exit 7");
 
         let input = serde_json::json!({"handle": id, "timeout_secs": 5}).to_string();
         let mut out = resolve(
@@ -695,21 +689,9 @@ mod tests {
     /// unknown id — the ownership scoping must not confirm existence.
     #[tokio::test]
     async fn job_handle_from_a_different_session_is_unknown() {
-        let dir = tempfile::tempdir().unwrap();
         let jobs = JobRegistry::new();
-        let bash = BashTool::new(dir.path().to_path_buf()).with_jobs(jobs.clone());
         let owner = SessionId::new("owner");
-        let started = bash
-            .run_for_session(&owner, "r1", r#"{"command":"echo hi","background":true}"#)
-            .await
-            .unwrap();
-        let started_text = entanglement_core::content_text(&started);
-        let id = started_text
-            .split_whitespace()
-            .find(|w| w.starts_with("j-"))
-            .unwrap()
-            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-')
-            .to_string();
+        let id = start_job(&jobs, &owner, "echo hi");
 
         let stranger = SessionId::new("stranger");
         let out = resolve(

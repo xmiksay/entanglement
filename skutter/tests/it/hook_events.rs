@@ -15,10 +15,10 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::agents::built_in_registry;
-use entanglement_runtime::host::host_tools;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use serde_json::Value;
 use skutter::hooks::{CallPaths, HookSpec, Hooks};
+use skutter::host::host_tools;
 use tokio::sync::broadcast::Receiver;
 
 /// Pops scripted replies, then answers `"ok"` forever.

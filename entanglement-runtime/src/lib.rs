@@ -1,23 +1,22 @@
 //! Runtime crate for the entanglement agent engine.
 //!
 //! The library half of the engine seam: the `Tool` trait + `ToolRegistry`,
-//! host tools, tool execution, permission dispatch, sub-agent spawn and
-//! event-sourced persistence over `entanglement-core`. It carries no binary
+//! tool execution, permission dispatch, sub-agent spawn and event-sourced
+//! persistence over `entanglement-core`. It ships no host tool: an embedder
+//! registers its own (`skutter` brings the file, shell and fetch tools). It carries no binary
 //! and no head, and reads no config or env file: the embedder hands it plain
 //! values. The `skutter` crate is the CLI built on it (layered `config.yml`,
 //! the managed state files, live reload, the key writer).
 //!
 //! # Feature gates (ADR-0025)
 //!
-//! - `default = ["provider", "mcp-http", "rhai", "web-fetch"]`.
+//! - `default = ["provider", "mcp-http", "rhai"]`.
 //! - `provider` — the provider-backed aux-LLM helpers (session titles, the
 //!   action narrator, the throttle relay) that drain an
 //!   `entanglement-provider` stream directly.
 //! - `mcp-http` — the streamable-HTTP MCP transport + OAuth code paths; the
 //!   stdio MCP transport stays in the lean library.
 //! - `rhai` — the sandboxed `rhai` scripting tool (ADR-0046, #502).
-//! - `web-fetch` — the SSRF-guarded `web_fetch` host tool and its
-//!   HTML→Markdown converter.
 //!
 //! No feature pulls a CLI, TUI or web-server crate (`make check-lean` gates
 //! both the default and the `--no-default-features` build).
@@ -55,7 +54,6 @@ pub mod file_backup;
 pub mod file_change;
 pub mod frontmatter;
 pub mod history;
-pub mod host;
 // Host script namespaces for embedders (ADR-0249).
 pub mod host_ns;
 // The credentialed-`http()` gate (ADR-0227) — shared by the `http` tool and
@@ -150,6 +148,8 @@ pub mod system_prompt;
 // slot `EngineConfig` exposes. Ungated — pure string transforms over core
 // types, needed by the lean build's `Config`-driven mode too.
 pub mod system_prompt_mode;
+#[cfg(test)]
+mod test_tools;
 // Wire-visible LLM-endpoint throttle transitions (#517, ADR-0141). Behind
 // `provider` since it polls `entanglement_provider::HttpClient` directly.
 #[cfg(feature = "provider")]

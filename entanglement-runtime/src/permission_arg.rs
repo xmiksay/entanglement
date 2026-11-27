@@ -72,22 +72,18 @@ mod tests {
     use super::*;
     use crate::tool_names::{is_non_maskable, LIBRARY_TOOL_NAMES};
 
-    /// One input carrying every field any tool's argument or workdir reads,
-    /// so each tool that declares one yields it from this input.
-    const EVERY_FIELD: &str = r#"{"agent":"plan","agent_id":"s-1","command":"x",
-        "path":"src/a.rs","pattern":"*.rs","url":"https://a.example/","method":"GET",
-        "workdir":"/tmp"}"#;
+    /// One input carrying every field any route's argument reads.
+    const EVERY_FIELD: &str = r#"{"agent":"plan","agent_id":"s-1","path":"s/a.rhai"}"#;
 
-    /// #878/#881/#962: what a tool declares agrees with what it extracts,
-    /// for every known tool registered the way a head registers it.
+    /// #878/#881/#962: what an executor route declares agrees with what it
+    /// extracts; an unregistered tool declares and extracts nothing. (The
+    /// head's host tools are checked the same way where they live.)
     #[test]
-    fn the_declared_scope_matches_what_is_extracted() {
-        let tools = crate::host::every_tool("/p".into());
-        let names = tools.names();
-        for tool in names
+    fn a_route_declares_what_it_extracts() {
+        let tools = ToolRegistry::new();
+        for tool in LIBRARY_TOOL_NAMES
             .iter()
-            .map(String::as_str)
-            .chain(LIBRARY_TOOL_NAMES.iter().copied())
+            .copied()
             .chain(["mcp__gh__create"])
         {
             let scope = permission_scope(&tools, tool);
@@ -96,44 +92,9 @@ mod tests {
                 permission_arg(&tools, tool, EVERY_FIELD).is_some(),
                 "{tool}"
             );
-            assert_eq!(
-                scope.workdir,
-                permission_workdir(&tools, tool, EVERY_FIELD).is_some(),
-                "{tool}"
-            );
+            assert!(!scope.workdir, "{tool}");
         }
-        assert_eq!(
-            permission_scope(&tools, "mcp__gh__create"),
-            PermissionScope::default()
-        );
-    }
-
-    /// Every gradable known tool is scopable today; only the non-maskable
-    /// ones (never graded under their own name) take no argument. A new
-    /// maskable tool that forgets its `permission_arg` would grade every
-    /// scoped rule as a silent no-op, so this trips until the omission is
-    /// deliberate.
-    #[test]
-    fn every_maskable_known_tool_takes_an_argument() {
-        let tools = crate::host::every_tool("/p".into());
-        let names = tools.names();
-        for tool in names
-            .iter()
-            .map(String::as_str)
-            .chain(LIBRARY_TOOL_NAMES.iter().copied())
-        {
-            // A tool graded as another (`call_grading`) is never graded
-            // under its own name either.
-            let graded_as_itself = tools
-                .get(tool)
-                .is_none_or(|t| t.call_grading("{}").is_none());
-            assert_eq!(
-                permission_scope(&tools, tool).arg != ArgKind::None,
-                !is_non_maskable(tool) && graded_as_itself,
-                "{tool}: maskable but declares no argument — implement \
-                 `Tool::permission_scope`, or exempt it here if it truly takes none"
-            );
-        }
+        assert!(!is_non_maskable(RHAI_TOOL));
     }
 
     /// #962: an embedder tool becomes the target of `tool(path)` rules by

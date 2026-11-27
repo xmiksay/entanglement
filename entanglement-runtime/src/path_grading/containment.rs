@@ -42,7 +42,7 @@ pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
 /// `false`, an escape-root caller (ADR-0109) may still use the path after a grant
 /// check. A genuinely malformed path (a `..` popping past the filesystem root)
 /// is still a hard `Err`.
-pub(crate) fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
+pub fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
     // Canonicalize the root defensively so containment holds even when the head
     // (or a test) passes a non-canonical root; startup also canonicalizes cwd.
     let root = root

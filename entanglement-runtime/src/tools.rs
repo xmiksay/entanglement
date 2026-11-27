@@ -24,7 +24,7 @@ mod closest;
 mod outcome;
 mod scope;
 pub(crate) use closest::closest_name;
-pub(crate) use outcome::text_parts;
+pub use outcome::text_parts;
 pub use outcome::{ToolExecution, ToolRun};
 pub use scope::{ArgKind, PermissionScope};
 

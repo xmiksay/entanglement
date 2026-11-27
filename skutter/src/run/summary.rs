@@ -262,8 +262,8 @@ fn dash_item(value: &Value) -> Vec<String> {
 #[cfg(test)]
 pub(crate) fn test_tools() -> ToolRegistry {
     let root = std::path::PathBuf::from("/p");
-    let mut tools = entanglement_runtime::host::host_tools(root.clone());
-    tools.register(entanglement_runtime::host::BashTool::new(root));
+    let mut tools = crate::host::host_tools(root.clone());
+    tools.register(crate::host::BashTool::new(root));
     tools
 }
 

@@ -206,8 +206,6 @@ mod tests;
 #[cfg(test)]
 mod tests_adopted;
 #[cfg(test)]
-mod tests_host;
-#[cfg(test)]
 mod tests_limits;
 #[cfg(test)]
 mod tests_lineage;

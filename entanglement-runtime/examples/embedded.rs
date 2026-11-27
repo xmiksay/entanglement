@@ -31,7 +31,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::permission::permission_arg;
 use entanglement_runtime::policy::{Grade, GrantStore, PermissionResolver};
-use entanglement_runtime::{host, tool_runner, SharedRegistry};
+use entanglement_runtime::{tool_runner, SharedRegistry, Tool, ToolRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Grades each tool call by the calling session's tenant — the part of the
@@ -98,6 +98,30 @@ impl GrantStore for NoGrants {
     fn forget_session(&self, _session: &SessionId) {}
 }
 
+/// The embedder's own tool — the library ships none (a coding CLI brings
+/// its file and shell tools the same way).
+struct Clock;
+
+#[async_trait]
+impl Tool for Clock {
+    fn name(&self) -> std::borrow::Cow<'static, str> {
+        "clock".into()
+    }
+    fn description(&self) -> &str {
+        "The server's current Unix time in seconds."
+    }
+    fn capabilities(&self) -> &'static [entanglement_runtime::capability::Capability] {
+        &[entanglement_runtime::capability::Capability::Read]
+    }
+    fn advertised(&self) -> bool {
+        true
+    }
+    async fn run(&self, _input: &str) -> anyhow::Result<String> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+        Ok(now.as_secs().to_string())
+    }
+}
+
 /// The `{tenant}:{uuid}` convention: the tenant is whatever precedes the first
 /// `:`. `SessionId`'s inner string is public, so this is the whole "filter"
 /// idiom — no dedicated core API needed for it.
@@ -107,7 +131,8 @@ fn tenant_of(session: &SessionId) -> &str {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let tools = host::host_tools(std::env::temp_dir());
+    let mut tools = ToolRegistry::new();
+    tools.register(Clock);
     let tool_specs = tools.specs();
     // One shared handle for both the resolver and the executor builder.
     let tools = tools.shared();

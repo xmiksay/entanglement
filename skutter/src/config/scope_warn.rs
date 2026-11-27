@@ -185,7 +185,7 @@ mod tests {
     /// script-only read variants, `web_fetch` and `http`) — the tools asked,
     /// not a name list (#962).
     fn tools() -> ToolRegistry {
-        use entanglement_runtime::host::{
+        use crate::host::{
             host_tools, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool, WebFetchTool,
         };
         let root = std::path::PathBuf::from("/p");

@@ -1,0 +1,796 @@
+//! Integration test: the host tools wired through the real engine — a scripted
+//! LLM asks for a tool call, the engine dispatches it under the `build` profile
+//! (Allow), and the result comes back as a `ToolOutput`. Validates the registry
+//! wiring from ADR-0008 + ADR-0009; `bash` is registered explicitly here to
+//! mirror a head's opt-in path (ADR-0010).
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use entanglement_core::protocol::FileChangeKind;
+use entanglement_core::{
+    stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
+    OutEvent, SessionId, ToolCall,
+};
+use entanglement_runtime::tool_runner::ToolExecutor;
+use sha2::{Digest, Sha256};
+use skutter::host::{host_tools, BashTool};
+
+/// Lowercase hex SHA-256, matching the `FileChange.hash` the executor emits.
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// An LLM that replays a scripted list of responses in order, then a plain
+/// text reply (so a turn loop that re-prompts after a tool call terminates).
+struct ScriptedLlm {
+    responses: Mutex<Vec<LlmResponse>>,
+}
+impl ScriptedLlm {
+    fn new(mut responses: Vec<LlmResponse>) -> Self {
+        // Pop from the back; reverse so the first scripted reply is popped first.
+        responses.reverse();
+        Self {
+            responses: Mutex::new(responses),
+        }
+    }
+}
+#[async_trait]
+impl Llm for ScriptedLlm {
+    async fn stream(&mut self, _req: LlmRequest<'_>) -> anyhow::Result<LlmStream> {
+        let resp = {
+            let mut responses = self.responses.lock().unwrap();
+            responses.pop().unwrap_or_else(|| LlmResponse {
+                text: "ok".into(),
+                tool_calls: vec![],
+                ..Default::default()
+            })
+        };
+        Ok(stream_from_response(resp))
+    }
+}
+
+/// Collect events for `sid` until `Done`, with a safety timeout.
+async fn collect(
+    mut sub: tokio::sync::broadcast::Receiver<OutEvent>,
+    sid: &SessionId,
+) -> Vec<OutEvent> {
+    let mut out = Vec::new();
+    loop {
+        let Ok(recv) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await else {
+            break;
+        };
+        match recv {
+            Ok(ev) if ev.session() == Some(sid) => {
+                let done = matches!(ev, OutEvent::Done { .. });
+                out.push(ev);
+                if done {
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn read_tool_runs_through_engine_under_build_profile() {
+    // Scratch file under a temp dir.
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-host-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("hello.txt"), "greetings\nfrom holly\n").unwrap();
+    // Best-effort cleanup.
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let read_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "r1".into(),
+            name: "read".into(),
+            input: r#"{"path":"hello.txt"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    // ScriptedLlm::new reverses internally and pops from the back, so passing
+    // [read_call, finish] yields read_call first, then the tool-free turn that
+    // ends the loop.
+    let scripted = Arc::new(vec![read_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    // Core relocated execution to the runtime (#58): the executor answers the
+    // ToolExec round-trip against the real host-tool registry.
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "read it"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    // No ToolRequest under Allow — it ran directly.
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "read should auto-run under build"
+    );
+    let output = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(output.contains("greetings"), "got: {output}");
+    assert!(output.contains("from holly"), "got: {output}");
+    assert!(events.iter().any(|e| matches!(e, OutEvent::Done { .. })));
+}
+
+#[tokio::test]
+async fn edit_tool_creates_file_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-edit-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let edit_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "e1".into(),
+            name: "edit".into(),
+            input: r#"{"path":"out.txt","oldString":"","newString":"created\n"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    let scripted = Arc::new(vec![edit_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    // Core relocated execution to the runtime (#58): the executor answers the
+    // ToolExec round-trip against the real host-tool registry.
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "make the file"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "edit should auto-run under build"
+    );
+    let output = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(output.contains("created"), "got: {output}");
+    // The create actually landed on disk.
+    let on_disk = std::fs::read_to_string(root.join("out.txt")).unwrap();
+    assert_eq!(on_disk, "created\n");
+    // The executor emits the FileChange audit for the create (#202): path,
+    // `Create`, and the SHA-256 of the after-content — no file bytes on the wire.
+    let (path, kind, hash) = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::FileChange {
+                path,
+                change_kind,
+                hash,
+                ..
+            } => Some((path.clone(), *change_kind, hash.clone())),
+            _ => None,
+        })
+        .expect("expected a FileChange");
+    assert_eq!(path, "out.txt");
+    assert_eq!(kind, FileChangeKind::Create);
+    assert_eq!(hash, sha256_hex(b"created\n"));
+}
+
+#[tokio::test]
+async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    // Two write calls in one turn: create a nested file, then overwrite it.
+    let create_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: r#"{"path":"pkg/out.txt","content":"a\nb\n"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let overwrite_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w2".into(),
+            name: "write".into(),
+            input: r#"{"path":"pkg/out.txt","content":"only\n"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    let scripted = Arc::new(vec![create_call, overwrite_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "write the file"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "write should auto-run under build"
+    );
+    let outputs: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        outputs
+            .iter()
+            .any(|o| o.contains("created") && o.contains("2 lines")),
+        "expected a create confirmation; got {outputs:?}"
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|o| o.contains("overwrote") && o.contains("1 lines, was 2")),
+        "expected an overwrite confirmation; got {outputs:?}"
+    );
+    // Confirmations must not echo file content.
+    assert!(
+        !outputs.iter().any(|o| o.contains("only")),
+        "write output must not echo content; got {outputs:?}"
+    );
+    let on_disk = std::fs::read_to_string(root.join("pkg/out.txt")).unwrap();
+    assert_eq!(on_disk, "only\n");
+    // Both writes emit a FileChange audit (#202): the first `Create`, the second
+    // `Edit`, each carrying the after-content hash in ToolExec order.
+    let changes: Vec<(String, FileChangeKind, String)> = events
+        .iter()
+        .filter_map(|e| match e {
+            OutEvent::FileChange {
+                path,
+                change_kind,
+                hash,
+                ..
+            } => Some((path.clone(), *change_kind, hash.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        vec![
+            (
+                "pkg/out.txt".into(),
+                FileChangeKind::Create,
+                sha256_hex(b"a\nb\n")
+            ),
+            (
+                "pkg/out.txt".into(),
+                FileChangeKind::Edit,
+                sha256_hex(b"only\n")
+            ),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn write_tool_denied_under_research_mode() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-deny-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let write_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    let scripted = Arc::new(vec![write_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "research".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "try to write"))
+        .await
+        .unwrap();
+
+    // `research` mode class-denies `write` outright (ADR-0207 §4/§8: a mode
+    // `deny` is absolute, no prompt) — the tool mask this used to go through
+    // (#116, ADR-0038, ADR-0198's approval-offer softening) is retired.
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "a mode deny never parks an approval; got {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. }
+                if output.contains("tool `write` denied by mode `research`")
+        )),
+        "the denial must name the mode; got {events:?}"
+    );
+    assert!(!root.join("blocked.txt").exists(), "write must not land");
+}
+
+#[tokio::test]
+async fn write_tool_denied_outside_plans_folder_under_plan_mode() {
+    // #524, ADR-0142: `plan` mode carves out `.entanglement/plans/*.md` for
+    // the plan tool (#513) with a longer, scoped `allow` rule, but its bare
+    // `write` grade is class-`deny` (ADR-0207 §4) — a write anywhere else is
+    // refused outright, no approval offered.
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-plan-mask-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let write_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: r#"{"path":"blocked.txt","content":"nope\n"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    let scripted = Arc::new(vec![write_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "plan".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "try to write"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. } if output.contains("denied by mode `plan`")
+        )),
+        "plan should deny a write outside the plans folder; got {events:?}"
+    );
+    assert!(!root.join("blocked.txt").exists(), "write must not land");
+}
+
+#[tokio::test]
+async fn write_tool_allowed_in_plans_folder_under_plan_mode() {
+    // #524, ADR-0142: the opencode-style plans-folder carve-out — `plan` may
+    // write `.entanglement/plans/*.md` even though it is otherwise physically
+    // read-only.
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-write-plan-plans-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let write_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "w1".into(),
+            name: "write".into(),
+            input: serde_json::json!({
+                "path": ".entanglement/plans/scratch.md",
+                "content": "# Plan\n",
+            })
+            .to_string(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    let scripted = Arc::new(vec![write_call, finish]);
+    let tools = host_tools(root.clone());
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "plan".into(),
+        })
+        .await
+        .unwrap();
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "write the plan"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            OutEvent::ToolOutput { output, .. }
+                if output.contains("denied") || output.contains("Declined by")
+        )),
+        "plan should be able to write the plans folder; got {events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".entanglement/plans/scratch.md")).unwrap(),
+        "# Plan\n"
+    );
+}
+
+#[tokio::test]
+async fn bash_tool_runs_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-bash-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let bash_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: r#"{"command":"printf 'shell-ok\\n'"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    let scripted = Arc::new(vec![bash_call, finish]);
+    // `bash` is registered at startup (ADR-0195); mirror the head's own
+    // registry assembly by registering it alongside the sextet.
+    let mut tools = host_tools(root.clone());
+    tools.register(BashTool::new(root.clone()));
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        // Core carries only `build` now (#201); the engine needs the full trio to
+        // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    // Core relocated execution to the runtime (#58): the executor answers the
+    // ToolExec round-trip against the real host-tool registry.
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run it"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
+        "bash should auto-run under build"
+    );
+    let output = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput { output, .. } => Some(output.clone()),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(output.contains("[exit 0]"), "got: {output}");
+    assert!(output.contains("shell-ok"), "got: {output}");
+}
+
+/// #560/ADR-0196 §6 audit: a `bash` foreground call that exits non-zero is a
+/// legitimate result, not a structural failure — the model must read it, not
+/// be steered to "fix the call". `exit_code` (ADR-0186) carries the fact on
+/// its own orthogonal channel; `is_error` must stay `false`.
+#[tokio::test]
+async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile() {
+    let id = std::process::id();
+    let root = std::env::temp_dir().join(format!("entanglement-bash-exit-e2e-{id}"));
+    std::fs::create_dir_all(&root).unwrap();
+    struct Drop_(std::path::PathBuf);
+    impl Drop for Drop_ {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Drop_(root.clone());
+
+    let bash_call = LlmResponse {
+        text: "".into(),
+        tool_calls: vec![ToolCall {
+            id: "b1".into(),
+            name: "bash".into(),
+            input: r#"{"command":"exit 3"}"#.into(),
+            provider_meta: None,
+        }],
+        ..Default::default()
+    };
+    let finish = LlmResponse {
+        text: "done".into(),
+        tool_calls: vec![],
+        ..Default::default()
+    };
+    let scripted = Arc::new(vec![bash_call, finish]);
+    let mut tools = host_tools(root.clone());
+    tools.register(BashTool::new(root.clone()));
+    let cfg = EngineConfig {
+        llm_factory: Arc::new(move || {
+            Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
+        }),
+        tool_specs: tools.specs(),
+        agents: entanglement_runtime::agents::built_in_registry()
+            .expect("built-in agents must parse"),
+        ..EngineConfig::default()
+    };
+    let holly = Holly::spawn(cfg);
+    let _executor = ToolExecutor::builder(&holly, tools.shared())
+        .agents(
+            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        )
+        .base(entanglement_core::PermissionProfile::new(
+            entanglement_core::Permission::Allow,
+        ))
+        .spawn();
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "run it"))
+        .await
+        .unwrap();
+
+    let events = collect(sub, &sid).await;
+    let (output, is_error, exit_code) = events
+        .iter()
+        .find_map(|e| match e {
+            OutEvent::ToolOutput {
+                output,
+                is_error,
+                exit_code,
+                ..
+            } => Some((output.clone(), *is_error, *exit_code)),
+            _ => None,
+        })
+        .expect("expected a ToolOutput");
+    assert!(output.contains("[exit 3]"), "got: {output}");
+    assert!(!is_error, "a non-zero exit must not set is_error; got true");
+    assert_eq!(exit_code, Some(3));
+}

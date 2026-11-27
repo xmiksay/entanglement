@@ -227,7 +227,7 @@ mod tests {
         let mode = Mode {
             name: "test".to_string(),
             default: Permission::Ask,
-            rules: Rules::from_lists(&[], &["read(src/*)".to_string()], &[]),
+            rules: Rules::from_lists(&[], &["peek(src/*)".to_string()], &[]),
             limits: Limits::default(),
             sandbox: None,
             sandbox_network: false,
@@ -247,7 +247,7 @@ mod tests {
     }
 
     fn host_registry() -> SharedRegistry {
-        crate::host::host_tools(PathBuf::from("/r")).shared()
+        crate::test_tools::stub_tools().shared()
     }
 
     /// #485, ADR-0125: an absolute path resolving inside a wired `root` must
@@ -266,14 +266,14 @@ mod tests {
         );
         assert_eq!(
             resolver
-                .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
+                .resolve(&session, "peek", r#"{"path":"/r/src/main.rs"}"#)
                 .await,
             Grade::Allow
         );
         // The relative spelling already worked pre-#485 — must stay identical.
         assert_eq!(
             resolver
-                .resolve(&session, "read", r#"{"path":"src/main.rs"}"#)
+                .resolve(&session, "peek", r#"{"path":"src/main.rs"}"#)
                 .await,
             Grade::Allow
         );
@@ -294,7 +294,7 @@ mod tests {
         );
         assert_eq!(
             resolver
-                .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
+                .resolve(&session, "peek", r#"{"path":"/r/src/main.rs"}"#)
                 .await,
             Grade::Ask
         );
@@ -314,7 +314,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            resolver.resolve(&session, "read", r#"{"path":"x"}"#).await,
+            resolver.resolve(&session, "peek", r#"{"path":"x"}"#).await,
             Grade::Deny(None)
         );
     }
