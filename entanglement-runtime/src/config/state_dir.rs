@@ -3,6 +3,13 @@
 //! generation overrides, aux-model pins, escape-root grants, the MCP OAuth
 //! token store, and the last-seen MCP tool-name cache (ADR-0226).
 //!
+//! [`GRANTS_FILE`], [`MCP_TOKENS_FILE`] and [`MCP_TOOLS_FILE`] are names
+//! **reserved for a head's stores** (#966): the library never reads or writes
+//! them — its grant, token and tool-cache seams are in memory by default. They
+//! stay here so the one directory names all seven siblings, and so the
+//! definitions watcher can skip the two a head rewrites on every approval /
+//! MCP connect.
+//!
 //! One `ENTANGLEMENT_STATE_DIR` relocates all seven together, replacing the
 //! seven per-file `ENTANGLEMENT_*_FILE` overrides it superseded: the files are
 //! siblings by design, and nobody needs to scatter them. The hand-edited

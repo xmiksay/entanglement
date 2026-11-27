@@ -70,7 +70,8 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     [ADR-0153](../../adr/archive/0153-mcp-server-oauth.md) the transport itself lives in
     **`entanglement-provider::mcp`** (as `McpHttpClient`) and is reached through
     core's re-export — mechanism in the leaf
-    crate, policy (config, registry, permissions, the token file, the browser
+    crate, policy (config, registry, permissions, the `TokenStore` seam — in
+    memory by default; `skutter`'s `mcp-tokens.yml`, #966 — the browser
     launch) in the runtime. The runtime therefore names no `reqwest` of its own;
     `mcp-http` is now a pure compile gate deciding whether the HTTP-MCP paths are
     built at all, and `reqwest` rides in via core→provider exactly as ADR-0025's

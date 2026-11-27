@@ -231,7 +231,7 @@
   write re-reads the current on-disk state under the lock and merges before
   writing, so a second instance's own concurrent update survives instead of being
   clobbered by a write from stale in-memory state. The grants file needs no
-  reload: `skutter`'s store re-reads it on every check (#966). A debounced `notify` firing is *not* on its own proof
+  reload: `skutter`'s store re-reads it on a check whenever its `(mtime, size)` moved (#966). A debounced `notify` firing is *not* on its own proof
   that anything actually changed — on some filesystems a bare content `read()`
   of a watched file (which `reload()`'s own loaders do on every pass) is
   itself observable to `notify`, which without a guard makes the watcher
