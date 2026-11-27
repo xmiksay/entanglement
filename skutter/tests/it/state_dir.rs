@@ -12,9 +12,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use entanglement_core::{ApprovalScope, StoredAuth, TokenSet, TokenStore};
-use entanglement_runtime::aux_llm::Purpose;
 use entanglement_runtime::mcp::McpToolCache;
 use serde_json::Value;
+use skutter::aux_llm::Purpose;
 use skutter::config::agent_generation::AgentGenerationStore;
 use skutter::config::agent_models::AgentModelStore;
 use skutter::config::aux_models::AuxModelsPath;

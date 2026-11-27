@@ -62,8 +62,6 @@ mod mcp_oauth_device;
 #[cfg(feature = "mcp-http")]
 mod mcp_scoped;
 mod misaimed_decisions;
-#[cfg(feature = "provider")]
-mod narrate;
 mod parked_prompt_persistence;
 mod permission_dispatch;
 mod persistence_signal;
@@ -81,7 +79,6 @@ mod resume_config_mode;
 mod resume_mode_narrowing;
 mod session_fork;
 #[cfg(feature = "provider")]
-mod session_title;
 mod spawn_grading;
 mod spawn_grading_park;
 mod spawn_grading_scoped;

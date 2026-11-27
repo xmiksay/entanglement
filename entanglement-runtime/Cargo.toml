@@ -30,10 +30,10 @@ required-features = ["mcp-http"]
 
 [features]
 default = ["provider", "mcp-http", "rhai"]
-# The provider-backed aux-LLM helpers (session titles, the narrator, the
-# throttle relay): they drain an `entanglement-provider` `LlmStream` for a
-# one-shot call, and `futures::StreamExt` is the iterator.
-provider = ["dep:entanglement-provider", "dep:futures"]
+# The throttle relay: it polls `entanglement-provider`'s `HttpClient`
+# directly. The aux-LLM tasks (session titles, the narrator) moved to
+# `skutter` (#932).
+provider = ["dep:entanglement-provider"]
 # Streamable-HTTP MCP transport (#312, ADR-0080): remote MCP servers over
 # `POST /mcp` with per-server headers/auth, plus the OAuth flow that authenticates
 # them (ADR-0153). Since ADR-0153 the transport and the OAuth mechanism live in
@@ -64,8 +64,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
-# The `provider` feature's one-shot aux-LLM drain.
-futures = { workspace = true, optional = true }
 # `load_skill`'s path-token rewrite.
 regex = { workspace = true }
 # Process-group kill on timeout/cancel (#168) and `O_NOFOLLOW` opens.

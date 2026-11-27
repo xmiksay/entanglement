@@ -98,7 +98,6 @@ const TITLE_OUTPUT_CHAR_CAP: usize = 80;
 /// indefinitely, since aborting the *outer* task never reaches a child spawned
 /// from inside it. Parking it here means it's aborted along with the outer
 /// task when this future's local variables drop.
-#[cfg(feature = "provider")]
 pub fn spawn_session_title_generator(
     holly: &Holly,
     registry: AuxLlmRegistry,
@@ -214,7 +213,6 @@ pub fn spawn_session_title_generator(
 /// waiting (a missed delta can't be the settle signal itself) and a closed
 /// channel or an expired deadline both fall through to letting the caller
 /// fire its aux call anyway rather than stranding it.
-#[cfg(feature = "provider")]
 async fn wait_for_turn_settled(outbound: &mut broadcast::Receiver<OutEvent>, session: &SessionId) {
     let deadline = tokio::time::sleep(DEFER_TIMEOUT);
     tokio::pin!(deadline);
@@ -242,7 +240,6 @@ async fn wait_for_turn_settled(outbound: &mut broadcast::Receiver<OutEvent>, ses
 /// the endpoint in the cooldown case); `Err` for a stream/transport failure
 /// on an attempted call. The prompt is capped at [`TITLE_PROMPT_CHAR_CAP`]
 /// and the output at [`TITLE_OUTPUT_CHAR_CAP`].
-#[cfg(feature = "provider")]
 async fn generate_title(
     registry: &AuxLlmRegistry,
     first_prompt: &str,
@@ -343,7 +340,7 @@ fn clean_title(raw: &str) -> String {
     s
 }
 
-#[cfg(all(test, feature = "provider"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

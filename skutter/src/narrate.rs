@@ -66,7 +66,6 @@ const NARRATE_OUTPUT_CHAR_CAP: usize = 60;
 /// rather than a bare detached `tokio::spawn` (mirrors `session_title.rs`) —
 /// one still holding its own `Holly` clone while parked on a throttled/slow
 /// aux call would otherwise keep the engine's channels open indefinitely.
-#[cfg(feature = "provider")]
 pub fn spawn_action_narrator(
     holly: &Holly,
     registry: AuxLlmRegistry,
@@ -162,7 +161,6 @@ pub fn spawn_action_narrator(
 /// `Err` for a stream/transport failure on an attempted call. The input is
 /// capped at [`NARRATE_INPUT_CHAR_CAP`] and the output at
 /// [`NARRATE_OUTPUT_CHAR_CAP`].
-#[cfg(feature = "provider")]
 async fn generate_action(
     registry: &AuxLlmRegistry,
     tool: &str,
@@ -258,7 +256,7 @@ fn clean_action(raw: &str) -> String {
     s
 }
 
-#[cfg(all(test, feature = "provider"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

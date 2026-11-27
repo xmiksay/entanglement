@@ -11,9 +11,8 @@
 //! # Feature gates (ADR-0025)
 //!
 //! - `default = ["provider", "mcp-http", "rhai"]`.
-//! - `provider` — the provider-backed aux-LLM helpers (session titles, the
-//!   action narrator, the throttle relay) that drain an
-//!   `entanglement-provider` stream directly.
+//! - `provider` — the throttle relay, which polls the
+//!   `entanglement-provider` endpoint pool directly.
 //! - `mcp-http` — the streamable-HTTP MCP transport + OAuth code paths; the
 //!   stdio MCP transport stays in the lean library.
 //! - `rhai` — the sandboxed `rhai` scripting tool (ADR-0046, #502).
@@ -33,7 +32,6 @@ pub mod ask_user;
 // Which sessions a head is watching (ADR-0247): an attended session's
 // cards and questions wait for their approver instead of collapsing.
 pub mod attendance;
-pub mod aux_llm;
 pub mod cancel;
 // The capability vocabulary tools declare (#560, ADR-0207 §3), consumed by
 // `crate::policy::ModeResolver` (stage 4) to grade a call by its tool's
@@ -84,12 +82,6 @@ pub mod mcp;
 // (`crate::policy::ModeResolver`) as of stage 4. Ungated — pure logic
 // over core types + capability + serde_yaml, needed by the lean build too.
 pub mod mode;
-// Live action narrator (#635): asks the aux `narrate` LLM what the agent is
-// doing on every tool call and sets it as `Session.action`. Mirrors
-// `session_title` below, including the `provider` gate (drains a provider
-// `LlmStream`).
-#[cfg(feature = "provider")]
-pub mod narrate;
 // Pending-operations listing (#607, ADR-0161 §6): shared by `poll`'s
 // no-handle model surface and `InMsg::ListOperations`'s head surface.
 pub mod operations;
@@ -133,8 +125,6 @@ pub mod script;
 pub mod script_ops;
 pub mod seam;
 pub mod session_store;
-#[cfg(feature = "provider")]
-pub mod session_title;
 // Conservative, quote-aware compound-command splitter (ADR-0197) — the
 // splitting side a mode's `bash` rules grade against. Ungated — pure `char`
 // scanning, no deps.

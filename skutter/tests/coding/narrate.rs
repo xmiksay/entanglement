@@ -14,9 +14,9 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmFactory, LlmRequest, LlmResponse,
     LlmStream, ModelResolver, OutEvent, ResolvedModel, SessionId, ToolCall, UserId,
 };
-use entanglement_runtime::aux_llm::AuxLlmRegistry;
-use entanglement_runtime::aux_llm::AuxModelStore;
-use entanglement_runtime::narrate::spawn_action_narrator;
+use skutter::aux_llm::AuxLlmRegistry;
+use skutter::aux_llm::AuxModelStore;
+use skutter::narrate::spawn_action_narrator;
 use tokio::sync::Notify;
 
 async fn recv_until(

@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 
+use crate::aux_llm::{AuxModelStore, Purpose};
 use crate::config::aux_models::AuxModelsPath;
-use entanglement_runtime::aux_llm::{AuxModelStore, Purpose};
 
 /// Print every known auxiliary-LLM purpose with its persisted pin, or
 /// "(unset — falls back to the session's primary model)" when none is set.

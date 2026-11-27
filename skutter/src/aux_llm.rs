@@ -339,5 +339,5 @@ impl AuxLlmRegistry {
     }
 }
 
-#[cfg(all(test, feature = "provider"))]
+#[cfg(test)]
 mod tests;

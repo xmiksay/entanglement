@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use entanglement_runtime::aux_llm::Purpose;
+use skutter::aux_llm::Purpose;
 use skutter::config::aux_models::AuxModelsPath;
 
 // Every test pins its own temp file through `AuxModelsPath::at` — no process env.

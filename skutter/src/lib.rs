@@ -15,6 +15,11 @@ use entanglement_runtime::{
     session_store, skills, system_prompt, tool_names, tool_runner, tools,
 };
 
+// Per-purpose aux models and the session-title / action-narrator tasks
+// that ride them (#932).
+pub mod aux_llm;
+pub mod narrate;
+pub mod session_title;
 // The layered `config.yml`, the managed state files' paths and the key
 // writer (#967): read by `skutter`, never by the library.
 pub mod config;
