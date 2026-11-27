@@ -160,9 +160,9 @@ pub trait Tool: Send + Sync {
     /// The argument a `tool(pattern)` rule and an `Always` grant key on, as
     /// the call spells it (a [`ArgKind::Path`] one is normalised
     /// root-relative before grading). `None` when the call carries none or
-    /// `input` is malformed: only the tool's bare rules apply then. Only a
-    /// tool whose [`permission_scope`][Tool::permission_scope] declares an
-    /// argument returns one. Default: the
+    /// `input` is malformed: only the tool's bare rules apply then. Only
+    /// consulted when [`permission_scope`][Tool::permission_scope] declares
+    /// an argument; an override without that declaration is ignored. Default: the
     /// [`escape_target`][Tool::escape_target] for an [`ArgKind::Path`]
     /// scope — the path a call touches is the one its rules scope on —
     /// otherwise none; override it when the graded string differs (`glob`

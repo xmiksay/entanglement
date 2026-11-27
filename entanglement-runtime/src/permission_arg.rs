@@ -43,7 +43,15 @@ pub fn permission_arg(tools: &ToolRegistry, tool: &str, input: &str) -> Option<S
         AGENT_SEND_TOOL => {
             Some(str_arg(input, "agent_id")?.trim().to_string()).filter(|id| !id.is_empty())
         }
-        _ => tools.get(tool)?.permission_arg(input),
+        // The declared scope decides, so grading never matches a rule that
+        // `warn_unscopable_rules` reported as one that never matches.
+        _ => {
+            let t = tools.get(tool)?;
+            if t.permission_scope().arg == ArgKind::None {
+                return None;
+            }
+            t.permission_arg(input)
+        }
     }
 }
 
@@ -143,6 +151,33 @@ mod tests {
             Some("a/b.md")
         );
         assert_eq!(permission_scope(&tools, "fetch_doc").arg, ArgKind::Path);
+    }
+
+    /// An override of `permission_arg` without a declared argument is
+    /// ignored: grading follows the declared scope, the same answer the
+    /// startup warning for unscopable rules gives.
+    #[test]
+    fn an_argument_from_a_tool_declaring_none_is_ignored() {
+        struct Undeclared;
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for Undeclared {
+            fn name(&self) -> std::borrow::Cow<'static, str> {
+                "fetch_doc".into()
+            }
+            async fn run(&self, _input: &str) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+            fn permission_arg(&self, input: &str) -> Option<String> {
+                str_arg(input, "doc")
+            }
+        }
+        let mut tools = ToolRegistry::new();
+        tools.register(Undeclared);
+        assert_eq!(permission_scope(&tools, "fetch_doc").arg, ArgKind::None);
+        assert_eq!(
+            permission_arg(&tools, "fetch_doc", r#"{"doc":"a/b.md"}"#),
+            None
+        );
     }
 
     /// A path tool's argument defaults to its escape target, so a tool that
