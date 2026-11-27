@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use entanglement_runtime::attendance::Attendance;
+use entanglement_runtime::session_store::LogPayload;
 use skutter::persistence::spawn_persistence_subscriber;
-use skutter::session_store::{resume_with_mode, LogPayload, SessionStore};
+use skutter::session_store::{resume_with_mode, SessionStore};
 
 use crate::support::{approve, card, collect, engine, next_of, ran};
 

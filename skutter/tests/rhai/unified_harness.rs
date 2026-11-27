@@ -52,7 +52,7 @@ pub(super) struct Setup {
     /// Run the script detached (`background: true`, #637).
     pub(super) background: bool,
     /// A persistence tap to attach before the session starts.
-    pub(super) sink: Option<Arc<dyn skutter::persistence::RecordSink>>,
+    pub(super) sink: Option<Arc<dyn entanglement_runtime::persistence::RecordSink>>,
 }
 
 impl Setup {
@@ -151,7 +151,7 @@ pub(super) async fn start(
         })
         .spawn();
     if let Some(sink) = setup.sink {
-        skutter::persistence::spawn_persistence_subscriber_with_sink(&holly, sink);
+        entanglement_runtime::persistence::spawn_persistence_subscriber_with_sink(&holly, sink);
     }
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();

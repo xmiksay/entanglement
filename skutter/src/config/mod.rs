@@ -93,8 +93,8 @@ use anyhow::{Context, Result};
 use entanglement_core::PermissionProfile;
 use serde_yaml::Value;
 
-use crate::mcp::McpServerConfig;
 use crate::mode;
+use entanglement_runtime::mcp::McpServerConfig;
 use layers::default_layer;
 use layers::{discover, merge_value, provenance, RawLayer, CONFIG_FILE_ENV, TEMPLATE_YML};
 use raw::RawConfig;

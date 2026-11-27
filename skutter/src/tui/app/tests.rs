@@ -620,7 +620,7 @@ fn app_in_temp_dir(sid: SessionId) -> (App, tempfile::TempDir) {
 /// Seed a session `.jsonl` in the store at `dir` for `id` (minimal — just
 /// enough that `delete` finds a real file).
 fn seed_session_log(dir: &std::path::Path, id: &SessionId) {
-    use crate::session_store::{LogPayload, LogRecord};
+    use entanglement_runtime::session_store::{LogPayload, LogRecord};
     let record = LogRecord::new(
         id.clone(),
         LogPayload::Out(OutEvent::SessionStarted {

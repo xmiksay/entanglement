@@ -7,8 +7,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use entanglement_core::Permission;
+use entanglement_runtime::skills::LoadSkillTool;
 use entanglement_runtime::Tool;
-use skutter::skills::{load_registry_in, LoadSkillTool};
+use skutter::skills::load_registry_in;
 
 use super::launch_harness::{fixture, run, table, Launch, Setup, ADD};
 use super::no_user;

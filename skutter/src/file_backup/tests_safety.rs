@@ -8,7 +8,7 @@ use entanglement_core::{AgentState, OutEvent, SessionId};
 use super::tests::Fixture;
 use super::*;
 use crate::exec_scope::with_exec_seq;
-use crate::session_store::{LogPayload, LogRecord};
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
 fn exec(f: &Fixture, session: &SessionId, seq: u64, request_id: &str) {
     f.log(LogRecord::new(

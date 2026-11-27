@@ -12,8 +12,9 @@ use entanglement_core::{
     stream_from_response, AgentState, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, Message, OutEvent, SessionId, ToolCall,
 };
+use entanglement_runtime::session_store::{pair_records, LogPayload, LogRecord};
 use skutter::persistence::spawn_persistence_subscriber;
-use skutter::session_store::{pair_records, LogPayload, LogRecord, SessionStore};
+use skutter::session_store::SessionStore;
 use tokio::sync::broadcast::Receiver;
 
 type Requests = Arc<Mutex<Vec<String>>>;

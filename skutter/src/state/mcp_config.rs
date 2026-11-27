@@ -24,9 +24,10 @@ use std::path::{Path, PathBuf};
 
 use crate::config::atomic::atomic_write;
 use crate::config::lock;
-use crate::mcp::{McpServerConfig, ServerConfigs};
+use crate::mcp::ServerConfigs;
 use anyhow::{Context, Result};
 use entanglement_core::{Holly, OutEvent};
+use entanglement_runtime::mcp::McpServerConfig;
 use serde_yaml::Value;
 use tokio::sync::broadcast::error::RecvError;
 

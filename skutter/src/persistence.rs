@@ -1,14 +1,14 @@
 //! The file-backed persistence sink (#932): the library's tap
 //! ([`spawn_persistence_subscriber_with_sink`]) writing into a
-//! [`SessionStore`]. Re-exports the library's `persistence` items.
+//! [`SessionStore`].
 
 use std::sync::Arc;
 
 use entanglement_core::{Holly, SessionId};
+use entanglement_runtime::persistence::{spawn_persistence_subscriber_with_sink, RecordSink};
 
-pub use entanglement_runtime::persistence::*;
-
-use crate::session_store::{LogRecord, SessionStore};
+use crate::session_store::SessionStore;
+use entanglement_runtime::session_store::LogRecord;
 
 /// Appends each record to `{root_id}.jsonl` in a [`SessionStore`].
 pub struct FileSink {

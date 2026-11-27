@@ -18,7 +18,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use entanglement_core::{OutEvent, SessionId};
 
-use crate::session_store::{LogPayload, LogRecord};
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
 /// Read `id`'s persisted log and print its resolved agent/model/name
 /// (folded from the log's events, last write wins).

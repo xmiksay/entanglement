@@ -263,7 +263,7 @@ fn acceptance_new_session_created_on_first_prompt_and_appears_in_list() {
 
 #[test]
 fn restore_from_records_rebuilds_transcript_and_switches() {
-    use crate::session_store::{LogPayload, LogRecord};
+    use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
     let initial = SessionId::new("live");
     let restored = SessionId::new("old");
@@ -392,7 +392,7 @@ fn restore_from_records_rebuilds_token_totals() {
     // per-view), so a resumed session always showed 0 in / 0 out. Token totals
     // now live per-view, and the resume path replays persisted `Usage` records
     // through `apply_event`, so the restored session carries its real totals.
-    use crate::session_store::{LogPayload, LogRecord};
+    use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
     let live = SessionId::new("live");
     let old = SessionId::new("old");
@@ -557,7 +557,7 @@ fn restore_routes_each_record_to_its_own_sessions_view() {
     // A root's log interleaves its sub-agents' records. Folding them all into
     // the root mixed a child's stream into the root transcript, and ran the
     // child's own `seq` counter through the root's dedupe guard.
-    use crate::session_store::{LogPayload, LogRecord};
+    use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
     let root = SessionId::new("root");
     let child = SessionId::new("child");

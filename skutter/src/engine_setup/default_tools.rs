@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::host::BashTool;
 use crate::path_grading::SessionWorkdirs;
-use crate::skills::{LoadSkillTool, SkillRegistry};
 use crate::{host, ToolRegistry};
+use entanglement_runtime::skills::{LoadSkillTool, SkillRegistry};
 
 /// What [`register_default_tools`] wires into the host tools.
 pub(crate) struct DefaultTools {

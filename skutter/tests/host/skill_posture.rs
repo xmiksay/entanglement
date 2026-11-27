@@ -14,9 +14,10 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
+use entanglement_runtime::skills::LoadSkillTool;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use skutter::host::host_tools;
-use skutter::skills::{load_registry_in, LoadSkillTool};
+use skutter::skills::load_registry_in;
 
 use crate::no_user;
 

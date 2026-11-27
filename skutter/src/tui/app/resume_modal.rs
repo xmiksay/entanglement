@@ -3,7 +3,8 @@
 use entanglement_core::SessionId;
 use ratatui::widgets::ListState;
 
-use crate::session_store::{LogRecord, SessionMeta, SessionStore};
+use crate::session_store::{SessionMeta, SessionStore};
+use entanglement_runtime::session_store::LogRecord;
 
 use super::App;
 

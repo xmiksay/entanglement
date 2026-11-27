@@ -15,8 +15,8 @@ use crate::providers::select_provider;
 
 pub(crate) mod default_tools;
 use crate::{
-    config, file_backup, host, jobs, mcp, path_grading, retained_output, script_ops, skills,
-    subagent, tool_advertising, SharedRegistry,
+    config, file_backup, host, jobs, path_grading, retained_output, script_ops, subagent,
+    tool_advertising, SharedRegistry,
 };
 use default_tools::{register_default_tools, register_session_tools, DefaultTools};
 
@@ -62,7 +62,7 @@ pub(crate) async fn build_config(
     catalog: &Catalog,
     http_client: &HttpClient,
     agents: AgentCatalog,
-    skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
+    skills: Arc<RwLock<Arc<entanglement_runtime::skills::SkillRegistry>>>,
     user_config: &config::Config,
     file_backups: file_backup::FileBackups,
     stores: &crate::state::Stores,
@@ -71,8 +71,8 @@ pub(crate) async fn build_config(
     ModelInfo,
     String,
     SharedRegistry,
-    mcp::ActiveServers,
-    Arc<mcp::AvailableMcp>,
+    entanglement_runtime::mcp::ActiveServers,
+    Arc<entanglement_runtime::mcp::AvailableMcp>,
     EscapeRoot,
     host::SandboxConfig,
     jobs::JobRegistry,
@@ -208,7 +208,7 @@ pub(crate) async fn build_config(
     // Credentials and last-seen tool names live in `skutter`'s managed files
     // (#966), not the library's in-memory defaults.
     let mcp_available = Arc::new(stores.mcp_roster(&user_config.mcp, secret_env.clone()));
-    let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
+    let mcp_active: entanglement_runtime::mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
     // The one advertised surface (ADR-0226): the registered tools that set
     // `Tool::advertised` plus the runtime-owned pseudo-tools (`agent`/
     // `agent_send`, `update_tasks`, `ask_user`, `propose_plan`,

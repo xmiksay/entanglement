@@ -1,10 +1,10 @@
-//! `skutter`'s MCP layer over the library's (re-exported here): the global
+//! `skutter`'s MCP layer over the library's `entanglement_runtime::mcp`: the global
 //! server roster answering `McpList`/`McpAdd`/`McpRemove`/`McpAuth`, live
 //! add/remove and the OAuth browser/device flows (#375, ADR-0153, #932).
 //! The library keeps the transports, the lazy connect, the per-user scopes
 //! and the `TokenStore` seam.
 
-pub use entanglement_runtime::mcp::*;
+use entanglement_runtime::mcp::*;
 
 pub mod browser;
 pub mod live;

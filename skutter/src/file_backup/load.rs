@@ -29,7 +29,7 @@ use entanglement_core::{content_text, InMsg, OutEvent, SessionId};
 use super::lineage::{current_tree, merge_by};
 use super::manifest::{self, Change, MANIFEST};
 use super::FileBackups;
-use crate::session_store::{LogPayload, LogRecord};
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
 /// The logs of the target's tree, one entry per file, the root's own first.
 pub(super) struct Logs {

@@ -62,10 +62,10 @@ use anyhow::{Context, Result};
 use entanglement_core::{Agent, AgentCatalog};
 
 use crate::layers::UserLayer;
-use crate::mcp::McpCapabilityIndex;
-use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble_parts, PromptContext, PromptPart};
 use discover::{discover, BUILT_INS};
+use entanglement_runtime::mcp::McpCapabilityIndex;
+use entanglement_runtime::skills::SkillRegistry;
 use parse::{build_agent, parse_definition, parse_raw, resolve_preload, AgentDefinition};
 
 /// Load the agent registry for `root`: embedded built-ins, then the user dir,
@@ -315,7 +315,7 @@ mod tests {
 
     /// A one-off registry holding a single embedded (built-in shape) skill.
     fn skill_registry(name: &str, body: &str) -> SkillRegistry {
-        use crate::skills::SkillMeta;
+        use entanglement_runtime::skills::SkillMeta;
         let mut reg = SkillRegistry::default();
         reg.insert(SkillMeta {
             name: name.into(),

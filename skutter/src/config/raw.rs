@@ -8,8 +8,8 @@ use serde::Deserialize;
 
 use super::ceiling;
 use super::tui::TuiConfig;
-use crate::mcp::McpServerConfig;
 use crate::mode;
+use entanglement_runtime::mcp::McpServerConfig;
 
 /// The raw file shape. `deny_unknown_fields` makes a typo'd key a loud error
 /// rather than a silently-ignored setting, exactly like the agent/provider files.

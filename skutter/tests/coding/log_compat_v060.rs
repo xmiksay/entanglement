@@ -22,9 +22,8 @@ use entanglement_core::{
     stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmStream, Message, MessageRole, OutEvent, SessionId, DEFAULT_AGENT,
 };
-use skutter::session_store::{
-    check_for_resume, integrity_gap, pair_records, read_path, LogPayload, LogRecord,
-};
+use entanglement_runtime::session_store::{integrity_gap, pair_records, LogPayload, LogRecord};
+use skutter::session_store::{check_for_resume, read_path};
 use tokio::sync::broadcast::Receiver;
 
 const FIXTURE: &str = concat!(

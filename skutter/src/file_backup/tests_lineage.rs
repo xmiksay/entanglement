@@ -7,7 +7,7 @@ use entanglement_core::{AgentState, OutEvent, SessionId};
 
 use super::tests::Fixture;
 use super::tests_adopted::{exec, log, moved, prompt, sid, started, LiveTree};
-use crate::session_store::LogPayload;
+use entanglement_runtime::session_store::LogPayload;
 
 fn pc(child: &SessionId, parent: &SessionId) -> LogPayload {
     LogPayload::Out(OutEvent::ParentChanged {

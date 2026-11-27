@@ -27,8 +27,8 @@ pub(crate) struct Engine {
     pub(crate) provider_name: String,
     pub(crate) http_client: HttpClient,
     pub(crate) tools: SharedRegistry,
-    pub(crate) mcp_active: mcp::ActiveServers,
-    pub(crate) mcp_available: Arc<mcp::AvailableMcp>,
+    pub(crate) mcp_active: entanglement_runtime::mcp::ActiveServers,
+    pub(crate) mcp_available: Arc<entanglement_runtime::mcp::AvailableMcp>,
     pub(crate) mcp_configs: mcp::ServerConfigs,
     /// `Always` grants in the managed `grants.yml` (#966), for the executor.
     pub(crate) grants: Arc<crate::state::FileGrantStore>,
@@ -40,7 +40,7 @@ pub(crate) struct Engine {
     pub(crate) scripts: script_ops::ScriptRegistry,
     pub(crate) file_backups: file_backup::FileBackups,
     pub(crate) workdirs: crate::path_grading::SessionWorkdirs,
-    pub(crate) live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
+    pub(crate) live_skills: Arc<RwLock<Arc<entanglement_runtime::skills::SkillRegistry>>>,
     pub(crate) live_profiles: Arc<RwLock<AgentCatalog>>,
     pub(crate) live_agent_models: Arc<Mutex<config::agent_models::AgentModelStore>>,
     pub(crate) live_agent_generation: Arc<Mutex<config::agent_generation::AgentGenerationStore>>,
@@ -70,7 +70,7 @@ pub(crate) async fn boot(
     // watcher swaps this for a freshly-loaded registry on a debounced dir
     // change. `load_skill` (below) and the watcher both share this handle;
     // core's own copy (built into `engine_config` below) has no such seam.
-    let live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>> =
+    let live_skills: Arc<RwLock<Arc<entanglement_runtime::skills::SkillRegistry>>> =
         Arc::new(RwLock::new(skill_registry.clone()));
     let prompt_ctx = system_prompt::PromptContext::load_with(
         cwd,
@@ -80,8 +80,8 @@ pub(crate) async fn boot(
     // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission key alongside the
     // fixed built-in set — computed once here (like the ceiling permission
     // below) rather than re-derived on every reload.
-    let mcp_capabilities =
-        mcp::capability_index(&user_config.mcp).context("resolving MCP capability hints")?;
+    let mcp_capabilities = entanglement_runtime::mcp::capability_index(&user_config.mcp)
+        .context("resolving MCP capability hints")?;
     // The skill registry also resolves per-agent `skills:` preload bodies (#117).
     let mut profiles = agents::load_registry_in(
         cwd,

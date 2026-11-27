@@ -7,8 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId};
-use skutter::persistence::{spawn_persistence_subscriber_with_sink, FileSink, RecordSink};
-use skutter::session_store::{LogPayload, LogRecord, SessionStore};
+use entanglement_runtime::persistence::{spawn_persistence_subscriber_with_sink, RecordSink};
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
+use skutter::persistence::FileSink;
+use skutter::session_store::SessionStore;
 
 /// Forwards every record to the real file store *and* captures a clone, so the
 /// test can compare what an embedder sink sees against what hits the disk.

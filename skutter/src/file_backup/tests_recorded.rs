@@ -10,7 +10,7 @@ use super::tests_adopted::{exec, log, prompt, sid, started, LiveTree};
 use super::tracker::ancestry_walk;
 use super::{holly_ancestry, lock, FileBackups};
 use crate::exec_scope::with_exec_seq;
-use crate::session_store::LogPayload;
+use entanglement_runtime::session_store::LogPayload;
 
 fn pc(child: &SessionId, parent: &SessionId) -> LogPayload {
     LogPayload::Out(OutEvent::ParentChanged {

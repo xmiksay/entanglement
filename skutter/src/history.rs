@@ -18,7 +18,8 @@
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::session_store::{LogPayload, SessionStore};
+use crate::session_store::SessionStore;
+use entanglement_runtime::session_store::LogPayload;
 
 /// Spawns a subscriber that answers [`InMsg::ReplayFrom`] with an
 /// [`OutEvent::History`] snapshot read from the persisted log in `store`.
@@ -65,7 +66,10 @@ fn read_history(store: &SessionStore, session: &SessionId, after_seq: u64) -> Ve
 /// The persisted content events with `seq() > after_seq`, in log order. Pure so
 /// it is unit-testable without the filesystem. Point-in-time lifecycle/query
 /// events (no `seq`) are excluded — the cursor semantics are content-only.
-fn history_after(records: &[crate::session_store::LogRecord], after_seq: u64) -> Vec<OutEvent> {
+fn history_after(
+    records: &[entanglement_runtime::session_store::LogRecord],
+    after_seq: u64,
+) -> Vec<OutEvent> {
     records
         .iter()
         .filter_map(|r| match &r.payload {
@@ -78,7 +82,7 @@ fn history_after(records: &[crate::session_store::LogRecord], after_seq: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_store::LogRecord;
+    use entanglement_runtime::session_store::LogRecord;
 
     fn out(ev: OutEvent) -> LogRecord {
         LogRecord::new(SessionId::new("s1"), LogPayload::Out(ev))

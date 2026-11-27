@@ -189,9 +189,10 @@ async fn main() -> Result<()> {
     // value parked there is caught too; `eprintln!` like the scaffold notices
     // above, so it shows without `--verbose` and stays in the scrollback after
     // a TUI exit.
-    let mcp_clashes = mcp::AvailableMcp::from_config(&user_config.mcp, Vec::new())
-        .clash_warnings()
-        .to_vec();
+    let mcp_clashes =
+        entanglement_runtime::mcp::AvailableMcp::from_config(&user_config.mcp, Vec::new())
+            .clash_warnings()
+            .to_vec();
     for warning in config_warnings
         .iter()
         .cloned()

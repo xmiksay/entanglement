@@ -7,10 +7,10 @@ use serde::Deserialize;
 
 use super::discover::RawAgent;
 use crate::layers::Strictness;
-use crate::mcp::McpCapabilityIndex;
 use crate::mode::{ladder_rank, BUILTIN_LADDER};
-use crate::skills::SkillRegistry;
 use crate::system_prompt::{assemble, PromptContext};
+use entanglement_runtime::mcp::McpCapabilityIndex;
+use entanglement_runtime::skills::SkillRegistry;
 
 /// One parsed agent definition (frontmatter + body). The `deny_unknown_fields`
 /// makes a typo'd key a loud error rather than a silently-ignored field.

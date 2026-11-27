@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use entanglement_core::{OutEvent, SessionId};
 
-use crate::session_store::{LogPayload, LogRecord};
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
 /// `target` plus every session under it now, by each session's latest parent
 /// edge. Edges are merged across files by wall clock (record order within

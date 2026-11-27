@@ -8,7 +8,7 @@ use entanglement_core::{InMsg, OutEvent, SessionId};
 
 use crate::attended_serve::{connect, first, send};
 use crate::support::approve;
-use skutter::session_store::LogPayload;
+use entanglement_runtime::session_store::LogPayload;
 
 use crate::attended_wake::{
     asleep_with_card, drain, errors, hibernate, list, served, served_with, Served,

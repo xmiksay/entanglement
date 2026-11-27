@@ -20,12 +20,13 @@ use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
     GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
+use entanglement_runtime::skills::LoadSkillTool;
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use skutter::host::escape::escape_grant;
 use skutter::host::EscapeResolver;
 use skutter::host::{host_tools, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool};
-use skutter::skills::{load_registry_in, LoadSkillTool};
+use skutter::skills::load_registry_in;
 use skutter::state::ExtraRootStore;
 
 // ADR-0227's unified binding path: FileChange from a script, the generated

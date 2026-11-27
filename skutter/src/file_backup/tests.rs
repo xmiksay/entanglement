@@ -5,7 +5,7 @@ use entanglement_core::{InMsg, OutEvent, SessionId};
 
 use super::*;
 use crate::exec_scope::with_exec_seq;
-use crate::session_store::{LogPayload, LogRecord};
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
 /// A tempdir holding the session store and a separate working tree.
 pub(super) struct Fixture {

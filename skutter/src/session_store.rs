@@ -1,14 +1,14 @@
 //! The on-disk session store (#932): one JSONL file per root session under
 //! the project's data dir, its listing, resume checks and retention. The
-//! record types and the pure resume helpers stay in the library and are
-//! re-exported here.
+//! record types and the pure resume helpers stay in the library
+//! (`entanglement_runtime::session_store`); callers import them from there.
 
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-pub use entanglement_runtime::session_store::*;
+use entanglement_runtime::session_store::*;
 
 mod compacted;
 mod listing;

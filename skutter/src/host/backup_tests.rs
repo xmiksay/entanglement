@@ -10,8 +10,9 @@ use entanglement_core::{InMsg, SessionId};
 
 use super::{ApplyPatchTool, EditTool, WriteTool};
 use crate::file_backup::FileBackups;
-use crate::session_store::{LogPayload, LogRecord, SessionStore};
+use crate::session_store::SessionStore;
 use crate::tools::Tool;
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
 /// A tempdir holding the session store and a separate working tree.
 struct Fixture {

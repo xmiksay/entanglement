@@ -13,8 +13,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::config::Config;
-use crate::mcp::{transport_label, AvailableMcp, McpToolCache};
 use crate::state::{FileMcpToolCache, McpTokenStore};
+use entanglement_runtime::mcp::{transport_label, AvailableMcp, McpToolCache};
 
 /// Resolve the user config for `cwd` and print the available MCP server
 /// roster.
@@ -109,7 +109,7 @@ mod tests {
         let mut config = empty_config();
         config.mcp.insert(
             "docs".to_string(),
-            crate::mcp::McpServerConfig {
+            entanglement_runtime::mcp::McpServerConfig {
                 command: Some("docs-server".to_string()),
                 args: vec![],
                 env: HashMap::new(),

@@ -1,5 +1,5 @@
 //! File-based skill discovery (#114, #932) over the library's skill registry
-//! (re-exported here).
+//! (`entanglement_runtime::skills`).
 //!
 //! A skill on disk is a directory holding a `SKILL.md` (YAML frontmatter +
 //! markdown body) plus optional supporting files (`references/*.md`,
@@ -29,7 +29,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-pub use entanglement_runtime::skills::*;
+use entanglement_runtime::skills::*;
 
 use crate::layers::UserLayer;
 

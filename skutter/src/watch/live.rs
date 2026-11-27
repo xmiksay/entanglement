@@ -8,10 +8,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use entanglement_core::AgentCatalog;
 
 use crate::config::agent_models::AgentModelStore;
-use crate::mcp;
 use crate::session_store::SessionStore;
-use crate::skills::SkillRegistry;
 use crate::system_prompt::PromptContext;
+use entanglement_runtime::skills::SkillRegistry;
 
 /// What the watcher tells a head after a content change (#785). A head that
 /// renders config of its own (the TUI's `tui:` block) re-applies it on
@@ -39,7 +38,7 @@ pub struct LiveDefinitions {
     /// (like the ceiling) is never itself re-parsed on a reload; only the
     /// agent/skill definition re-parse is live. A config edit to
     /// `capabilities:` needs a restart to take effect, same as a ceiling edit.
-    pub mcp_capabilities: mcp::McpCapabilityIndex,
+    pub mcp_capabilities: entanglement_runtime::mcp::McpCapabilityIndex,
     /// Per-write file backups (#787): unlike the ceiling, `config.yml`'s
     /// `undo:` block *is* re-applied on every reload.
     pub file_backups: Option<crate::file_backup::FileBackups>,
@@ -57,7 +56,7 @@ impl LiveDefinitions {
         agents: Arc<RwLock<AgentCatalog>>,
         skills: Arc<RwLock<Arc<SkillRegistry>>>,
         agent_models: Arc<Mutex<AgentModelStore>>,
-        mcp_capabilities: mcp::McpCapabilityIndex,
+        mcp_capabilities: entanglement_runtime::mcp::McpCapabilityIndex,
     ) -> Self {
         Self {
             agents,

@@ -2,8 +2,8 @@ use entanglement_core::{InMsg, OutEvent, SessionId};
 use ratatui::widgets::ListState;
 use std::collections::HashMap;
 
-use crate::session_store::{LogPayload, LogRecord};
 use crate::tui::session_view::SessionView;
+use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
 /// Owns every `SessionView` the head has seen and which one is active.
 /// Kept separate from `App` so the routing/lifecycle logic (switch, create,

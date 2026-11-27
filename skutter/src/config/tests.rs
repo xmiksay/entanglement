@@ -236,7 +236,7 @@ fn unknown_mcp_capability_hint_is_a_loud_error() {
     )
     .unwrap();
     let raw: RawConfig = serde_yaml::from_value(merge_value(base, over)).unwrap();
-    let err = crate::mcp::capability_index(&raw.mcp).unwrap_err();
+    let err = entanglement_runtime::mcp::capability_index(&raw.mcp).unwrap_err();
     assert!(err.to_string().contains("typo"), "got: {err}");
 }
 

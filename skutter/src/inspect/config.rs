@@ -213,12 +213,12 @@ fn render_config(resolved: &Resolved, hooks: &Hooks) -> String {
             // Describe whichever transport the block resolves to; a `command`/`url`
             // XOR violation surfaces here rather than the raw fields.
             let transport = match s.transport() {
-                Ok(crate::mcp::Transport::Stdio { command, args, .. }) => {
+                Ok(entanglement_runtime::mcp::Transport::Stdio { command, args, .. }) => {
                     format!("{command} {}", args.join(" "))
                         .trim_end()
                         .to_string()
                 }
-                Ok(crate::mcp::Transport::Http { url, .. }) => format!("http {url}"),
+                Ok(entanglement_runtime::mcp::Transport::Http { url, .. }) => format!("http {url}"),
                 Err(e) => format!("(invalid: {e})"),
             };
             let _ = writeln!(out, "  {name}{state}: {transport}");
