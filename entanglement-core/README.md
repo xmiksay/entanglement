@@ -17,12 +17,12 @@ whose ABI (the `Llm` trait + DTOs) this crate re-exports.
 
 ```text
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
+          | SetMode | SetModel | SetGeneration | SetSessionMeta | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
           | RevertFiles | ForkSession | HibernateSession | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
-          | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged
+          | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged
           | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta
           | ToolCallDelta | ToolCall | ToolRequest | ToolExec | UserQuestion
@@ -49,7 +49,7 @@ Every frame is session-scoped (`SessionId`); content frames carry a monotonic
   `Holly::send_from_wire`, which enforces an allowlist and refuses
   runtime-authored or authority-bearing frames (`ToolResult`, `Spawn`,
   `Resume`, `HibernateSession`, `McpAdd`/`McpRemove`/`McpAuth`, `SetMode`,
-  `RevertFiles`, `ForkSession`, and a `SetToolOverlay` carrying an enable entry).
+  `RevertFiles`, `ForkSession`, `SetWorkdir`).
 - **Event-sourced persistence seam.** The event log + `Holly::resume` is the
   embedder persistence seam — no database in the crate. Replay reconstructs a
   mid-turn tail; resume re-offers pending tool calls at-least-once.

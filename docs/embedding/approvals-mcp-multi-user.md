@@ -181,7 +181,7 @@ seam implementations over it. Per seam:
   register one native `Tool` (e.g. `invoke`) that dispatches to your internal
   hub, and implement `Tool::call_grading(input)` to return the target name and
   capabilities per call: the dispatch ladder grades each call as its target
-  (overlay deny/enable, mode class rules, grants, approval cards all see the
+  (mode rules, grants, approval cards all see the
   target name, not the envelope tool's).
 - **Host script namespaces** — `ToolExecutorBuilder::host_namespace(ns)` with
   `HostNamespace { name, tool, resolver }`: a Rhai `<ns>::<fn>(#{...})`

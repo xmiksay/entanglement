@@ -117,7 +117,7 @@ the old per-profile `can_spawn`/`spawnable_agents` gates and the
 process-global `MAX_SPAWN_DEPTH`/`MAX_SPAWNS_PER_ROOT` constants are gone —
 **any agent may spawn any registered agent**. `agent`/`agent_send` are
 `Capability::Control` but graded like any tool before they launch
-([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): an overlay deny or a mode `Deny` refuses with an
+([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): a mode `Deny` refuses with an
 error result and starts no child, and the built-in modes class-allow
 `control`. Past that grade, two mode facts bound the session's whole
 spawn sub-tree: `max_depth` (nesting, root = 0) and `max_agents` (concurrent
@@ -302,7 +302,7 @@ multi-`Capability` tool (`Read`+`Write`+`Exec`,
 §3), so a mode denying any of those classes declines it, and `research`
 mode's curated posture grades it `Ask` like the exec tools rather than
 outright denying it. The executor intercepts `rhai`
-before the generic dispatch (it needs the session's live mode + overlay state
+before the generic dispatch (it needs the session's live mode
 to snapshot each binding's grade); its *own* Allow/Ask/Deny is resolved
 the same way as any host tool. Rhai's engine is sync, so the script runs under
 `spawn_blocking` and each binding crosses a small **bridge** — `mpsc` request +

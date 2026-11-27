@@ -1,4 +1,4 @@
-# Agents & permissions §3 — Advertisement, enforcement, overlay & discovery
+# Agents & permissions §3 — Advertisement, enforcement & discovery
 
 > Part of the [agents & permissions module](../agents-and-permissions.md) of the [architecture overview](../../architecture.md).
 
@@ -19,12 +19,11 @@
   `update_tasks`, `ask_user`, `poll`, `propose_plan`, `request_mode`,
   `agent`/`agent_send`, the `mcp` envelope, and the six discovery tools
   `list_agents`/`list_models`/`list_skills`/`load_skill`/`list_mcp`/
-  `mcp_tools`. The discovery tools are **non-maskable**: no mode rule,
-  ceiling rule or session overlay deny can withdraw them even at dispatch
-  (the ADR-0190 `poll` pattern; the TUI refuses such an entry and a config
-  rule naming one warns, #843). They are not the only ones — the full
-  non-maskable set (`tool_names::NON_MASKABLE_TOOLS`, §session tool overlay
-  below) also holds the bookkeeping Control tools, and `agent`/`agent_send`
+  `mcp_tools`. The discovery tools are **non-maskable**: no mode rule or
+  ceiling rule can withdraw them even at dispatch (the ADR-0190 `poll`
+  pattern; a config rule naming one warns, #843). They are not the only
+  ones — the full non-maskable set (`tool_names::NON_MASKABLE_TOOLS`,
+  §non-maskable names below) also holds the bookkeeping Control tools, and `agent`/`agent_send`
   are deliberately outside it ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)). `glob`/`grep` stay registered as
   script-only `rhai` bindings, graded under their own names. With `Agent` carrying no more authority, **nothing
   varies the array by agent any more** — `agent_specs()` is provably
@@ -61,65 +60,23 @@
   use /mode to switch ``) rather than a per-authority attribution table,
   because there is only ever **one** authority to attribute a `Deny` to — the
   session's own mode (uniform over its whole spawn sub-tree, §6) or the
-  config ceiling clamping it further. A session tool-overlay **deny** entry
-  (below) withdraws a tool outright with its own distinct message
-  (`` tool \`T\` withdrawn for this session by /disable — /enable to restore
-  ``) — the one other source of an unprompted refusal, and, unlike a mode
-  `Deny`, reversible by the same human voice that set it. The bookkeeping
+  config ceiling clamping it further — the mode is the one permission path.
+  The bookkeeping
   `Capability::Control` tools bypass this whole ladder (§permission modes
   in [modes](modes.md)) — never graded, never declined for authority reasons. `agent`/
   `agent_send` climb it before launching like any tool ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)):
-  an overlay deny or a mode `Deny` refuses with an error result and starts
+  a mode `Deny` refuses with an error result and starts
   no child, a `prompt` rule parks an approval card; past the ladder they are
   bounded by the mode's `max_depth`/`max_agents` (an `is_error`) and refused
   for an unknown target or model.
-- **The session tool overlay survives as the user's own direct voice**
-  (✅ #539, [ADR-0149](../../adr/archive/0149-per-session-tool-overlay.md); live bash
-  enablement folded in, #611,
-  [ADR-0163](../../adr/archive/0163-live-bash-enablement-is-a-tool-overlay-entry.md);
-  now **mode-scoped**,
-  [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
-  §8): the live **tool overlay** — `InMsg::SetToolOverlay` (trusted-only for
-  an enable entry; a deny-only overlay is wire-allowed, #634,
-  [ADR-0177](../../adr/archive/0177-wire-allowed-deny-only-tool-overlay.md)) — is a
-  per-session list of `ToolOverlayEntry { pattern, allow, deny, arg_pattern?
-  }` overriding the session's mode grade in both directions: an **enable**
-  entry makes a tool's grade `Allow` (or, `arg_pattern`-narrowed, an
-  argument-scoped `tool(arg_pattern): allow`) even past a mode `Deny` — the
-  model can't reach this itself, since an enable entry is trusted-frame-only
-  (ADR-0177), so it is the human at the keyboard's own escape hatch, not a
-  hole in the mode's guarantee; a **deny** entry withdraws a tool outright,
-  even a mode-allowed one (deny > enable > mode). The overlay is
-  **dispatch-only** (setting or clearing it leaves the advertised array
-  untouched) and now **mode-scoped**: it is dropped wholesale on any live
-  `SetMode`, since an entry enabled under one mode carries no meaning in
-  another. The runtime's mirror and core's `Session::tool_overlay` both apply
-  this drop, live and on replay, and a compaction successor inherits the
-  overlay only under the mode it was set in (#776,
-  [engine](../engine.md)). The grade override still reaches down the spawn sub-tree via the
-  same nearest-link-first ancestor-chain walk the ADR-0024 privilege ceiling
-  uses (`permission::overlay_grade_entry`/`ancestor_chain`), and a `rhai`
-  binding runs the same dispatch seam (ADR-0227 — a script's `bash()` grades
-  identically to a direct `bash` call).
-  The TUI drives it via `/enable tool <name>` [`--allow [<pattern>]`] and
-  `/disable tool <name>` (upserts a deny; bare = reset) and the
-  bare-`/enable` session-tools checklist dialog (checkboxes over the full
-  roster seeded from effective availability; `Enter` submits the overlay as
-  a diff against the mode's own grade); see the protocol doc for the wire
-  shape. (`/enable mcp`/`/disable mcp` and the `/mcp` panel's `e` key are
-  gone: an MCP server is available the moment it is registered, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md);
-  the panel's `d` key stays — a per-session deny of the server's
-  `mcp__<name>__*` tools.) **Names no entry can match** (#843,
-  `tool_names::NON_MASKABLE_TOOLS`) are kept off the checklist, the `/set`
-  Tools tab and `/tools`, and a typed `/enable`/`/disable` naming one is
-  refused with the reason: `mcp` (core unwraps the envelope to
+- **Non-maskable names** (#843, `tool_names::NON_MASKABLE_TOOLS`): names a
+  rule can spell but never match. `mcp` (core unwraps the envelope to
   `mcp__<server>__<tool>` before dispatch — per-tool control is a
-  `mcp__<server>__<tool>` entry or rule, a server-wide `mcp__<server>__*`
-  glob an overlay entry only, and a server the user never wants is removed
-  from config), the six discovery tools (always
-  available, not maskable — below), the script-only read variants
-  `read_raw`/`glob_json`/`grep_json` (graded as `read`/`glob`/`grep`) and
-  the **bookkeeping Control tools** (#849, [ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): `poll`,
+  `mcp__<server>__<tool>` rule, and a server the user never wants is removed
+  from config), the six discovery tools (always available, not maskable —
+  below), the script-only read variants `read_raw`/`glob_json`/`grep_json`
+  (graded as `read`/`glob`/`grep`) and the **bookkeeping Control tools**
+  (#849, [ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)): `poll`,
   `ask_user` and `update_tasks` only collect or report work the mode
   already authorized ([ADR-0190](../../adr/archive/0190-poll-is-always-on-non-maskable-internal-tool.md)'s
   argument — withdrawing one strands work, it never reduces capability);
@@ -128,35 +85,26 @@
   alone — the rule matcher skips a rule *naming* any non-maskable tool, so
   `deny: [plan]` (the built-in `research`/`build`/`auto` rule) is what keeps
   plan authorship in `plan` mode, and that class rule never warns. `agent`/
-  `agent_send` are ordinary entries: `/disable agent` stops spawning. A
-  wire `SetToolOverlay` entry naming one is still applied (core holds no tool
-  policy) but the runtime logs that it has no effect when it folds the
-  `ToolOverlayChanged`; a `modes:` or `permissions:` rule naming one warns
-  at config load like a stale name (`config::mode_warn`), as does a rule
-  whose tool part is a name glob (rule keys never glob the tool part; only
-  a bare `*` is a wildcard), that scopes a tool with no argument
-  (`mcp__gh__x(foo)`, #878) or with no workdir (`read{/tmp/*}` — only
-  `bash` has one, #881), or whose scope the matcher can't read
-  (`bash(git *){/x}` — one scope per key, #881). A per-tool rule or overlay entry
-  (`mcp__<server>__<tool>`) or a server-wide overlay glob
-  (`mcp__<server>__*`, overlay only — rules never glob) grades an envelope
-  call and a script's `mcp::<server>::<tool>()` binding identically — both reach the same dispatch seam under
-  the inner name. A
-  typed `/enable <name-or-glob> [--allow […]]` also reports how many
-  currently-registered tools the pattern matched, as a transcript status
-  line (#560 P9,
-  [ADR-0199](../../adr/archive/0199-session-tool-listing-and-enablement-drive-advertisement.md)).
-  **`/tools`** (same ADR) is a separate, read-heavy *browser* — not an
-  overlay editor — over the session's whole reachable surface (host tools,
-  MCP servers + their tools, skills, endpoints via `discover::index_rows`):
-  each row shows its kind, advertising status (`advertised` when the name is
-  in the session's surface snapshot, `hidden` otherwise — script-only tools,
-  MCP tools reached through `mcp` — `n/a` before the first round; from the
-  same `AdvertisingState` the resolver writes), and the mode's own effective
-  grade; a typeahead filter plus a `Tab`-cycled category narrow the list, and
-  `Enter` on a row enables it through the same `/enable` path (closing the
-  view). An enable never changes the advertised array — only how a call is
-  graded.
+  `agent_send` are ordinary names: a mode `deny: [agent]` stops spawning. A
+  `modes:` or `permissions:` rule naming a non-maskable tool warns at config
+  load like a stale name (`config::mode_warn`), as does a rule whose tool
+  part is a name glob (rule keys never glob the tool part; only a bare `*`
+  is a wildcard), that scopes a tool with no argument (`mcp__gh__x(foo)`,
+  #878) or with no workdir (`read{/tmp/*}` — only `bash` has one, #881), or
+  whose scope the matcher can't read (`bash(git *){/x}` — one scope per
+  key, #881). A per-tool rule (`mcp__<server>__<tool>`) grades an envelope
+  call and a script's `mcp::<server>::<tool>()` binding identically — both
+  reach the same dispatch seam under the inner name.
+- **`/tools`** (#560 P9,
+  [ADR-0199](../../adr/archive/0199-session-tool-listing-and-enablement-drive-advertisement.md))
+  is a read-only *browser* over the session's whole reachable surface (host
+  tools, MCP servers + their tools, skills, endpoints via
+  `discover::index_rows`): each row shows its kind and advertising status
+  (`advertised` when the name is in the session's surface snapshot, `hidden`
+  otherwise — script-only tools, MCP tools reached through `mcp` — `n/a`
+  before the first round; from the same `AdvertisingState` the resolver
+  writes); a typeahead filter plus a `Tab`-cycled category narrow the list.
+  What a session may call is its mode's decision, not the view's.
 - **Discovery is six plain tools** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), amending
   [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §12's `explore`/`describe` kinds): `list_agents` (name, description, model
@@ -229,10 +177,8 @@
   `config.yml` `modes:` tuning is hand-edited only, with no TUI surface that
   materializes a checklist edit into it (`skutter inspect modes` is
   read-only; the `/set` dialog's tools tab is explicitly left for a later
-  change, ADR-0207 §12). The closest surviving *live* editing mechanism is
-  the session tool overlay (`/enable`/`/disable`/`/tools`, above) — but it is
-  ephemeral and mode-scoped, not a persisted config edit the way the old
-  mask materialization was.
+  change, ADR-0207 §12). There is no live per-session editing mechanism
+  either: `/mode` is the one live control.
 
 ---
 

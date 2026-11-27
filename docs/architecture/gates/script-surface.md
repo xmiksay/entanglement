@@ -13,7 +13,7 @@ call. The ladder (`dispatch/gates.rs`): script reachability → resolve the
 tool (`dispatch/resolve.rs`: scoped MCP overlay, lazy connect — a script waits
 on it no longer than its budget, §Dispatch-time lazy connect) → `Control` bypass
 (every Control-only tool but `agent`/`agent_send`, ADR-0232) →
-overlay deny → grade + grants → `pre_tool_use` → mode deny → escape-root →
+grade + grants → `pre_tool_use` → mode deny → escape-root →
 credentialed-`http` gate → run / unattended collapse / park
 (`dispatch/decision.rs`; "unattended" is the mode's `question_timeout` and
 no head watching the call's ancestor chain, and an attended park has no
@@ -171,9 +171,7 @@ floor).
 
 **The launch** (`script::gate`) is graded like any tool
 ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
-`Dispatcher::grade` — the overlay deny (`/disable rhai` is an ordinary
-deny), then the overlay enable entry or the mode's rules, the ceiling and
-grants — then the `pre_tool_use` veto, all before the file is opened. The
+`Dispatcher::grade` — the mode's rules, the ceiling and grants — then the `pre_tool_use` veto, all before the file is opened. The
 rule/grant argument is the script's **canonical** `path`, root-relative
 inside the root and absolute outside it (`permission_arg` +
 `permission_path::rooted_arg`, which canonicalizes for `rhai` alone; the
@@ -185,9 +183,9 @@ matches only a bare `rhai` rule. Then:
 
 | grade / script | launch | nested calls |
 | --- | --- | --- |
-| Deny (mode, ceiling, overlay deny, hook veto) | refused, a catchable error — a trusted path too | — |
+| Deny (mode, ceiling, hook veto) | refused, a catchable error — a trusted path too | — |
 | `path` inside a trusted folder (`TrustedFolders::runs_trusted`) | no card | force-allowed (`Posture::Trusted`) |
-| Allow (mode rule, overlay enable, grant) | no card | graded like direct calls (`Posture::AskPerCommand`) |
+| Allow (mode rule, grant) | no card | graded like direct calls (`Posture::AskPerCommand`) |
 | Ask | one card: **Run all** · **Ask per command** · **Reject** (`InMsg::Approve.run_all`) + scope | Run all → force-allowed (`Posture::RunAll`); Ask per command → graded like direct calls |
 
 A `Session`/`Always` approval of an `Ask` card records a grant for the
@@ -206,7 +204,7 @@ only `script_launch`/`inline_launch` start, so an out-of-root launch
 (`launch_escape`) is refused.
 
 *Force-allowed* is a branch of the shared seam (`Dispatcher::clear` with a
-`run_all` script): the overlay deny, the hook veto and a mode/ceiling
+`run_all` script): the hook veto and a mode/ceiling
 `Deny` still refuse (a catchable exception), and every later gate passes — a
 graded `Ask`, the escape-root gate (a single-use token the host tool
 spends), the credentialed-`http` per-host approval — except a **floored
@@ -242,8 +240,8 @@ user/project module dir (`skills::module_dirs`, wired by
 `.agents/skills`, the user dirs or `ENTANGLEMENT_SKILLS_DIR`; wired by
 `ToolExecutorBuilder::skill_dirs`) — canonical comparison, a missing file
 by its nearest existing ancestor, a symlink by where the write lands — is
-graded at least `Ask`: never auto-allowed by a mode rule, a grant or an
-overlay enable, and no wider grant is recorded for it; an explicit `Deny`
+graded at least `Ask`: never auto-allowed by a mode rule or a grant, and
+no wider grant is recorded for it; an explicit `Deny`
 stays `Deny`; unattended, the `Ask` collapses per the mode
 (`rhai_trust::floored_write` in `grade_call`). The floor holds inside a
 **Run-all** script (its own nested card) but not for a **trusted** script's
@@ -272,9 +270,8 @@ follows, until it ends, so a card it parks after those sessions retired
 keeps a real seq however many other sessions retire meanwhile
 ([ADR-0244](../../adr/archive/0244-seq-order-leases-and-one-task-per-id.md)). Every
 run, blocking or background, re-reads its session's mode before each nested
-call, so a `SetMode` mid-run changes its grant scope, and a session's overlay
-entry (an ancestor's too, across its compaction) stops applying to it
-once that session switched mode, and the run's earlier approvals lapse
+call, so a `SetMode` mid-run changes its grant scope and the run's earlier
+approvals lapse
 ([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)). Separately, for every tool, an
 escape card that also cleared a graded `Ask` records both grants on a
 `Session`/`Always` approval.

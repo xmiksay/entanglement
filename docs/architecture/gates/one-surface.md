@@ -15,7 +15,7 @@ session on every wire is advertised the compiled-in **`KERNEL`**
 specs (deduped, name-sorted), **snapshots it at the session's first
 resolution** (`AdvertisingState::surfaces`) and returns the same bytes every
 later round — a tool registered or removed afterwards never moves the cached
-prefix, and an overlay enable or MCP connect never touches it. End/hibernate
+prefix, and an MCP connect never touches it. End/hibernate
 forgets the snapshot; a resume rebuilds the same bytes. Not advertised:
 `glob`/`grep` (script-only `rhai` bindings, graded under their own
 names, like `read_raw`/`glob_json`/`grep_json`) and every `mcp__*` tool.
@@ -28,7 +28,7 @@ the surface is exactly `KERNEL`.
 `Capability::Control` and non-maskable — the `poll` pattern: a Control
 tool other than `agent`/`agent_send` is never graded ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md) §3;
 `tool_names::DISCOVERY_TOOLS`, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)): the dispatch ladder's Control path
-returns before the mode, overlay or ceiling are consulted, so nothing can
+returns before the mode or ceiling are consulted, so nothing can
 withdraw or decline them.
 
 **Which Control tools are graded** ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), #849). The ungraded
@@ -36,10 +36,10 @@ ones are the bookkeeping tools — `poll`, `ask_user`, `update_tasks`,
 `request_mode` (plus the discovery tools above): each only collects or
 reports work the mode already authorized, or asks the user, so the dispatch
 `Control` path (`capability::bypasses_grading`) or the runtime-owned
-`Intercept` route skips the overlay, the mode and the ceiling. `agent`/
+`Intercept` route skips the mode and the ceiling. `agent`/
 `agent_send` are the exception: still `Capability::Control`, but a spawn
 starts a session that runs tools, so `orchestration::spawn`/`agent_send`
-climb the same ladder as a host tool (`Dispatcher::gate` — overlay deny,
+climb the same ladder as a host tool (`Dispatcher::gate` —
 grade + grants, `pre_tool_use`, mode deny, the unattended collapse, the
 approval park) before launching. A refusal is an ordinary `is_error`
 result, and no child starts. The spawn slot is reserved first (the guard is
@@ -78,23 +78,17 @@ discovery tools, the `mcp` envelope (core unwraps it to
 the script-only `read_raw`/`glob_json`/`grep_json` (graded as
 `read`/`glob`/`grep`, `grade::graded_name`) and the bookkeeping Control
 tools `poll`/`ask_user`/`update_tasks`/`request_mode`/`propose_plan`
-(#849): an overlay entry or a mode/ceiling rule may spell one but can
+(#849): a mode/ceiling rule may spell one but can
 never match it. For `propose_plan`, the one member that is graded at all,
 this is enforced by the matcher: `mode::rules::best_match` skips a rule
 naming a non-maskable tool, so only its class or a `*` rule decides, and the
 built-in `deny: [plan]` class rule never warns. The runtime says so
-instead of accepting a silent no-op: the TUI's toggle roster
-(`engine_setup::toggle_roster` — `/tools`, the bare-`/enable` checklist, the
-`/set` Tools tab) leaves them out, `/enable`/`/disable` refuses one with
-`tool_names::non_maskable_reason`, a `modes:`/`permissions:` rule naming one
-warns at config load (`config::mode_warn`, alongside the stale-name check),
-and a wire `SetToolOverlay` entry naming one is applied as sent — core holds
-no tool policy to refuse it — with a runtime warning logged when the
-executor folds the `ToolOverlayChanged` (`tool_runner::overlay_warn`).
-Per-tool MCP control is a `mcp__<server>__<tool>` rule or overlay entry (a
-server-wide `mcp__<server>__*` glob only in the overlay — rule keys match
-the tool part exactly, so a mode/ceiling rule spelling a name glob also
-warns as never matching): it grades an envelope call and a script's
+instead of accepting a silent no-op: a `modes:`/`permissions:` rule naming
+one warns at config load with `tool_names::non_maskable_reason`
+(`config::mode_warn`, alongside the stale-name check).
+Per-tool MCP control is a `mcp__<server>__<tool>` rule (rule keys match
+the tool part exactly, so a mode/ceiling rule spelling a name glob such as
+`mcp__<server>__*` warns as never matching): it grades an envelope call and a script's
 `mcp::<server>::<tool>()` binding identically, since both reach
 `Dispatcher::grade` under the inner name; a server the user never wants is
 removed from config. `list_agents`, `list_models` and `list_skills`

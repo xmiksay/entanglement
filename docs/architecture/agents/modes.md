@@ -233,8 +233,7 @@ below realize one model:
   grades **per segment**, folding to the most restrictive result, and
   anything the conservative splitter can't fully parse (`SplitOutcome::Opaque`
   — redirection, substitution, a heredoc, subshell grouping) grades at the
-  mode's `default` outright — never a whole-string guess, unlike the old
-  bash-only `permission_bash.rs` resolver it now wraps. A `Deny` is
+  mode's `default` outright — never a whole-string guess. A `Deny` is
   **absolute**: a flat decline naming the mode and the way out (`` tool `x`
   denied by mode `research` — use /mode to switch ``), no prompt, no escape
   hatch except the user's own `/mode`/`request_mode`; `Ask` parks an ordinary

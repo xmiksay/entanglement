@@ -8,14 +8,14 @@ This module is split into the pages below, one per seam; each stays under the 40
 | --- | --- |
 | [messages](protocol/messages.md) | §2 — Message types, questions & queries |
 | [sessions](protocol/sessions.md) | §2 — Trust split, session lifecycle & single-shot ops |
-| [live-settings](protocol/live-settings.md) | §2 — Live generation, metadata & tool overlay |
+| [live-settings](protocol/live-settings.md) | §2 — Live generation & metadata |
 | [structured-outputs](protocol/structured-outputs.md) | §4 — Structured outputs |
 
 ## 2. Wire protocol (`protocol.rs` + `protocol/`) — [ADR-0002](../adr/archive/0002-session-multiplexed-protocol.md)
 
 Now in [§2 — Message types, questions & queries](protocol/messages.md#2-wire-protocol-protocolrs--protocol--adr-0002).
 Continued in [§2 — Trust split, session lifecycle & single-shot ops](protocol/sessions.md).
-Continued in [§2 — Live generation, metadata & tool overlay](protocol/live-settings.md).
+Continued in [§2 — Live generation & metadata](protocol/live-settings.md).
 
 ## 4. Structured outputs (orthogonal to profiles) — [ADR-0004](../adr/archive/0004-structured-plan-and-task-events.md)
 

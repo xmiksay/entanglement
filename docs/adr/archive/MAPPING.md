@@ -180,7 +180,7 @@ the code, never as a description of current behaviour — that is
 | [0146](0146-ask-user-list-retract-replace.md) | `ask_user` gains list/retract/replace of open questions | current; amended by 0245; changed by #922 | — |
 | [0147](0147-multi-user-mode-embedder-api.md) | Multi-user mode: session-scoped identity + embedder-API per-user seams | current; partly superseded by 0181 | — |
 | [0148](0148-glob-patterns-in-the-agent-tool-mask.md) | Glob patterns in the agent tool mask | superseded by 0207 | — |
-| [0149](0149-per-session-tool-overlay.md) | Per-session tool overlay — live injection past the agent mask | current; amended by 0163, 0177, 0207, 0226 | — |
+| [0149](0149-per-session-tool-overlay.md) | Per-session tool overlay — live injection past the agent mask | current; amended by 0163, 0177, 0207, 0226; removed by #923 | — |
 | [0150](0150-search-tool-cli-ergonomics.md) | Search-tool CLI ergonomics: directory auto-expansion, brace sets, and no silent empty results | current | — |
 | [0151](0151-settable-session-metadata.md) | Settable session display metadata (name + action) | current; amended by 0154, 0183 | — |
 | [0152](0152-provider-bundled-mcp-servers-three-state-enablement.md) | Provider-bundled MCP servers and the three-state enablement model | current; partly superseded by 0226; removed by #915 | — |
@@ -194,7 +194,7 @@ the code, never as a description of current behaviour — that is
 | [0160](0160-extended-thinking-round-trip.md) | Extended thinking round-trips as a persisted `ContentPart`, replay gated per model | current; changed by #919 | — |
 | [0161](0161-unified-async-work-background-flag-and-one-poll.md) | Unified async work: a `background` flag on every launcher, one `poll` to join | current; partly superseded by 0185; amended by 0166, 0190; changed by #916 | — |
 | [0162](0162-agent-send-supervising-a-sub-agent.md) | `agent_send` — supervising a sub-agent instead of replacing it | current | — |
-| [0163](0163-live-bash-enablement-is-a-tool-overlay-entry.md) | Live bash enablement is a tool-overlay entry, not its own message pair | superseded by 0195 | — |
+| [0163](0163-live-bash-enablement-is-a-tool-overlay-entry.md) | Live bash enablement is a tool-overlay entry, not its own message pair | superseded by 0195; removed by #923 | — |
 | [0164](0164-short-sortable-kind-tagged-ids.md) | Short, sortable, kind-tagged ids behind a pluggable generator | current; amended by 0211 | — |
 | [0165](0165-background-bash-jobs-are-bounded-by-timeout.md) | Background `bash` jobs are bounded by `timeout`, not exempt from it | current | — |
 | [0166](0166-migration-note-and-startup-warning-for-stale-tool-names.md) | Migration note + startup warning for stale tool names in masks and permission rules | current | — |
@@ -208,7 +208,7 @@ the code, never as a description of current behaviour — that is
 | [0174](0174-authenticated-multi-user-wire-head.md) | Authenticated multi-user wire head — design (not yet built) | superseded by 0181; implementation removed (#686) | — |
 | [0175](0175-per-user-admission-gate-on-a-shared-literal-key.md) | Per-user admission gate on a shared literal API key | current; removed by #918 | — |
 | [0176](0176-structured-tool-result-is-error-and-duration-fields.md) | Structured tool-result channel: `is_error`/`duration_ms` as fields | current; amended by 0186; inconsistent: Consequences say TUI rendering is untouched, but the ✗/✓ badge is wired | — |
-| [0177](0177-wire-allowed-deny-only-tool-overlay.md) | Wire-allowed deny-only tool overlay | current | — |
+| [0177](0177-wire-allowed-deny-only-tool-overlay.md) | Wire-allowed deny-only tool overlay | current; removed by #923 | — |
 | [0178](0178-single-pass-gitignore-pruned-walk-with-scan-budget.md) | Single-pass `.gitignore`-pruned walk with a total scan budget | current | — |
 | [0179](0179-lazily-registered-built-ins-advertise-session-scoped.md) | Lazily-registered built-ins advertise session-scoped, like lazy MCP servers | superseded by 0192 | — |
 | [0180](0180-build-speed-trims-round-2.md) | Build-speed trims round 2: dependency cuts and integration-test consolidation | current | — |
@@ -226,11 +226,11 @@ the code, never as a description of current behaviour — that is
 | [0192](0192-universal-advertisement-enforcement-at-dispatch.md) | The advertised tool surface is universal and session-stable; masks enforce at dispatch | superseded by 0207 | — |
 | [0193](0193-two-tool-call-modes-and-lazy-tool-discovery.md) | Two tool-call modes (`native` / `invoke`) + lazy tool discovery | superseded by 0196 | — |
 | [0194](0194-skills-are-additive-only.md) | Skills are additive-only — the `allowed_tools` mask is removed | current; partly superseded by 0196, 0228; amended by 0193; changed by #920 | — |
-| [0195](0195-bash-is-the-default-exec-and-curated-read-only-rules.md) | `bash` is the default exec + curated read-only Allow rules | current; partly superseded by 0196; amended by 0193; changed by #916 | — |
+| [0195](0195-bash-is-the-default-exec-and-curated-read-only-rules.md) | `bash` is the default exec + curated read-only Allow rules | current; partly superseded by 0196; amended by 0193; changed by #916; changed by #923 | — |
 | [0196](0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md) | Tool search and lazy discovery replace the invoke envelope | current; §1–§4 superseded by 0226; amended by 0202, 0204, 0207, 0213 | — |
-| [0197](0197-compound-bash-commands-grade-per-segment.md) | Compound bash commands grade per segment, shell escape constructs fail closed | current; changed by #916 | — |
+| [0197](0197-compound-bash-commands-grade-per-segment.md) | Compound bash commands grade per segment, shell escape constructs fail closed | current; changed by #916; changed by #923 | — |
 | [0198](0198-out-of-mask-tool-calls-are-approvable.md) | Out-of-mask tool calls are approvable | superseded by 0207 | — |
-| [0199](0199-session-tool-listing-and-enablement-drive-advertisement.md) | Session tool listing and enablement drive advertisement | current; partly superseded by 0204, 0226 | — |
+| [0199](0199-session-tool-listing-and-enablement-drive-advertisement.md) | Session tool listing and enablement drive advertisement | current; partly superseded by 0204, 0226; changed by #923 | — |
 | [0200](0200-fields-reasoning-capture-and-advertise-discovered.md) | Fields-format reasoning round-trip and transcript-only discovery | current; partly superseded by 0204 | — |
 | [0201](0201-unregistered-mcp-tool-dispatch-resolves-truthfully.md) | Unregistered-but-configured MCP tools resolve truthfully: enable or attributed decline | current; amended by 0226; changed by #915 | — |
 | [0202](0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md) | Prompt-cache discipline: last-turn anchors, session-long deferral, full thinking replay, cached-prefix compaction, session-pinned date | current; partly superseded by 0226 | — |
@@ -238,7 +238,7 @@ the code, never as a description of current behaviour — that is
 | [0204](0204-invoke-fallback-for-client-side-discovery.md) | Client-side discovery: native-first with an `invoke` fallback, never a mutated tools array | superseded by 0226 | — |
 | [0205](0205-every-compaction-forks-a-successor-session.md) | Every compaction forks a successor session; no log is ever rewritten in place | current; amended by 0231, 0234, 0243 | — |
 | [0206](0206-script-facing-structured-search-bindings.md) | Script-facing structured search bindings: `glob_json` / `grep_json` | current; amended by 0227 | — |
-| [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916; changed by #920 | — |
+| [0207](0207-permission-modes-replace-agent-borne-authority.md) | Permission modes replace agent-borne authority | current; amended by 0209, 0214, 0218, 0226, 0228, 0232, 0247; changed by #916; changed by #920; changed by #923 | — |
 | [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current; removed by #921 | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247 | — |
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246 | — |
@@ -256,14 +256,14 @@ the code, never as a description of current behaviour — that is
 | [0222](0222-no-silent-echo-first-run-onboarding-and-init.md) | No silent echo: first-run onboarding and `/init` | current; changed by #917 | — |
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current | — |
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
-| [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227 | — |
-| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920 | — |
+| [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923 | — |
+| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923 | — |
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920 | — |
-| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248; changed by #920 | — |
+| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248; changed by #920; changed by #923 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920 | — |
 | [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237 | — |
 | [0231](0231-compaction-successor-inherits-background-work.md) | A compaction successor inherits its predecessor's background work | current; amended by 0234, 0238, 0241, 0242 | — |
-| [0232](0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md) | Spawning is graded; the bookkeeping Control tools are non-maskable | current; amended by 0235 | — |
+| [0232](0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md) | Spawning is graded; the bookkeeping Control tools are non-maskable | current; amended by 0235; changed by #923 | — |
 | [0233](0233-live-only-nested-call-events-for-rhai-scripts.md) | Live-only `NestedCall` events report a script's binding calls | current | — |
 | [0234](0234-live-sub-agents-survive-compaction.md) | Live sub-agents survive compaction | current; amended by 0236 | — |
 | [0235](0235-scoped-spawn-rules-grade-the-target.md) | Scoped spawn rules grade the target | current | — |
@@ -272,12 +272,12 @@ the code, never as a description of current behaviour — that is
 | [0238](0238-compaction-moves-a-background-scripts-card.md) | A compaction moves a background script's parked card to the successor | current; amended by 0239, 0240, 0241, 0242 | — |
 | [0239](0239-retired-session-keeps-a-seq-high-water.md) | A retired session keeps a seq high-water | current; amended by 0244 | — |
 | [0240](0240-approval-resolved-event.md) | `ApprovalResolved` tells every head a card is gone | current; amended by 0242, 0245, 0247 | — |
-| [0241](0241-background-script-follows-compaction.md) | A background script follows its session's compaction | current; amended by 0243 | — |
+| [0241](0241-background-script-follows-compaction.md) | A background script follows its session's compaction | current; amended by 0243; changed by #923 | — |
 | [0242](0242-compaction-heals-walk-the-whole-chain.md) | Compaction heals walk the whole chain | current | — |
-| [0243](0243-running-script-reads-mode-and-overlay-epochs.md) | A running script re-reads its mode and drops overlay entries by mode epoch | current | — |
+| [0243](0243-running-script-reads-mode-and-overlay-epochs.md) | A running script re-reads its mode and drops overlay entries by mode epoch | current; changed by #923 | — |
 | [0244](0244-seq-order-leases-and-one-task-per-id.md) | Seqs in delivery order, leased by detached work, one task per id | current; amended by 0246 | — |
 | [0245](0245-a-decision-only-answers-its-own-kind-of-card.md) | A decision only answers its own kind of card | current; amended by 0247; changed by #922 | — |
-| [0246](0246-resume-under-ancestors-and-the-teardown-tail.md) | A resumed sub-agent answers to its ancestors, and inherits its predecessor's teardown tail | current; changed by #921 | — |
+| [0246](0246-resume-under-ancestors-and-the-teardown-tail.md) | A resumed sub-agent answers to its ancestors, and inherits its predecessor's teardown tail | current; changed by #921; changed by #923 | — |
 | [0247](0247-attended-sessions-wait-for-their-approver.md) | Attended sessions wait for their approver | current | — |
 | [0248](0248-importable-rhai-library-modules.md) | Importable `rhai` library modules | current | — |
 | [0249](0249-in-process-mcp-servers-and-per-session-skills.md) | Per-call tool grading, host script namespaces and per-session skills | current | — |

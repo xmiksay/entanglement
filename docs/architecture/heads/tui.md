@@ -149,7 +149,7 @@
   **toast** (`tui/app/toast.rs`, ~3s TTL, expired eagerly by the render loop
   like `quit_pending`): the copy notice and app/config state-change
   confirmations (definitions reload #329, `/key` save, `/model`/generation
-  persistence, `/mcp`·`/bash`·`/enable`·`/allow` acks, tools-dialog save,
+  persistence, `/mcp`·`/allow` acks,
   modal session deletion) surface here instead of as transcript status lines;
   errors, help text, and approval decisions stay in the transcript — else
   — *only while an endpoint is backing off* — a red throttle indicator

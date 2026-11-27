@@ -55,12 +55,10 @@
   session's permission mode, ceiling, and sandbox are; ADR-0195 reverses
   ADR-0010's opt-in). The retired opt-in machinery —
   `ENTANGLEMENT_ENABLE_BASH`, the closed lazily-registrable-built-in table
-  and its `/enable tool bash` registration fold, and
+  and its registration fold, and
   `decline::disabled_builtin_decline` — is gone: there is no
-  advertised-but-unregistered built-in left. An overlay **grade** entry
-  naming `bash` is still meaningful (a pure grade override now that the
-  tool is always registered) and a deny entry still withdraws it at
-  dispatch, same as any tool. `bash` shares its long-lived `JobRegistry`
+  advertised-but-unregistered built-in left; the session's mode grades
+  `bash` like any tool. `bash` shares its long-lived `JobRegistry`
   with the `poll` tool (#605; one registry, never minted fresh —
   ADR-0163 §3). `EngineConfig::default()` ships an
   empty registry (embedders opt in via `host_tools`).
@@ -80,13 +78,8 @@
   **Advertisement ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)):** `glob`/`grep` are registered but
   **never advertised** — script-only `rhai` bindings, still graded under
   their own names; `bash` is in the kernel and is the one exec tool.
-  The overlay grade lookup that finds the applicable entry
-  (`permission::overlay_grade_entry`)
-  walks the session's ancestor chain nearest-first (✅ #628), so a `bash()`
-  binding run from inside a `rhai` script grades identically to a direct
-  `bash` call — both run the same seam (ADR-0227) — and a
-  spawned child with no overlay of its own inherits its parent's grade, not
-  just the enable entry that lets it use the tool.
+  A `bash()` binding run from inside a `rhai` script grades identically to
+  a direct `bash` call — both run the same seam (ADR-0227).
 
 Every session is advertised the same tool set — there is no more per-agent
 mask to narrow advertisement or dispatch with
@@ -268,8 +261,7 @@ each nested call a background run's dispatcher switches to the live end of
 its session's lineage (`Holly::successor_of`, once the executor folded that
 session's mode), so later calls grade, grant and park as the successor, and
 re-reads the session's mode before every call (every script run does,
-blocking ones too, and drops each overlay entry whose session switched
-mode since the snapshot, by its compaction lineage's epoch,
+blocking ones too,
 [ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)); a
 call in flight finishes as the predecessor, but its `Session` grant or `http`
 unlock is recorded where the next call will be graded (the same switch

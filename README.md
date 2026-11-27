@@ -21,12 +21,12 @@ table below.
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
+          | SetMode | SetModel | SetGeneration | SetSessionMeta | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
           | RevertFiles | ForkSession | SetWorkdir | HibernateSession (trusted-only) | Resume (internal, not serialized) (harness → engine)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList | History | Status
-          | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | ToolOverlayChanged | WorkdirChanged
+          | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged | WorkdirChanged
           | ParentChanged
           | McpList | McpChanged | McpAuthChanged | Throttle | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta
@@ -112,8 +112,8 @@ wider than its parent's mode, and a resumed session keeps its replayed mode
 that a resumed sub-agent takes its nearest ancestor's current mode when that
 is stricter, even if the ancestor was narrowed while the sub-agent was
 hibernated ([ADR-0246](docs/adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)); a blocked model may ask to widen via
-`request_mode`. Spawning is graded like any tool (`/disable agent` or a mode
-`deny: [agent]` stops it) and bounded by the mode's `max_depth`/`max_agents`.
+`request_mode`. Spawning is graded like any tool (a mode `deny: [agent]`
+stops it) and bounded by the mode's `max_depth`/`max_agents`.
 Permission resolution and approval live entirely in the runtime.
 
 **Undo / rewind** (ADR-0212): `write`/`edit`/`apply_patch` back up each
@@ -125,7 +125,7 @@ Changes made by `bash` or `rhai` commands are **not** tracked. Other
 heads send the trusted-only `InMsg::RevertFiles` and get `FilesReverted` back.
 
 **Fork** (ADR-0223): `/fork` copies the active session into a new one with the
-same history, model, mode and tool overlay, and moves you into it; `/fork <N>`
+same history, model and mode, and moves you into it; `/fork <N>`
 keeps only turns `1..N`. The original keeps running untouched. A fork starts
 with an empty `/undo` history, since file backups belong to the session that
 made the edit. Other trusted heads send `InMsg::ForkSession` and get the fork's

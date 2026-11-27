@@ -29,7 +29,7 @@ keeps every call paired with its result but ends on those results. It then mints
 ADR-0211) and sends, over the same session→supervisor channel compaction uses,
 a root `Spawn` with no `predecessor`, an empty prompt (no turn is queued), its
 own user and its mode. `Inherited` rides alongside with the live backend,
-generation and overlay, as for a compaction successor, plus a `seed`: the
+generation and workdir, as for a compaction successor, plus a `seed`: the
 verbatim history. `start_session` applies the hand-over, then
 `user_fork::seed_fork` seeds `ctx` and emits `SessionForked { forked_from,
 at_turn, context }`. Replay folds that event with `Context::seed`, which

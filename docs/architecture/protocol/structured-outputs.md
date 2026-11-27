@@ -66,4 +66,4 @@ not `Eq`.
 
 ---
 
-Previous: [§2 — Live generation, metadata & tool overlay](live-settings.md)
+Previous: [§2 — Live generation & metadata](live-settings.md)

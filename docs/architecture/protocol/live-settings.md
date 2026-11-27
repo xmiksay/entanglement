@@ -1,4 +1,4 @@
-# Wire protocol §2 — Live generation, metadata & tool overlay
+# Wire protocol §2 — Live generation & metadata
 
 > Part of the [wire protocol module](../protocol.md) of the [architecture overview](../../architecture.md).
 
@@ -22,7 +22,7 @@ later session spawned under that same profile re-applies it at start —
 §9), so session start is the only re-application locus left. Deferred
 (stashed) while a turn is live, like `SetModel` (unlike `SetMode`, which
 applies immediately, #560). See the engine doc
-for the session-start overlay precedence and the runtime doc for the
+for the session-start precedence and the runtime doc for the
 per-profile persisted store.
 
 **Settable session display metadata — `InMsg::SetSessionMeta`**
@@ -58,69 +58,6 @@ generator itself also folds a `Resume`'s replayed `SessionMetaChanged`
 history off the inbound fan-out to seed its per-process "already titled" set,
 so an already-named resumed session skips the aux call on its next prompt too
 (see [heads & persistence §6d](../heads/keys-and-aux-models.md#6d-per-purpose-auxiliary-models--auto-session-titles--adr-0154adr-0183-aux_llm--configaux_models--session_title--narrate)).
-
-**Live tool overlay — `InMsg::SetToolOverlay`** (#539,
-[ADR-0149](../../adr/archive/0149-per-session-tool-overlay.md); live bash enablement
-grades folded in, #611, [ADR-0163](../../adr/archive/0163-live-bash-enablement-is-a-tool-overlay-entry.md)
-— its registration half retired by
-[ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)).
-`SetToolOverlay{session,entries:[ToolOverlayEntry{pattern,allow,deny,arg_pattern?}]}`
-**replaces** the session's live tool overlay: `*`/`?` patterns (unchanged
-ADR-0148 glob semantics) that override the session's own **permission mode**
-grade in both directions — an enable entry makes matching tools grade
-`Allow` (or, `arg_pattern`-narrowed, an argument-scoped
-`tool(arg_pattern): allow` rule) even past a mode `Deny` (`mcp__chessbase__*`
-for a server, a literal name for one tool), a `deny: true` entry *withdraws*
-them even when the mode would otherwise allow them (deny > enable > mode,
-`ToolOverlayEntry::disposition`). Full replacement, not a merge (an empty
-list clears); like
-`SetGeneration` there is nothing to fail against, so it always succeeds and
-always emits `OutEvent::ToolOverlayChanged` with the full effective list —
-which is also what persistence logs and `Session::replay` folds back (by
-overwrite), so a resumed session keeps its overlay. Session-scoped, but now
-**mode-scoped too**
-([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
-§8): it is dropped wholesale on any live `SetMode` — an entry enabled under
-one mode carries no meaning in another — where it used to simply survive
-`SetAgent` unconditionally. `allow: false` (default) grades matching calls
-`Ask`; `allow: true` grades them `Allow`, optionally narrowed by
-`arg_pattern` (ADR-0163) to an argument-scoped `tool(arg_pattern): allow`
-rule instead of a blanket grant — the grade override replaces the mode's own
-resolution on the runtime's generic dispatch route, still clamped by the
-config permission ceiling (a deny entry has no grade; it removes the tool
-ahead of any permission decision). Don't confuse `pattern` (a tool-name
-glob) with `arg_pattern` (a command-argument glob) — the two mean different
-things despite the near-identical name. Disposition is resolved per
-ancestor-chain link (`permission::ancestor_chain`), so a parent's overlay
-also covers its spawn sub-tree — even though every session in that sub-tree
-already shares the identical mode (§6), this walk still matters because the
-overlay itself is per-session state, not part of the mode.
-`bash` registers at startup like every other built-in (ADR-0195), so an
-enable entry naming it is a pure grade override; there is no more closed
-lazily-registrable-built-in table to describe.
-An entry naming a tool dispatch never grades by name — `mcp` (unwrapped to
-`mcp__<server>__<tool>` first), a discovery tool, `read_raw`/`glob_json`/
-`grep_json` — is still accepted and echoed (core holds no tool policy), but
-matches nothing; the in-tree runtime logs a no-effect warning when it folds
-the reply, and the TUI refuses to send one (#843,
-[gates §one surface](../gates/one-surface.md)).
-Trusted-only for an **enable** entry
-(wire-refused, the `McpAdd` rationale); a **deny-only** overlay (every entry
-`deny: true`, including the empty list) is wire-allowed instead (#634,
-[ADR-0177](../../adr/archive/0177-wire-allowed-deny-only-tool-overlay.md) amending this
-ADR) — it can only withdraw tools from dispatch, so a `serve`/`pipe` client
-can self-restrict a session without an in-process head, though it still
-cannot grant anything. The TUI drives the full surface via
-`/enable`/`/disable` (a bare `/enable` being the session-tools checklist
-dialog — the overlay as a diff against the mode's own grade) and the `/mcp`
-panel's `d` key, which denies a server's `mcp__<name>__*` tools for the
-session: with every registered server on by default
-([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
-that per-session opt-out is the user control left (there is no enable key).
-The overlay never touches the advertised array (ADR-0226 pins it per
-session); it is still stash-deferred while a turn is live, like `SetModel`,
-so every call of a round is graded under the one overlay the round started
-with rather than a mid-round mix.
 
 ---
 

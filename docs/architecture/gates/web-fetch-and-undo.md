@@ -28,7 +28,8 @@ dodged with `HTTPS://`, a trailing dot, or `:443`. Write rules as a literal
 ([ADR-0225](../../adr/archive/0225-web-fetch-grades-redirect-hops.md), #808). The
 executor scopes the call's own grading context around every graded dispatch.
 It is a tokio task-local, `tool_runner::call_grader`, and holds the same
-resolver, ancestor chain, grants, overlay and ceiling as `dispatch`, sharing
+resolver (which clamps to the config ceiling), ancestor chain and grants as
+`dispatch`, sharing
 one `grade::grade_call`. `web_fetch` grades each normalized hop through it
 before following the hop (`WebFetcher::fetch_checked`):
 

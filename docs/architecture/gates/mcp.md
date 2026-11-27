@@ -228,8 +228,8 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
   retired the `tools:`/`disallowed_tools:` wildcard pattern this row used to
   describe, ADR-0148 with it); a mode rule names one MCP tool exactly
   (`mcp__<server>__<tool>`, optionally scoped) or uses the `*` wildcard —
-  mode and ceiling rules have no server-wide `mcp__<server>__*` glob (only
-  the session tool overlay matches name globs) — but there is nothing to *admit* separately
+  mode and ceiling rules have no server-wide `mcp__<server>__*` glob — but
+  there is nothing to *admit* separately
   from grading it — every registered tool is reachable by name, mode-graded
   the same as everything else. Today `McpTool::capabilities()` pins every
   MCP tool to `Capability::Write` unconditionally (a deliberate fail-safe —

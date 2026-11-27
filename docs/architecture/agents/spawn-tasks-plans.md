@@ -8,7 +8,7 @@
   §6): the old per-profile `can_spawn`/`spawnable_agents` quartet is gone —
   **any agent may spawn any registered agent now**. `agent`/`agent_send` are
   `Capability::Control` but graded like any tool ([ADR-0232](../../adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md), amending
-  ADR-0207 §6): the overlay and the mode's rules reach them, and the
+  ADR-0207 §6): the mode's rules reach them, and the
   built-ins class-allow `control`. Their permission argument is the target
   ([ADR-0235](../../adr/archive/0235-scoped-spawn-rules-grade-the-target.md)) —
   the profile a spawn runs (`deny: ["agent(debug)"]`; an omitted `agent`
@@ -164,4 +164,4 @@
 
 ---
 
-Previous: [§3 — Advertisement, enforcement, overlay & discovery](advertisement-and-enforcement.md) · Next: [§3 — System prompt, skills, slash commands & dispatch](prompt-and-skills.md)
+Previous: [§3 — Advertisement, enforcement & discovery](advertisement-and-enforcement.md) · Next: [§3 — System prompt, skills, slash commands & dispatch](prompt-and-skills.md)

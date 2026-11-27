@@ -188,35 +188,6 @@
   independently (`find . | grep x | wc -l` allows with no prompt) instead of
   the whole raw string, closing the over-match a trailing `*` used to open
   (`find . && rm -rf /` no longer rides `bash(find *)`).
-- **Live tool-overlay grades compose with the ceiling too (✅ #498/#539,
-  originally [ADR-0133](../../adr/archive/0133-live-bash-enablement-graded-by-permission.md),
-  generalized by
-  [ADR-0163](../../adr/archive/0163-live-bash-enablement-is-a-tool-overlay-entry.md),
-  #611; the registration half retired by
-  [ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md)):**
-  a live `/enable tool bash --allow` grade — a session
-  `ToolOverlayEntry` — overrides the session's own **mode** grade for that
-  tool specifically via `tool_runner`'s generic overlay-grade dispatch
-  (`permission::overlay_entry_grade`), but the result still passes
-  through `clamp_to_base` unconditionally — a config ceiling of `bash: deny`
-  still wins over a live `Allow`, same as it wins over any mode's own
-  `Allow`. This composes for any tool the overlay enables, not only `bash`.
-  The overlay is now **mode-scoped**
-  ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
-  §8): dropped wholesale on any live `SetMode` (an entry enabled under one
-  mode carries no meaning in another), and an **enable** entry still overrides
-  even a mode `Deny` for that session — the model can't reach the overlay
-  directly (an enable entry is trusted-frame-only, ADR-0177), so this is the
-  human's own escape hatch surviving past a mode's own class deny, not a
-  model-reachable one. The grade override still reaches past the exact
-  session that set it: `permission::overlay_grade_entry` walks the same
-  nearest-link-first ancestor chain [ADR-0024](../../adr/archive/0024-subagent-permission-gating.md)'s
-  privilege ceiling already does (`permission::ancestor_chain`) — the whole
-  spawn sub-tree shares one **mode** now (§6), so this walk exists purely for
-  the overlay/grant layer riding on top of it, not for re-deriving the mode
-  itself at each link — and a `rhai` binding runs the same dispatch seam
-  (ADR-0227), so a script's `bash()` grades exactly like a direct `bash`
-  call.
 - **Managed provider-key env file (✅ #220):** a sibling
   `${config_dir}/entanglement/.env` (path override `ENTANGLEMENT_ENV_FILE`) holds
   the provider API keys outside any repo (`entanglement-runtime/src/config/env_file.rs`).

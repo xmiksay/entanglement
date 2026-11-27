@@ -132,9 +132,9 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   and last-seen tool names (registered = available, nothing connects at startup,
   [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md));
   `inspect session <id>` folds one **root** session's persisted log into its
-  resolved agent/model/name plus its live tool overlay (ADR-0149) — the one
-  piece of session state with no managed file of its own, so it is read
-  straight from the `.jsonl` log rather than re-run load-time discovery.
+  resolved agent/model/name — session state with no managed file of its
+  own, so it is read straight from the `.jsonl` log rather than re-run
+  load-time discovery.
 - **WebSocket** (`skutter serve`, ✅ #153, `runtime::serve` behind the `serve`
   cargo feature): an axum HTTP server exposing `GET /ws` (plus a `GET /healthz`
   liveness probe), one `subscribe()` fan-out per socket relayed out as JSON text

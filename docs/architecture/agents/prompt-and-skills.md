@@ -90,8 +90,8 @@
   [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)
   it is one of the six discovery tools: `Capability::Control`, ungraded, and
   non-maskable — it only reads the skill catalog the runtime already
-  discovered, so it runs in every mode and an overlay entry or mode rule
-  naming it is refused or warned about (see the non-maskable set in [advertisement & enforcement](advertisement-and-enforcement.md)).
+  discovered, so it runs in every mode and a mode rule
+  naming it is warned about (see the non-maskable set in [advertisement & enforcement](advertisement-and-enforcement.md)).
   Unlike the old read-only `explore` agent, which masked `load_skill` out
   entirely, a read-only *mode* still lets a model load a skill's body —
   reading a skill is not writing. The handler resolves **deterministically** (never model reasoning):
@@ -188,7 +188,7 @@
   **Access** is not an agent field: `load_skill` is a non-maskable discovery
   tool (`Capability::Control`, ungraded since
   [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)),
-  so no mode or overlay withdraws it; what a loaded skill's scripts and
+  so no mode withdraws it; what a loaded skill's scripts and
   commands may *do* is graded call by call like any other tool.
   `skills: [x]` therefore only preloads — a subagent may still discover and
   load any other skill exactly like its parent; to keep a skill from running,

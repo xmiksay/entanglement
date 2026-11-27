@@ -46,7 +46,7 @@ retired it along with the rest of `Agent`'s authority fields, and the
 session's permission mode grades every call at dispatch instead — and the
 skill mask is removed too ([ADR-0194](../../adr/archive/0194-skills-are-additive-only.md):
 skills are additive-only), so the advertised surface stays stable within a
-session and the provider's prompt cache survives an overlay toggle or a
+session and the provider's prompt cache survives a mode switch or a
 skill load. With `Agent` carrying no more authority, the array no
 longer varies by agent either — `propose_plan`/`request_mode` are pushed
 into the base `tool_specs` unconditionally and the `agent`/`agent_send` spawn
@@ -277,7 +277,7 @@ above. The stash drains only when a turn ends, so letting the narrator's
 per-tool-call `SetSessionMeta` in used to fill it to its 64-command cap
 during a long turn, and the user's next `Prompt` was refused. Mid-stream the
 user-issued deferrable commands (`Prompt`/`SetModel`/`SetGeneration`/
-`SetToolOverlay`/`Oneshot`) hit the same cap as the idle loop's; lifecycle
+`Oneshot`/`RevertFiles`/`ForkSession`/`SetWorkdir`) hit the same cap as the idle loop's; lifecycle
 commands (`Hibernate`, `ToolResult`) are never dropped. A stashed **`Prompt` is additionally
 *folded into the live turn*** (#182,
 [ADR-0058](../../adr/archive/0058-mid-turn-prompt-folds-into-live-turn.md)): at the top of each inner-loop iteration —

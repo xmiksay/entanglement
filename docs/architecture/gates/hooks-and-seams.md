@@ -136,7 +136,7 @@ snapshots it per session ([ADR-0226](../../adr/archive/0226-one-advertised-surfa
 tools (MCP, script-only built-ins) stay registered and dispatchable, just
 absent from the advertised array.
 Because core advertises the resolver's output verbatim now — there is no
-more per-agent mask, and the session's permission mode + overlay enforce
+more per-agent mask, and the session's permission mode enforces
 only at dispatch — **this resolver is the only thing
 that shapes a session's surface**: a spec missing here is a spec no model ever
 sees. That is exactly the shape of ADR-0190's Bug 1, where `poll_spec()` was

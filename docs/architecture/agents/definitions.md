@@ -261,4 +261,4 @@
 
 ---
 
-Previous: [§3 — Mode tuning, approvals, grants & the permission ceiling](approvals-and-grants.md) · Next: [§3 — Advertisement, enforcement, overlay & discovery](advertisement-and-enforcement.md)
+Previous: [§3 — Mode tuning, approvals, grants & the permission ceiling](approvals-and-grants.md) · Next: [§3 — Advertisement, enforcement & discovery](advertisement-and-enforcement.md)

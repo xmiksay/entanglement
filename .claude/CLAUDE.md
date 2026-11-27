@@ -134,13 +134,13 @@ set of types every head uses ([protocol](../docs/architecture/protocol.md)):
 
 ```
 InMsg    : Prompt | Approve | Reject | ToolResult | AnswerQuestion | Stop
-          | SetMode | SetModel | SetGeneration | SetSessionMeta | SetToolOverlay | Oneshot | Spawn
+          | SetMode | SetModel | SetGeneration | SetSessionMeta | Oneshot | Spawn
           | ListSessions | ListQuestions | ListOperations | ListPending | ReplayFrom | CloseSession
           | McpList | McpAdd | McpRemove | McpAuth
           | RevertFiles | ForkSession | SetWorkdir | HibernateSession | Resume (internal, not serialized)
 OutEvent : SessionStarted | SessionEnded | SessionHibernated | SessionList | QuestionList | OperationList | PendingList
           | History | Status | AgentChanged | ModeChanged | ModelChanged | GenerationChanged | SessionMetaChanged
-          | ToolOverlayChanged | WorkdirChanged | ParentChanged | McpList | McpChanged | McpAuthChanged | Throttle
+          | WorkdirChanged | ParentChanged | McpList | McpChanged | McpAuthChanged | Throttle
           | PersistenceDegraded | PersistenceRecovered
           | Plan | TextDelta | ReasoningDelta | ToolCallDelta | ToolCall | ToolRequest | ApprovalResolved
           | ToolExec | UserQuestion | ToolOutput | TaskList | Usage | Error | Done | Compacted | FileChange | PlanChanged
@@ -166,9 +166,6 @@ doc, never here**:
   strictness; longest within a kind; a rule naming a non-maskable tool never
   matches; `agent`/`agent_send` scope on their target); there is no agent tool mask
   ([agents & permissions §3](../docs/architecture/agents/modes.md), [ADR-0207](../docs/adr/archive/0207-permission-modes-replace-agent-borne-authority.md)/[ADR-0209](../docs/adr/archive/0209-auto-mode-defaults-to-prompt-not-deny.md)/[ADR-0218](../docs/adr/archive/0218-agent-default-mode-is-a-starting-hint.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0232](../docs/adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)/[ADR-0235](../docs/adr/archive/0235-scoped-spawn-rules-grade-the-target.md)).
-- **The tool overlay is the user's own trusted voice** — per-session,
-  mode-scoped enable/deny entries over the mode's grade
-  ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0149](../docs/adr/archive/0149-per-session-tool-overlay.md)/[ADR-0177](../docs/adr/archive/0177-wire-allowed-deny-only-tool-overlay.md)).
 - **Trusted/untrusted frame split** — `Holly::send` is privileged;
   `send_from_wire` is a fail-closed allowlist (`InMsg::wire_allowed`); every
   refused variant + why: [protocol §2 trusted/untrusted split](../docs/architecture/protocol/sessions.md) ([ADR-0069](../docs/adr/archive/0069-trusted-untrusted-wire-frame-split.md)).
@@ -221,8 +218,8 @@ doc, never here**:
   `mcp_tools` reads (and lazily connects) one server's catalog; they, `mcp`,
   the script-only read variants (`read_raw`/`*_json`) and the bookkeeping
   Control tools (`poll`/`ask_user`/`update_tasks`/`request_mode`/
-  `propose_plan`) are non-maskable — an overlay entry or rule naming one is
-  refused/warned, never a silent no-op (#843); `agent`/`agent_send` are
+  `propose_plan`) are non-maskable — a rule naming one warns, never a
+  silent no-op (#843); `agent`/`agent_send` are
   graded like any tool
   ([gates §one surface](../docs/architecture/gates/one-surface.md), [ADR-0226](../docs/adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0232](../docs/adr/archive/0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md)).
 - **Skills are additive-only and all model-visible; slash commands are

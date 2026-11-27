@@ -34,24 +34,7 @@ it rewrites and deletes files in the user's working tree from the session's
 backups), `ForkSession` (#786, [ADR-0223](../../adr/archive/0223-non-compacting-session-fork.md):
 it mints a session, so it stays a trusted head's call like `Spawn`), `SetWorkdir` (#764,
 [ADR-0224](../../adr/archive/0224-session-working-directory.md): its `approve` records an
-escape-root grant), and, for an **enable** entry, `SetToolOverlay` (#539,
-[ADR-0149](../../adr/archive/0149-per-session-tool-overlay.md), the `McpAdd` rationale
-again: it grades a tool `allow` past the session's own mode grade, with no
-approval prompt (ADR-0163's lazily-registering-a-closed-table-built-in clause
-— #611, folding in the bespoke `BashEnable`/`BashDisable` pair of #498/
-[ADR-0133](../../adr/archive/0133-live-bash-enablement-graded-by-permission.md), now
-superseded — is itself retired by
-[ADR-0195](../../adr/archive/0195-bash-is-the-default-exec-and-curated-read-only-rules.md),
-`bash` registering at startup; the grade-only form stands) — the TUI
-`/enable`/`/disable` commands send over `Holly::send`). A
-**deny-only** `SetToolOverlay` (every entry `deny: true`, including the empty
-list) is wire-allowed (#634,
-[ADR-0177](../../adr/archive/0177-wire-allowed-deny-only-tool-overlay.md) amending
-ADR-0149): it can only withdraw tools the profile already advertises, never
-widen the model's surface, so `wire_allowed()` is content-aware for this one
-variant — any enable entry present refuses the whole (full-replacement) frame
-with the dedicated `WireError::OverlayEnable`, distinct from the blanket
-`WireError::Privileged` every other refused variant gets.
+escape-root grant). A refused frame is `WireError::Privileged`.
 `wire_allowed`
 is an explicit exhaustive allowlist `match`
 (ADR-0124), so a new variant is wire-refused until deliberately opted in — a
@@ -205,8 +188,8 @@ the reply to only the requesting socket is the WS `serve` head's concern (#153).
     [ADR-0246](../../adr/archive/0246-resume-under-ancestors-and-the-teardown-tail.md)).
     The exit signal carries every outbox event for the id except live-only
     ones from the `Hibernate` send to the old task's exit (at most 1024;
-    none after a panic or a lagged tap), and the old task's final mode and
-    tool overlay, which the new task takes as they are. A resumed task re-folds its records plus the part of
+    none after a panic or a lagged tap), and the old task's final mode,
+    which the new task takes as it is. A resumed task re-folds its records plus the part of
     that tail they don't hold through `Session::replay` before it starts, so
     a late `FilesReverted` (or mode/workdir switch) reaches its context as a
     later replay of the log would. Events emitted before the `Hibernate` but
@@ -285,4 +268,4 @@ change it is never told about.
 
 ---
 
-Previous: [§2 — Message types, questions & queries](messages.md) · Next: [§2 — Live generation, metadata & tool overlay](live-settings.md)
+Previous: [§2 — Message types, questions & queries](messages.md) · Next: [§2 — Live generation & metadata](live-settings.md)

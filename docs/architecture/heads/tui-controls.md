@@ -160,18 +160,13 @@
   wire, max output tokens; every field offers "model default", sent as the
   catalog's concrete default because `SetGeneration` merges and cannot clear
   (a field with no catalog default is reported, not sent), with an inline
-  note that effort/thinking changes rebuild the prompt cache; **Tools** —
-  the per-session overlay rows bare `/enable` uses (the advertising-mode and
-  discovery rows and whole-server MCP enable rows are gone with
-  [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md):
-  one surface, MCP registered = available); **Aux** — the per-purpose pins. Each tab has its own "save as
+  note that effort/thinking changes rebuild the prompt cache; **Aux** — the
+  per-purpose pins. Each tab has its own "save as
   default": Session → the agent-models pin (ADR-0081), Generation → the
-  agent-generation store once `GenerationChanged` confirms (ADR-0095), Tools →
-  the overlay materialized as the agent's user-layer allowlist (ADR-0083,
-  next restart), and Aux pins are process-wide and always persisted (checkbox
-  always on). Confirming runs one plan in a fixed order — agent → model →
-  generation (validated against the final model, incl. an agent pin the
-  switch rebinds to) → overlay → aux — each step through its single-purpose path, stopping at the
+  agent-generation store once `GenerationChanged` confirms (ADR-0095), and
+  Aux pins are process-wide and always persisted (checkbox always on).
+  Confirming runs one plan in a fixed order — model → mode →
+  generation (validated against the final model) → aux — each step through its single-purpose path, stopping at the
   first failure; one `settings` transcript line names what applied, what
   failed and what didn't run (the effort cache warning stays the reducer's
   own).

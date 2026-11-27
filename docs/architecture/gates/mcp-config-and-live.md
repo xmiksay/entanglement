@@ -104,7 +104,7 @@ catalog carries none (#915). `AvailableMcp::from_config` builds one roster:
 every configured server, minus those with **`disabled: true`** — the single
 explicit opt-out, kept in `disabled_names` so a call to one is declined
 truthfully rather than as unknown. There is no per-session enablement, no
-`mcp_enable` tool, no `/enable mcp`/`/disable mcp`, no ancestry fold: an
+`mcp_enable` tool, no per-session toggle, no ancestry fold: an
 available server is available to every session, and every call to one of
 its tools is graded by the session's mode (default `prompt`, so the user
 audits it). A retired `state:` key is an unknown-field parse error (#920);

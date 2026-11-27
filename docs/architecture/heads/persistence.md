@@ -121,7 +121,7 @@ assistant/tool messages and the model appears to forget the conversation.
   seam for embedders of `entanglement-core`: records are serde values storable
   anywhere (a DB, a queue); the JSONL store here is the reference
   implementation. Resume restores every *replayable* piece of runtime-side
-  state (tool overlay, permission grants) but **not** MCP tool registration —
+  state (mode, permission grants) but **not** MCP tool registration —
   `ToolRegistry` is process-lifetime, never logged; a re-offered
   `mcp__<server>__*` call connects its server lazily at dispatch time, like any
   first call
