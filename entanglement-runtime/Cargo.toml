@@ -46,9 +46,8 @@ provider = ["dep:entanglement-provider", "dep:futures"]
 # them (ADR-0153). Since ADR-0153 the transport and the OAuth mechanism live in
 # `entanglement-provider` and are reached through core's re-export, so this gate
 # no longer pulls `reqwest`/`futures` as direct runtime deps — it now only decides
-# whether the lean library compiles the HTTP-MCP code paths in at all (matching
-# how `serve` gates axum — ADR-0025). stdio MCP stays feature-free (tokio process
-# only).
+# whether the lean library compiles the HTTP-MCP code paths in at all. stdio MCP
+# stays feature-free (tokio process only).
 mcp-http = []
 # The sandboxed `rhai` script tool (#122, ADR-0046; default-on, #502/ADR-0135
 # amending ADR-0025): one of the heaviest always-compiled deps, so a lean

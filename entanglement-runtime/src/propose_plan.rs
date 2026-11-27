@@ -65,7 +65,7 @@
 //!   `mode` argument (parsed by [`parse_suggested_mode`]) — carried through to
 //!   the `ToolRequest`'s `suggested_mode` field so the head can pre-select it
 //!   at the prompt (the TUI footer marks it "(suggested)",
-//!   `tui::transcript`). A suggestion never decides: [`resolve_accept_mode`]
+//!   `skutter::tui::transcript`). A suggestion never decides: [`resolve_accept_mode`]
 //!   only ever consults the *approver's* choice, never the model's. This is
 //!   the deliberate asymmetry with `request_mode` (`crate::request_mode`),
 //!   which refuses `auto` as a target outright — there the *model* is asking
@@ -227,7 +227,7 @@ pub async fn run_propose_plan(
     // A standard `ToolRequest` — the head renders the usual approve/reject
     // prompt. `input` carries the *resolved* content (not the model's raw
     // `content`-XOR-`path` call) so a `path`-mode approval still shows the
-    // full plan text, not just a filename — `tui::tool_render`'s
+    // full plan text, not just a filename — `skutter::tui::tool_render`'s
     // `propose_plan` arm reads this same JSON shape. `suggested_mode` (#560)
     // rides along purely so the head can pre-select the model's suggestion at
     // the prompt — it plays no role in what actually gets applied below.

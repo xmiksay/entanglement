@@ -51,7 +51,7 @@ pub fn own_process_group(cmd: &mut Command) {
 /// disarm it once the child has exited normally and either drop it armed to
 /// kill on timeout ([`wait_or_kill_group`] signals explicitly instead) or
 /// let a cancel drop it. Public only because `skutter`'s TUI
-/// status-line command (`tui::statusline::command`) reuses it — not part of
+/// status-line command (`skutter::tui::statusline::command`) reuses it — not part of
 /// the embedder API.
 #[doc(hidden)]
 pub struct GroupKillGuard {

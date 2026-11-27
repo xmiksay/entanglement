@@ -1,7 +1,7 @@
 //! Runtime-side throttle-transition responder (#517, ADR-0141): polls the
 //! shared `HttpClient`'s per-endpoint limiters and emits [`OutEvent::Throttle`] only on a transition, so a remote (stdio/
 //! WS) head sees the same stall the TUI already renders directly via
-//! `HttpClient::throttle_status()` (`tui/input_panel.rs`).
+//! `HttpClient::throttle_status()` (`skutter/src/tui/input_panel.rs`).
 //!
 //! The pool's throttle state is engine-global, not per-session (many sessions
 //! can share one endpoint, and one throttled endpoint never blocks another),
