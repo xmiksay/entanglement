@@ -35,7 +35,7 @@ pub(crate) struct CallGrader {
 
 impl CallGrader {
     /// Grade `(tool, input)` as `dispatch` would grade the same call, minus
-    /// what can't apply mid-call (hooks, the escape-root gate, parking).
+    /// what can't apply mid-call (the escape-root gate, parking).
     pub(crate) async fn grade(&self, tool: &str, input: &str) -> Permission {
         let inputs = GradeInputs {
             resolver: &*self.resolver,

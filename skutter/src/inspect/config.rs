@@ -184,18 +184,24 @@ fn render_config(resolved: &Resolved) -> String {
     }
 
     let _ = writeln!(out, "\nhooks (← {}):", from("hooks"));
-    if c.hooks.is_empty() {
-        let _ = writeln!(out, "  (none)");
-    } else {
-        render_hook_list(&mut out, "pre_tool_use", &c.hooks.pre_tool_use);
-        render_hook_list(&mut out, "post_tool_use", &c.hooks.post_tool_use);
-        render_hook_list(&mut out, "user_prompt_submit", &c.hooks.user_prompt_submit);
-        render_hook_list(&mut out, "session_start", &c.hooks.session_start);
-        render_hook_list(&mut out, "session_end", &c.hooks.session_end);
-        render_hook_list(&mut out, "stop", &c.hooks.stop);
-        render_hook_list(&mut out, "pre_compact", &c.hooks.pre_compact);
-        render_hook_list(&mut out, "subagent_stop", &c.hooks.subagent_stop);
-        render_hook_list(&mut out, "notification", &c.hooks.notification);
+    match crate::hooks::Hooks::parse(&c.hooks) {
+        Err(e) => {
+            let _ = writeln!(out, "  (invalid: {e:#})");
+        }
+        Ok(h) if h.is_empty() => {
+            let _ = writeln!(out, "  (none)");
+        }
+        Ok(h) => {
+            render_hook_list(&mut out, "pre_tool_use", &h.pre_tool_use);
+            render_hook_list(&mut out, "post_tool_use", &h.post_tool_use);
+            render_hook_list(&mut out, "user_prompt_submit", &h.user_prompt_submit);
+            render_hook_list(&mut out, "session_start", &h.session_start);
+            render_hook_list(&mut out, "session_end", &h.session_end);
+            render_hook_list(&mut out, "stop", &h.stop);
+            render_hook_list(&mut out, "pre_compact", &h.pre_compact);
+            render_hook_list(&mut out, "subagent_stop", &h.subagent_stop);
+            render_hook_list(&mut out, "notification", &h.notification);
+        }
     }
 
     let _ = writeln!(out, "\nmcp servers (← {}):", from("mcp"));

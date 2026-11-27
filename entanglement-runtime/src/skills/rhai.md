@@ -58,10 +58,9 @@ A skill's own scripts run the same way: `load_skill` prints the skill's
 
 Each binding call goes through **the same dispatch path as the equivalent
 tool call** (the session's permission mode, the config
-ceiling, grants, `pre_tool_use`/`post_tool_use` hooks, the escape-root gate
-for an out-of-project path, argument validation, `FileChange` events) and
-returns that tool's text output. A refusal (denied, rejected, vetoed by a
-hook) **throws** — wrap in `try`/`catch` if the script should degrade
+ceiling, grants, the escape-root gate for an out-of-project path, argument
+validation, `FileChange` events) and returns that tool's text output. A
+refusal (denied, rejected) **throws** — wrap in `try`/`catch` if the script should degrade
 gracefully instead of aborting. An approval covers a repeat of the exact same
 call in the same run; any other target asks again.
 

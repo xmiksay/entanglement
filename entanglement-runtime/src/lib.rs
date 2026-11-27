@@ -55,7 +55,6 @@ pub mod file_change;
 pub mod frontmatter;
 pub mod grants;
 pub mod history;
-pub mod hooks;
 pub mod host;
 // Host script namespaces for embedders (ADR-0249).
 pub mod host_ns;

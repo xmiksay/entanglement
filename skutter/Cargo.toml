@@ -29,6 +29,8 @@ entanglement-runtime = { path = "../entanglement-runtime" }
 # listener; `io-util`/`io-std` `pipe`'s stdin relay; `signal` `ctrl_c()` in
 # `serve`/`tui`; `process` the TUI's clipboard and statusline children.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "io-std", "signal"] }
+# `hooks::HookResolver` implements the runtime's async `PermissionResolver`.
+async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -53,6 +55,5 @@ unicode-width = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
-async-trait = { workspace = true }
 # WS client for the `serve` head integration tests (drives a real socket).
 tokio-tungstenite = { workspace = true }

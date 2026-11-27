@@ -34,7 +34,7 @@ use entanglement_runtime::{
     subagent, system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names,
     tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
 };
-use skutter::{inspect, logging, serve, slash_commands};
+use skutter::{hooks, inspect, logging, serve, slash_commands};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -58,6 +58,9 @@ async fn main() -> Result<()> {
         warnings: config_warnings,
         ..
     } = config::Config::resolve(&cwd).context("loading user config")?;
+    // The library passes `hooks:` through unparsed (#964); a typo in it stays
+    // as loud as one anywhere else in the file, for every subcommand.
+    hooks::Hooks::parse(&user_config.hooks).context("loading user config")?;
 
     // Session-log auto-prune on startup (Issue 4, Phase 4.2): best-effort,
     // scoped to this cwd's session dir only. A read-only data dir or a transient

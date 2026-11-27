@@ -48,8 +48,7 @@ pub(super) fn spawn_file_change_listener(background: &mut JoinSet<()>, ctx: &Lad
 
 /// The single inbound router (#156): the *sole* consumer of the inbound
 /// fan-out for decisions. It watches `Stop` (cancel in-flight tools +
-/// unwind parked approvals, #167), fires the `user_prompt_submit` hooks
-/// (#199) off each `Prompt`, resolves every `Approve`/`Reject`/
+/// unwind parked approvals, #167), resolves every `Approve`/`Reject`/
 /// `AnswerQuestion` to its parked waiter, and answers
 /// `InMsg::ListQuestions` (#515)/`InMsg::ListOperations` (#607)/
 /// `InMsg::ListPending` (#726) directly from `open_questions`/the
@@ -64,7 +63,6 @@ pub(super) fn spawn_decision_router(
 ) {
     let router = Router {
         cancels: ctx.cancels.clone(),
-        hooks: ctx.hooks.clone(),
         pending: ctx.pending.clone(),
         open_questions: ctx.open_questions.clone(),
         jobs: ctx.jobs.clone(),
@@ -96,7 +94,6 @@ pub(super) fn spawn_decision_router(
 /// touches.
 pub(super) struct Router {
     pub(super) cancels: crate::cancel::CancelRegistry,
-    pub(super) hooks: std::sync::Arc<crate::hooks::Hooks>,
     pub(super) pending: crate::pending::PendingDecisions,
     pub(super) open_questions: crate::questions::OpenQuestions,
     pub(super) jobs: crate::jobs::JobRegistry,
@@ -107,7 +104,7 @@ pub(super) struct Router {
 }
 
 impl Router {
-    /// Handle one inbound frame. Synchronous: a slow hook is detached.
+    /// Handle one inbound frame.
     pub(super) fn route(&self, msg: InMsg) {
         // A compaction successor's cards a lagged fold never re-homed
         // (ADR-0238), before anything reads, answers or stops them.
@@ -120,14 +117,6 @@ impl Router {
                 self.attendance.forget_session(&session);
                 self.cancels.cancel_session(&session);
                 self.pending.stop_session(&session);
-            }
-            InMsg::Prompt { session, content } if !self.hooks.user_prompt_submit.is_empty() => {
-                // Detach so a slow hook can't stall the router.
-                let hooks = self.hooks.clone();
-                tokio::spawn(async move {
-                    let text = entanglement_core::content_text(&content);
-                    hooks.run_user_prompt_submit(&session, &text).await;
-                });
             }
             InMsg::ListQuestions {
                 correlation_id,

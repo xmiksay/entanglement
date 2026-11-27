@@ -1,7 +1,6 @@
 //! The gate ladder every call climbs, model-issued or script-issued
 //! (ADR-0227): resolve the tool (lazy MCP connect), the `Control` bypass,
-//! mode grade + grants, the `pre_tool_use` veto, the
-//! escape-root gate (ADR-0109), the credentialed-`http` gate — then run,
+//! mode grade + grants, the escape-root gate (ADR-0109), the credentialed-`http` gate — then run,
 //! refuse, or park for approval.
 
 use std::path::PathBuf;
@@ -53,8 +52,8 @@ impl Dispatcher {
     }
 
     /// The whole ladder for a model call whose route runs its own handler
-    /// once cleared — `agent`/`agent_send` (ADR-0232): grade, hooks, mode
-    /// deny, the unattended collapse and the approval park, the same rungs as
+    /// once cleared — `agent`/`agent_send` (ADR-0232): grade, mode deny,
+    /// the unattended collapse and the approval park, the same rungs as
     /// any tool. `Err` is the refusal text the model sees; `None` when a
     /// `Stop` unwound the park.
     pub(crate) async fn gate(&self, call: &Call) -> Option<Result<(), String>> {
@@ -64,19 +63,11 @@ impl Dispatcher {
         })
     }
 
-    /// Every gate short of execution: grade + grants,
-    /// `pre_tool_use`, the mode deny, escape-root, the credentialed-`http`
-    /// gate, the unattended collapse and the approval park. `None` when a
-    /// `Stop` unwound the park.
+    /// Every gate short of execution: grade + grants, the mode deny,
+    /// escape-root, the credentialed-`http` gate, the unattended collapse and
+    /// the approval park. `None` when a `Stop` unwound the park.
     async fn clear(&self, tools: &ToolRegistry, call: &Call, via: Via<'_>) -> Option<Cleared> {
         let (perm, arg) = self.grade(tools, &call.tool, &call.input).await;
-        if let Some(reason) = self
-            .hooks
-            .run_pre_tool_use(&self.session, &call.tool, &call.input)
-            .await
-        {
-            return Some(Cleared::Refused(reason));
-        }
         if perm == Permission::Deny {
             // ADR-0207 §4: absolute, no prompt, names the way out.
             return Some(Cleared::Refused(format!(
@@ -106,7 +97,7 @@ impl Dispatcher {
         // ADR-0228: a trusted script, or one the user chose **Run all** for,
         // passes every remaining gate — a graded `Ask`, escape-root (a
         // single-use token the host tool spends), the credentialed-`http`
-        // approval. The denies above (hook, mode, ceiling) already
+        // approval. The denies above (mode, ceiling) already
         // won. A floored write is the exception for **Run all**: approving a
         // script once must not let it author trusted code unseen, so that
         // write gets its own card. A trusted script's writes are its

@@ -9,7 +9,6 @@ use entanglement_core::{
     EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission, PermissionProfile,
     SessionId, ToolCall,
 };
-use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::{host_tools, BashTool};
 use entanglement_runtime::http_gate::HttpGate;
 use entanglement_runtime::mcp::AvailableMcp;
@@ -39,7 +38,6 @@ impl entanglement_runtime::Tool for SlowGrep {
 /// The executor's variable inputs for one scripted `rhai` run.
 pub(super) struct Setup {
     pub(super) mode: Mode,
-    pub(super) hooks: Hooks,
     pub(super) gate: Arc<HttpGate>,
     pub(super) avail: AvailableMcp,
     /// Register the host `bash` tool too.
@@ -72,7 +70,6 @@ impl Setup {
                 sandbox: None,
                 sandbox_network: false,
             },
-            hooks: Hooks::default(),
             gate: Arc::default(),
             avail: AvailableMcp::default(),
             bash: false,
@@ -140,7 +137,6 @@ pub(super) async fn start(
         .agents(agents)
         .base(PermissionProfile::new(Permission::Allow))
         .mode_table(table)
-        .hooks(setup.hooks)
         .http_gate(setup.gate)
         .discovery(DiscoverySurface {
             mcp_avail: Arc::new(setup.avail),

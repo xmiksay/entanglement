@@ -8,7 +8,7 @@
 //! ([`ModeResolver`], ADR-0207 stage 4) and the managed grants file
 //! ([`DefaultGrantStore`]). A multi-tenant embedder that stores rules per user
 //! in its own DB swaps both without forking the executor, keeping the shared
-//! interception ladder, spawn gating, hooks, rhai, and plan/tasks tools.
+//! interception ladder, spawn gating, rhai, and plan/tasks tools.
 //!
 //! ## Where the seams sit in the ladder
 //!

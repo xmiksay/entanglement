@@ -1,5 +1,5 @@
 //! ADR-0227: every script binding climbs the same dispatch seam as a direct
-//! call — hooks and `FileChange` are observable from a script, generated
+//! call — `FileChange` is observable from a script, generated
 //! `mcp::` namespaces reach a real (stub) MCP server graded under the real
 //! tool name, and `http()` grades `{METHOD} {url}` with the credentialed
 //! once-per-host approval.
@@ -52,32 +52,16 @@ fn requests(events: &[OutEvent]) -> Vec<(String, String)> {
 }
 
 #[tokio::test]
-async fn hooks_and_file_change_are_observable_from_a_script() {
-    let dir = TempDir::new("unified-hooks");
-    let marker = dir.path.join("post.marker");
-    let mut setup = Setup::mode(Permission::Allow, &[], 0);
-    setup.hooks = serde_yaml::from_str(&format!(
-        "pre_tool_use:\n  - command: \"echo vetoed by policy >&2; exit 1\"\n    tools: [edit]\n\
-         post_tool_use:\n  - command: \"touch '{}'\"\n    tools: [write]\n",
-        marker.display()
-    ))
-    .unwrap();
-    let events = run(
-        r#"write("a.txt", "x");
-           let r = "not vetoed";
-           try { edit("a.txt", "x", "y"); } catch (e) { r = e; }
-           r"#,
-        &dir.path,
-        setup,
-    )
-    .await;
+async fn file_change_is_observable_from_a_script() {
+    let dir = TempDir::new("unified-file-change");
+    let setup = Setup::mode(Permission::Allow, &[], 0);
+    let events = run(r#"write("a.txt", "x"); "ok""#, &dir.path, setup).await;
     let out = rhai_result(&events);
-    assert!(out.contains("vetoed"), "the veto reaches the script: {out}");
+    assert!(out.contains("ok"), "{out}");
     assert_eq!(
         std::fs::read_to_string(dir.path.join("a.txt")).unwrap(),
         "x"
     );
-    assert!(marker.exists(), "post_tool_use ran for the script's write");
     assert!(
         events
             .iter()
@@ -250,13 +234,12 @@ mod mcp_namespace {
 }
 
 /// B1: a credential's `${VAR}` is hidden from every child — a script's
-/// `bash` and a hook both see it empty.
+/// `bash` sees it empty (a hook's is `skutter`'s test, #964).
 #[tokio::test]
 async fn an_http_auth_secret_never_reaches_a_child_process() {
     let var = "ENTANGLEMENT_TEST_UNIFIED_GH_TOKEN";
     std::env::set_var(var, "s3cret-value");
     let dir = TempDir::new("unified-secret");
-    let leaked = dir.path.join("hook.out");
     let mut setup = Setup::mode(Permission::Allow, &[], 0);
     setup.bash = true;
     setup.gate = Arc::new(HttpGate::new(
@@ -265,11 +248,6 @@ async fn an_http_auth_secret_never_reaches_a_child_process() {
         ))
         .unwrap(),
     ));
-    setup.hooks = serde_yaml::from_str(&format!(
-        "post_tool_use:\n  - command: \"printf '%s' \\\"${var}\\\" > '{}'\"\n",
-        leaked.display()
-    ))
-    .unwrap();
     let events = run(
         &format!(r#"bash("printf '[%s]' \"${var}\"")"#),
         &dir.path,
@@ -279,11 +257,6 @@ async fn an_http_auth_secret_never_reaches_a_child_process() {
     let out = rhai_result(&events);
     assert!(out.contains("[]"), "bash saw the secret: {out}");
     assert!(!out.contains("s3cret"), "{out}");
-    assert_eq!(
-        std::fs::read_to_string(&leaked).unwrap(),
-        "",
-        "the hook saw it"
-    );
 }
 
 /// S6: a nested call outliving the script's budget is cut into a catchable

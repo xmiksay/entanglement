@@ -12,6 +12,9 @@ mod attended_serve;
 mod attended_wake;
 mod attended_wake_queue;
 mod attended_wake_tree;
+// `skutter`'s lifecycle hooks (#199/#734) over the real engine (#964).
+mod hook_events;
+mod hooks;
 mod launch_mode_typo;
 mod provider_selection;
 mod serve;

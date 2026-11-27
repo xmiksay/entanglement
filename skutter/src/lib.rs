@@ -9,10 +9,12 @@
 // The moved modules name runtime modules as `crate::<name>`, exactly as they
 // did inside `entanglement-runtime`.
 use entanglement_runtime::{
-    agents, attendance, capability, config, discover, frontmatter, hooks, layers, mcp, mode,
+    agents, attendance, capability, config, discover, frontmatter, layers, mcp, mode,
     session_store, skills, system_prompt, tool_names,
 };
 
+// Lifecycle hooks (#199, #964): run by `skutter`, never by the library.
+pub mod hooks;
 pub mod inspect;
 pub mod logging;
 pub mod serve;

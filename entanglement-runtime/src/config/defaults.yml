@@ -60,10 +60,11 @@ permissions:
 #       allow: ["bash(cargo check)"]
 modes: {}
 
-# Lifecycle hooks (#199, ADR-0066) — external commands run around tool execution
-# and on prompt ingress, for policy / telemetry / formatting. Three lists:
-#   pre_tool_use       — before a tool runs; a non-zero exit *blocks* the tool
-#                        (its output becomes the tool result). The policy gate.
+# Lifecycle hooks (#199, ADR-0066) — external commands `skutter` runs around tool
+# execution and on prompt ingress, for policy / telemetry / formatting (the
+# library passes this section through unparsed, #964). Three lists:
+#   pre_tool_use       — while a tool call is graded; a non-zero exit *denies*
+#                        it (the reason is logged). The policy gate.
 #   post_tool_use      — after a tool's result; observational side-effect
 #                        (a formatter/telemetry sink). Cannot rewrite the result.
 #   user_prompt_submit — when a prompt reaches the engine; observational.

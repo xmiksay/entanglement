@@ -7,7 +7,7 @@
 //! an id it never parked on.
 //!
 //! The ladder itself lives in [`gates`] (the `Control` bypass,
-//! mode grade + grants, hooks, escape-root, the credentialed-`http`
+//! mode grade + grants, escape-root, the credentialed-`http`
 //! gate), unknown/lazy-MCP resolution in [`resolve`], the approval park in
 //! [`decision`], the run-against-the-registry step in [`execute`].
 
@@ -25,7 +25,6 @@ use entanglement_core::{ContentPart, Holly, SessionId, ToolEnvelope};
 
 use crate::arg_validate::LoopBreaker;
 use crate::attendance::Attendance;
-use crate::hooks::Hooks;
 use crate::http_gate::HttpGate;
 use crate::mcp::{ActiveServers, AvailableMcp, McpScopes};
 use crate::mode::{Limits, ModeTable};
@@ -58,7 +57,6 @@ pub(crate) struct Dispatcher {
     /// The ancestor chain, nearest first (ADR-0024).
     pub chain: Vec<SessionId>,
     pub grants: Arc<dyn GrantStore>,
-    pub hooks: Arc<Hooks>,
     pub pending: PendingDecisions,
     pub escape_root: Option<EscapeRoot>,
     pub advertising: SharedAdvertisingState,
@@ -119,7 +117,7 @@ pub(crate) enum Via<'a> {
 /// What a call came to. `None` from [`Dispatcher::run`] means a `Stop`
 /// unwound it: core cancels the turn on the same Stop, so nothing is owed.
 pub(crate) enum Outcome {
-    /// A gate declined it (mode deny, hook veto,
+    /// A gate declined it (mode deny,
     /// rejection, unknown tool, unreachable from a script…) — it never ran.
     Refused(String),
     /// A script's nested call was cut off by the script's budget mid-run: it

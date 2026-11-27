@@ -9,7 +9,6 @@ use serde::Deserialize;
 use super::ceiling;
 use super::tui::TuiConfig;
 use crate::file_backup::BackupLimits;
-use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 use crate::mode;
 
@@ -49,11 +48,10 @@ pub(super) struct RawConfig {
     /// silently ignored here.
     #[serde(default)]
     pub(super) modes: HashMap<String, mode::ModeTuning>,
-    /// Lifecycle hooks (#199): external commands run around tool execution and on
-    /// prompt ingress. Deserializes straight into [`Hooks`] (plain serde, unlike
-    /// `permissions`); absent ⇒ no hooks.
+    /// The `hooks:` section, passed through unparsed (see
+    /// [`super::Config::hooks`]).
     #[serde(default)]
-    pub(super) hooks: Hooks,
+    pub(super) hooks: serde_yaml::Value,
     /// External MCP tool servers (#198): a map of server name → spawn config. Each
     /// server's tools are discovered and registered into the runtime tool
     /// registry. Absent ⇒ no servers.

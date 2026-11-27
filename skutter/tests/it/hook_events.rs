@@ -1,8 +1,9 @@
 //! Integration test: the observe-only lifecycle hook points (#734) —
 //! `session_start`, `session_end`, `stop`, `pre_compact`, `subagent_stop` and
-//! `notification` — fired off the real engine's event stream by the executor's
-//! lifecycle watcher. Every hook appends `<event> <session> <tool> <payload>`
-//! to one log; the watcher runs hooks sequentially, so lines never interleave.
+//! `notification` — fired off the real engine's event stream by `skutter`'s
+//! hook watcher ([`skutter::hooks::spawn`], #964). Every hook appends
+//! `<event> <session> <tool> <payload>` to one log; the watcher runs hooks
+//! sequentially, so lines never interleave.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,10 +15,10 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::agents::built_in_registry;
-use entanglement_runtime::hooks::{HookSpec, Hooks};
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use serde_json::Value;
+use skutter::hooks::{HookSpec, Hooks};
 use tokio::sync::broadcast::Receiver;
 
 /// Pops scripted replies, then answers `"ok"` forever.
@@ -125,9 +126,11 @@ struct Rig {
     holly: Holly,
     log: PathBuf,
     _dir: tempfile::TempDir,
+    _watcher: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// An engine + executor with `hooks(log)` wired, under a temp root.
+/// An engine + executor + the hook watcher over `hooks(log)`, under a temp
+/// root.
 fn rig(replies: Vec<LlmResponse>, base: Permission, hooks: impl Fn(&Path) -> Hooks) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("hello.txt"), "greetings\n").unwrap();
@@ -145,12 +148,13 @@ fn rig(replies: Vec<LlmResponse>, base: Permission, hooks: impl Fn(&Path) -> Hoo
     let _exec = ToolExecutor::builder(&holly, tools.shared())
         .agents(built_in_registry().expect("built-in agents must parse"))
         .base(PermissionProfile::new(base))
-        .hooks(hooks(&log))
         .spawn();
+    let watcher = skutter::hooks::spawn(&holly, Arc::new(hooks(&log)));
     Rig {
         holly,
         log,
         _dir: dir,
+        _watcher: watcher,
     }
 }
 

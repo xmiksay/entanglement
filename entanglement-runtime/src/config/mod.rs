@@ -50,11 +50,8 @@
 //!   only a bare `*` is a wildcard), logs a non-fatal startup warning naming the file, the mode (or
 //!   `permissions`) and the entry ([`mode_warn`], reviving ADR-0166's
 //!   posture for this rule language).
-//! - `hooks` — lifecycle hooks (#199, ADR-0066): external commands run around
-//!   tool execution (`pre_`/`post_tool_use`) and on prompt ingress
-//!   (`user_prompt_submit`), plus six observe-only lifecycle points
-//!   (`session_start`/`session_end`/`stop`/`pre_compact`/`subagent_stop`/
-//!   `notification`, #734). See [`crate::hooks`]. Empty by default.
+//! - `hooks` — carried through unparsed ([`Config::hooks`]): the library
+//!   runs no hooks (#964); `skutter` parses and runs them.
 //! - `tui` — terminal-UI preferences ([`tui::TuiConfig`], ADR-0213): one
 //!   block every TUI knob joins, live-reloaded by the TUI. Its `statusline`
 //!   templates ([`statusline`], #762) warn once per unknown placeholder; its
@@ -93,7 +90,6 @@ use anyhow::{Context, Result};
 use entanglement_core::PermissionProfile;
 use serde_yaml::Value;
 
-use crate::hooks::Hooks;
 use crate::mcp::McpServerConfig;
 use crate::mode;
 use layers::default_layer;
@@ -173,8 +169,10 @@ pub struct Config {
     /// (`services.rs`) — kept raw here since `Config` resolution has no registry
     /// to build a real [`crate::mode::ModeTable`] with.
     pub modes: HashMap<String, mode::ModeTuning>,
-    /// Lifecycle hooks (#199). Empty by default (a no-op).
-    pub hooks: Hooks,
+    /// The `hooks:` section as merged YAML, `Null` when absent. The library
+    /// runs no hooks (#964): a head that does (`skutter`) parses it, so a
+    /// typo in it is that head's error.
+    pub hooks: Value,
     /// External MCP tool servers (#198). Empty by default (a no-op).
     pub mcp: HashMap<String, McpServerConfig>,
     /// Hidden credentials for the rhai `http()` binding (ADR-0227) — user

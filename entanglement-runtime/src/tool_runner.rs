@@ -62,9 +62,7 @@ mod wrappers;
 pub use builder::{ToolExecutor, ToolExecutorBuilder};
 pub use inputs::{DiscoverySurface, EscapeRoot};
 #[allow(deprecated)]
-pub use wrappers::{
-    spawn_tool_executor, spawn_tool_executor_with_hooks, spawn_tool_executor_with_policy,
-};
+pub use wrappers::{spawn_tool_executor, spawn_tool_executor_with_policy};
 
 use crate::cancel::{CancelAllOnDrop, CancelRegistry};
 use crate::run_limits;
@@ -111,7 +109,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         perm_modes,
         resolver,
         grants,
-        hooks,
         escape_root,
         mode_table,
         plan_files,
@@ -160,19 +157,11 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         validation,
         http: mcp_http,
     } = discovery;
-    let hooks = Arc::new(hooks);
     let sub = holly.subscribe();
     // Subscribe to the inbound fan-out *synchronously*, before this function
-    // returns, so a `Prompt`/`Stop` the caller sends right after spawning can't
-    // race ahead of the watcher's subscription (the `user_prompt_submit` hook,
-    // #199, depends on catching that first prompt).
+    // returns, so a `Stop` the caller sends right after spawning can't race
+    // ahead of the router's subscription.
     let inbound = holly.subscribe_inbound();
-    // Same discipline for the lifecycle hook watcher (#734): a first
-    // `SessionStarted` must not race its subscription. Skipped entirely when
-    // no observe-only hook point is configured (the norm).
-    let lifecycle_subs = hooks
-        .has_lifecycle()
-        .then(|| (holly.subscribe(), holly.subscribe_inbound()));
     tokio::spawn(async move {
         // Background tasks this executor spawns that must not outlive it (#545):
         // the file-change listener and the decision router below each hold
@@ -273,7 +262,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             grants,
             mcp_http,
             active_skill,
-            hooks,
             validation,
             denials,
             attendance,
@@ -285,14 +273,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         };
         background::spawn_file_change_listener(&mut background, &ctx);
         background::spawn_decision_router(&mut background, inbound, &ctx);
-        if let Some((events, inbound)) = lifecycle_subs {
-            crate::hooks::lifecycle::spawn_watch(
-                &mut background,
-                ctx.hooks.clone(),
-                events,
-                inbound,
-            );
-        }
         lifecycle::run(sub, &ctx, &active).await;
     })
 }

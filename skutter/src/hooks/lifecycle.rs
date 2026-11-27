@@ -1,34 +1,38 @@
-//! The observe-only lifecycle hook points (#734): `session_start`,
-//! `session_end`, `stop`, `pre_compact`, `subagent_stop` and `notification`.
+//! The observe-only hook points: `post_tool_use`, `user_prompt_submit` (#964)
+//! and the lifecycle points of #734 — `session_start`, `session_end`, `stop`,
+//! `pre_compact`, `subagent_stop` and `notification`.
 //!
-//! Core stays policy-free (ADR-0066): every point is *derived* from the
-//! `OutEvent` stream a runtime subscriber already sees, so no new core seam
-//! exists — and therefore none of them can block. A subscriber sees an event
+//! Core and the library stay policy-free (ADR-0066, #964): every point is
+//! *derived* from the `OutEvent` stream (or the inbound fan-out) any
+//! subscriber sees, so no new seam exists — and therefore none of them can
+//! block. A subscriber sees an event
 //! only after core acted on it, so there is nothing left to veto; the one
 //! point that sounds like a gate, `pre_compact`, would need a core seam to
 //! hold the summary back, and since ADR-0205 compaction forks and never
 //! rewrites the source log, there is no history for a hook to rescue first.
 //!
 //! The [`Tracker`] is the pure part: it folds events into [`Firing`]s. The
-//! [`spawn_watch`] task feeds it and hands each firing to one sequential worker,
+//! [`spawn`]ed task feeds it and hands each firing to one sequential worker,
 //! so hooks run in event order while a slow hook never lags the subscription.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use entanglement_core::{AgentState, CompactionMode, InMsg, OutEvent, SessionId};
+use entanglement_core::{AgentState, CompactionMode, Holly, InMsg, OutEvent, SessionId};
 use serde_json::{json, Value};
 use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 
 use super::{parse_input, HookEvent, Hooks};
 use resume::ResumeMarks;
 
 mod resume;
 
-/// Every point this module drives, for [`Hooks::has_lifecycle`].
-pub(crate) const EVENTS: [HookEvent; 6] = [
+/// Every point this module drives, for [`Hooks::has_observers`].
+pub(super) const OBSERVED: [HookEvent; 8] = [
+    HookEvent::PostToolUse,
+    HookEvent::UserPromptSubmit,
     HookEvent::SessionStart,
     HookEvent::SessionEnd,
     HookEvent::Stop,
@@ -42,7 +46,8 @@ pub(crate) const EVENTS: [HookEvent; 6] = [
 pub(crate) struct Firing {
     pub(crate) event: HookEvent,
     pub(crate) session: SessionId,
-    /// Exported as `ENTANGLEMENT_TOOL_NAME` (an approval `notification`).
+    /// Exported as `ENTANGLEMENT_TOOL_NAME` (`post_tool_use`, an approval
+    /// `notification`).
     pub(crate) tool: Option<String>,
     pub(crate) payload: Value,
 }
@@ -66,15 +71,28 @@ pub(crate) struct Tracker {
     /// the turn ended (`emit_turn_done`/`emit_turn_error` always pair them).
     ended_turn: HashSet<SessionId>,
     last_error: HashMap<SessionId, String>,
+    /// `(tool, input)` of each call the runtime was asked to run, by
+    /// `(session, request_id)`, until its `ToolOutput` fires `post_tool_use`.
+    execs: HashMap<(SessionId, String), (String, String)>,
 }
 
 impl Tracker {
-    /// Note an inbound frame. Only `Resume` matters: it is fanned out before
-    /// the supervisor handles it, so it is always seen ahead of the
-    /// `SessionStarted`s it causes (see [`spawn_watch`]).
-    pub(crate) fn observe_in(&mut self, msg: &InMsg) {
+    /// Note an inbound frame: a `Prompt` fires `user_prompt_submit`; a
+    /// `Resume` is fanned out before the supervisor handles it, so it is
+    /// always seen ahead of the `SessionStarted`s it causes (see [`spawn`]).
+    pub(crate) fn observe_in(&mut self, msg: &InMsg) -> Option<Firing> {
+        if let InMsg::Prompt { session, content } = msg {
+            let prompt = entanglement_core::content_text(content);
+            return Some(fire(
+                HookEvent::UserPromptSubmit,
+                session,
+                None,
+                json!({ "prompt": prompt }),
+            ));
+        }
         let sessions = &self.sessions;
         self.resuming.observe(msg, |id| sessions.contains_key(id));
+        None
     }
 
     /// Fold one outbound event; returns the hook point it completes, if any.
@@ -171,6 +189,35 @@ impl Tracker {
                 let extra = json!({ "kind": kind, "kept": kept, "summary": summary });
                 Some(fire(HookEvent::PreCompact, session, None, extra))
             }
+            OutEvent::ToolExec {
+                session,
+                request_id,
+                tool,
+                input,
+                ..
+            } => {
+                let key = (session.clone(), request_id.clone());
+                self.execs.insert(key, (tool.clone(), input.clone()));
+                None
+            }
+            OutEvent::ToolOutput {
+                session,
+                request_id,
+                output,
+                is_error,
+                exit_code,
+                ..
+            } => {
+                let (tool, input) = self.execs.remove(&(session.clone(), request_id.clone()))?;
+                let extra = json!({
+                    "tool": tool,
+                    "input": parse_input(&input),
+                    "output": output,
+                    "is_error": is_error,
+                    "exit_code": exit_code,
+                });
+                Some(fire(HookEvent::PostToolUse, session, Some(&tool), extra))
+            }
             OutEvent::ToolRequest {
                 session,
                 request_id,
@@ -251,6 +298,7 @@ impl Tracker {
         self.compacted.remove(session);
         self.ended_turn.remove(session);
         self.last_error.remove(session);
+        self.execs.retain(|(s, _), _| s != session);
         let extra = json!({
             "reason": reason,
             "parent": meta.as_ref().and_then(|m| m.parent.as_ref()).map(|p| &p.0),
@@ -274,18 +322,34 @@ fn fire(event: HookEvent, session: &SessionId, tool: Option<&str>, extra: Value)
     }
 }
 
-/// Spawn the watcher into the executor's `JoinSet` (aborted with it, #545).
-/// Both receivers are subscribed by the caller *before* the engine can emit,
-/// so a first `SessionStarted` is never missed.
-pub(crate) fn spawn_watch(
-    background: &mut JoinSet<()>,
+/// Spawn the watcher when any observer point has a command (`None`
+/// otherwise — the norm). Both receivers are subscribed here, before this
+/// returns, so a first `Prompt` or `SessionStarted` is never missed. Abort the
+/// handle to stop it (its two tasks live in a `JoinSet` dropped with it).
+pub fn spawn(holly: &Holly, hooks: Arc<Hooks>) -> Option<JoinHandle<()>> {
+    if !hooks.has_observers() {
+        return None;
+    }
+    let events = holly.subscribe();
+    let inbound = holly.subscribe_inbound();
+    Some(tokio::spawn(async move {
+        let mut tasks = JoinSet::new();
+        watch(&mut tasks, hooks, events, inbound);
+        while tasks.join_next().await.is_some() {}
+    }))
+}
+
+/// The tracker feeding one sequential worker, so hooks run in event order
+/// while a slow hook never lags the subscription.
+fn watch(
+    tasks: &mut JoinSet<()>,
     hooks: Arc<Hooks>,
     mut events: broadcast::Receiver<OutEvent>,
     mut inbound: broadcast::Receiver<InMsg>,
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Firing>();
     let runner = hooks.clone();
-    background.spawn(async move {
+    tasks.spawn(async move {
         while let Some(f) = rx.recv().await {
             let tool = f.tool.as_deref();
             runner
@@ -293,8 +357,9 @@ pub(crate) fn spawn_watch(
                 .await;
         }
     });
-    background.spawn(async move {
+    tasks.spawn(async move {
         let mut tracker = Tracker::default();
+        let send = |f: Firing| hooks.specs(f.event).is_empty() || tx.send(f).is_ok();
         loop {
             let ev = match events.recv().await {
                 Ok(ev) => ev,
@@ -302,23 +367,30 @@ pub(crate) fn spawn_watch(
                 // nothing. A pending turn end is forgotten rather than
                 // classified off a `Status` whose `Done` may have been lost.
                 Err(RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "lifecycle hook watcher lagged");
+                    tracing::warn!(skipped = n, "hook watcher lagged");
                     tracker.forget_after_lag();
                     continue;
                 }
                 Err(RecvError::Closed) => break,
             };
             // The supervisor fans a frame out before handling it, so every
-            // `Resume` that caused this event is already buffered here.
+            // `Prompt`/`Resume` that caused this event is already buffered
+            // here (a prompt's hook fires on the first event it causes).
             loop {
                 match inbound.try_recv() {
-                    Ok(msg) => tracker.observe_in(&msg),
+                    Ok(msg) => {
+                        if let Some(f) = tracker.observe_in(&msg) {
+                            if !send(f) {
+                                return;
+                            }
+                        }
+                    }
                     Err(TryRecvError::Lagged(_)) => continue,
                     Err(_) => break,
                 }
             }
             if let Some(f) = tracker.observe(&ev) {
-                if !hooks.specs(f.event).is_empty() && tx.send(f).is_err() {
+                if !send(f) {
                     break;
                 }
             }
@@ -328,3 +400,5 @@ pub(crate) fn spawn_watch(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tool_tests;

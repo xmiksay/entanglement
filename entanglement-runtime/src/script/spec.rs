@@ -29,7 +29,7 @@ use crate::tool_names::RHAI_TOOL;
 /// together.
 const BINDING_REFERENCE: &str = r#"Rhai is Rust-like (fn, let) but is NOT Rust: no use/crates/std; its own stdlib (strings, arrays, maps, math, loops) is built in; import/eval are disabled. Only the functions below exist; anything else throws.
 
-Every binding call passes the same checks as the equivalent direct tool call (permission mode, approval, escape-root gate for a path outside the project root, hooks); a refusal throws, catchable with try/catch.
+Every binding call passes the same checks as the equivalent direct tool call (permission mode, approval, escape-root gate for a path outside the project root); a refusal throws, catchable with try/catch.
 
 Host bindings:
   read(path) / read(path, offset, limit) -> "{lineno}: {line}" text, NOT parseable as JSON/YAML

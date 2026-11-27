@@ -115,6 +115,20 @@ fn no_hooks_show_as_none() {
     assert!(stdout.contains("(none)"), "got: {stdout}");
 }
 
+/// #964: `skutter` parses `hooks:` itself, as loudly as the library parses
+/// the rest of the file.
+#[test]
+fn a_typod_hook_point_is_a_loud_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let user_file = dir.path().join("user.yml");
+    std::fs::write(&user_file, "hooks:\n  pre_tool_yoos: [{command: x}]\n").unwrap();
+    let out = inspect_config(dir.path(), &user_file);
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("pre_tool_yoos"), "got: {stderr}");
+    assert!(!stderr.contains("panicked"), "got: {stderr}");
+}
+
 #[test]
 fn malformed_config_exits_cleanly() {
     let dir = tempfile::tempdir().unwrap();

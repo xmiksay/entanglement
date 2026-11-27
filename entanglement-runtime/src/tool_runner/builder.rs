@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{Agent, AgentCatalog, Holly, Permission, PermissionProfile, SessionId};
 
-use crate::hooks::Hooks;
 use crate::jobs::JobRegistry;
 use crate::mcp::McpScopes;
 use crate::mode::ModeTable;
@@ -50,7 +49,6 @@ impl ToolExecutor {
             perm_modes: Arc::new(Mutex::new(HashMap::new())),
             resolver: None,
             grants: None,
-            hooks: Hooks::default(),
             escape_root: None,
             mode_table: None,
             plan_files: Arc::new(PlanFileRegistry::new()),
@@ -84,7 +82,6 @@ pub struct ToolExecutorBuilder {
     pub(super) perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
     pub(super) resolver: Option<Arc<dyn PermissionResolver>>,
     pub(super) grants: Option<Arc<dyn GrantStore>>,
-    pub(super) hooks: Hooks,
     pub(super) escape_root: Option<EscapeRoot>,
     pub(super) mode_table: Option<Arc<ModeTable>>,
     pub(super) plan_files: Arc<PlanFileRegistry>,
@@ -209,12 +206,6 @@ impl ToolExecutorBuilder {
     /// grants passes `Arc::new(DefaultGrantStore::load())` explicitly.
     pub fn grants(mut self, grants: Arc<dyn GrantStore>) -> Self {
         self.grants = Some(grants);
-        self
-    }
-
-    /// Lifecycle hooks (#199, ADR-0066). Default: none.
-    pub fn hooks(mut self, hooks: Hooks) -> Self {
-        self.hooks = hooks;
         self
     }
 
@@ -349,7 +340,6 @@ mod tests {
         assert!(b.escape_root.is_none());
         assert!(b.mcp_scopes.is_none());
         assert!(b.catalog.is_none());
-        assert!(b.hooks.is_empty());
         assert!(b.active.lock().unwrap().is_empty());
         assert!(b.perm_modes.lock().unwrap().is_empty());
     }

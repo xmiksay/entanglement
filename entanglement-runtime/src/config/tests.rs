@@ -362,57 +362,16 @@ fn malformed_user_file_is_a_loud_error() {
 }
 
 #[test]
-fn hooks_default_to_empty() {
-    // No `hooks:` section ⇒ every lifecycle list is empty (a no-op).
-    assert!(defaults().hooks.is_empty());
+fn hooks_default_to_an_empty_section() {
+    assert!(defaults().hooks.as_mapping().is_some_and(|m| m.is_empty()));
 }
 
+/// #964: the library runs no hooks, so the section rides through unparsed —
+/// even a typo'd point is the head's to reject.
 #[test]
-fn hooks_parse_from_user_file() {
-    let c = merge_user(
-        "hooks:\n  \
-         pre_tool_use:\n    \
-         - command: \"echo hi\"\n      \
-         tools: [bash, edit]\n  \
-         user_prompt_submit:\n    \
-         - command: \"logger\"\n",
-    );
-    assert_eq!(c.hooks.pre_tool_use.len(), 1);
-    assert_eq!(c.hooks.pre_tool_use[0].command, "echo hi");
-    assert_eq!(c.hooks.pre_tool_use[0].tools, vec!["bash", "edit"]);
-    assert!(c.hooks.post_tool_use.is_empty());
-    assert_eq!(c.hooks.user_prompt_submit.len(), 1);
-    assert!(!c.hooks.is_empty());
-}
-
-#[test]
-fn lifecycle_hook_points_parse_from_user_file() {
-    // #734: the six observe-only points share the tool hooks' entry shape.
-    let c = merge_user(
-        "hooks:\n  \
-         session_start: [{command: a}]\n  \
-         session_end: [{command: b}]\n  \
-         stop: [{command: c, timeout_secs: 5}]\n  \
-         pre_compact: [{command: d}]\n  \
-         subagent_stop: [{command: e}]\n  \
-         notification: [{command: notify-send}]\n",
-    );
-    assert_eq!(c.hooks.session_start[0].command, "a");
-    assert_eq!(c.hooks.session_end[0].command, "b");
-    assert_eq!(c.hooks.stop[0].timeout_secs, 5);
-    assert_eq!(c.hooks.pre_compact[0].command, "d");
-    assert_eq!(c.hooks.subagent_stop[0].command, "e");
-    assert_eq!(c.hooks.notification[0].command, "notify-send");
-    assert!(c.hooks.has_lifecycle());
-}
-
-#[test]
-fn unknown_hook_event_is_a_loud_error() {
-    // `deny_unknown_fields` on `Hooks` rejects a typo'd lifecycle name.
-    let base: Value = serde_yaml::from_str(DEFAULTS_YML).unwrap();
-    let over: Value = serde_yaml::from_str("hooks:\n  pre_tool_yoos:\n    - command: x\n").unwrap();
-    let merged = merge_value(base, over);
-    assert!(serde_yaml::from_value::<RawConfig>(merged).is_err());
+fn hooks_pass_through_unparsed() {
+    let c = merge_user("hooks:\n  pre_tool_yoos:\n    - command: x\n");
+    assert_eq!(c.hooks["pre_tool_yoos"][0]["command"], "x");
 }
 
 /// ADR-0227: `http_auth:` is honored from the user layer only — a repo

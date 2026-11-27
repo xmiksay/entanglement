@@ -1,7 +1,7 @@
 //! A session whose model makes a scripted series of tool calls (`rhai`, or
 //! any host tool via [`run_calls`]), wired the
 //! way `engine_setup` wires the executor (real grants, mode resolver,
-//! optional escape-root policy, hooks, ceiling, workdir,
+//! optional escape-root policy, ceiling, workdir,
 //! `rhai.trusted`, credentialed `http()`) — the shared harness of the ADR-0228 launch tests.
 
 use std::collections::HashMap;
@@ -14,7 +14,6 @@ use entanglement_core::{
     PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
-use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::{host_tools_with, HostToolOptions};
 use entanglement_runtime::http_gate::HttpGate;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
@@ -75,7 +74,6 @@ pub struct Setup {
     pub launch: Launch,
     /// Wire the escape-root policy (as `main.rs` does).
     pub escape_root: bool,
-    pub hooks: Hooks,
     /// The session's workdir, relative to the root.
     pub workdir: Option<&'static str>,
     /// `rhai.trusted` folders, canonical.
@@ -101,7 +99,6 @@ impl Setup {
             table,
             launch,
             escape_root: true,
-            hooks: Hooks::default(),
             workdir: None,
             trusted: TrustedFolders::default(),
             gate: Arc::default(),
@@ -218,7 +215,6 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         .perm_modes(modes)
         .resolver(resolver)
         .grants(grants)
-        .hooks(setup.hooks)
         .workdirs(workdirs)
         .http_gate(setup.gate)
         .rhai_trusted(setup.trusted)

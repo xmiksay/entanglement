@@ -1,8 +1,7 @@
 //! The run-against-the-registry step (issue #451): reached by a straight
 //! `Allow`, an approval, and the `Control` bypass alike, so every path runs
 //! a call identically — state tools, pre-dispatch argument validation,
-//! `FileChange` capture, the loop-breaker, `load_skill` posture, the
-//! `post_tool_use` hook. A script's call additionally runs under the
+//! `FileChange` capture, the loop-breaker, `load_skill` posture. A script's call additionally runs under the
 //! script's remaining budget (ADR-0227).
 
 use std::collections::HashSet;
@@ -42,11 +41,7 @@ impl Dispatcher {
                 crate::plan_tasks::state_event(session, seq, &tool, &input)
                     .expect("is_state_tool ⇒ state_event is Some")
             });
-            let ack = crate::plan_tasks::ack(&tool);
-            self.hooks
-                .run_post_tool_use(session, &tool, &input, &ack, false, None)
-                .await;
-            return Outcome::text(ack.to_string(), false);
+            return Outcome::text(crate::plan_tasks::ack(&tool).to_string(), false);
         }
         // Pre-dispatch argument validation (#560, ADR-0196 §6): a schema
         // violation never reaches `Tool::run`.
@@ -80,9 +75,6 @@ impl Dispatcher {
                     output.push_str("\n\n");
                     output.push_str(arg_validate::LOOP_BREAKER_NOTE);
                 }
-                self.hooks
-                    .run_post_tool_use(session, &tool, &input, &output, true, None)
-                    .await;
                 return Outcome::text(output, true);
             }
         }
@@ -147,9 +139,6 @@ impl Dispatcher {
         if tool == LOAD_SKILL_TOOL {
             activate_skill(&self.holly, &self.active_skill, session, &output_text);
         }
-        self.hooks
-            .run_post_tool_use(session, &tool, &input, &output_text, is_error, exit_code)
-            .await;
         Outcome::Ran {
             content,
             is_error,

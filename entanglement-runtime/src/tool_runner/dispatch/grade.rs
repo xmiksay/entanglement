@@ -44,8 +44,8 @@ pub(crate) struct GradeInputs<'a> {
 /// `write`/`edit`/`apply_patch` of a `*.rhai` file inside a `rhai.trusted`
 /// folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored at `Ask`
 /// whatever allowed it (ADR-0228: such a file later runs or loads unasked,
-/// so authoring one is never unseen); a `Deny` stays `Deny`. Hooks and the
-/// escape-root gate stay with the caller.
+/// so authoring one is never unseen); a `Deny` stays `Deny`. The
+/// escape-root gate stays with the caller.
 pub(crate) async fn grade_call(
     g: &GradeInputs<'_>,
     tool: &str,

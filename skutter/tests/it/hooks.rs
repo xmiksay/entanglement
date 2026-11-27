@@ -1,13 +1,14 @@
 //! Integration test: lifecycle hooks (#199, ADR-0066) wired through the real
-//! engine. A scripted LLM asks for a `read`; the runtime's
-//! `ToolExecutor::builder`'s `.hooks(..)` seam runs the configured `pre_tool_use` /
-//! `post_tool_use` / `user_prompt_submit` commands around the dispatch.
+//! engine the way `skutter` wires them (#964): `pre_tool_use` as a
+//! [`HookResolver`] around the executor's resolver, the other points from
+//! [`skutter::hooks::spawn`]'s watcher. A scripted LLM asks for a `read`.
 //!
-//! - a non-zero `pre_tool_use` hook must **block** the tool (its output becomes
-//!   the tool result and the file is never read);
+//! - a non-zero `pre_tool_use` hook must **deny** the tool (the file is
+//!   never read) — a script's nested call included;
 //! - a `post_tool_use` hook runs as a side-effect after a cleared tool;
 //! - a `user_prompt_submit` hook fires off the inbound `Prompt`.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,9 +18,12 @@ use entanglement_core::{
     OutEvent, SessionId, ToolCall,
 };
 use entanglement_runtime::agents::built_in_registry;
-use entanglement_runtime::hooks::{HookSpec, Hooks};
 use entanglement_runtime::host::host_tools;
+use entanglement_runtime::mode::ModeTable;
+use entanglement_runtime::policy::{ModeResolver, PermissionResolver};
 use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::hooks::{HookResolver, HookSpec, Hooks};
+use tokio::task::JoinHandle;
 
 /// Replays scripted responses, then a plain text reply so the turn loop ends.
 struct ScriptedLlm {
@@ -170,11 +174,7 @@ async fn pre_tool_use_hook_blocks_the_tool() {
         pre_tool_use: vec![spec("echo policy-veto >&2; exit 1")],
         ..Default::default()
     };
-    let _exec = ToolExecutor::builder(&holly, tools.shared())
-        .agents(built_in_registry().expect("built-in agents must parse"))
-        .base(allow_all())
-        .hooks(hooks)
-        .spawn();
+    let _exec = wire(&holly, tools, hooks);
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -185,14 +185,9 @@ async fn pre_tool_use_hook_blocks_the_tool() {
     let events = collect(sub, &sid).await;
 
     let output = tool_output(&events).expect("a ToolOutput");
-    assert!(
-        output.contains("blocked by pre_tool_use hook"),
-        "got: {output}"
-    );
-    assert!(
-        output.contains("policy-veto"),
-        "reason should carry hook output: {output}"
-    );
+    // The grade carries no reason (#964): the model sees the plain deny,
+    // the hook's own output is logged.
+    assert!(output.contains("tool `read` denied"), "got: {output}");
     // The blocked tool never read the file.
     assert!(
         !output.contains("greetings"),
@@ -210,11 +205,7 @@ async fn pre_tool_use_hook_exit_zero_lets_the_tool_run() {
         pre_tool_use: vec![spec("exit 0")],
         ..Default::default()
     };
-    let _exec = ToolExecutor::builder(&holly, tools.shared())
-        .agents(built_in_registry().expect("built-in agents must parse"))
-        .base(allow_all())
-        .hooks(hooks)
-        .spawn();
+    let _exec = wire(&holly, tools, hooks);
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -242,11 +233,7 @@ async fn post_tool_use_hook_runs_after_a_cleared_tool() {
         post_tool_use: vec![spec(&format!("touch {}", marker.display()))],
         ..Default::default()
     };
-    let _exec = ToolExecutor::builder(&holly, tools.shared())
-        .agents(built_in_registry().expect("built-in agents must parse"))
-        .base(allow_all())
-        .hooks(hooks)
-        .spawn();
+    let _exec = wire(&holly, tools, hooks);
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -286,11 +273,7 @@ async fn user_prompt_submit_hook_fires_on_prompt() {
         user_prompt_submit: vec![spec(&format!("cat > {}", out.display()))],
         ..Default::default()
     };
-    let _exec = ToolExecutor::builder(&holly, tools.shared())
-        .agents(built_in_registry().expect("built-in agents must parse"))
-        .base(allow_all())
-        .hooks(hooks)
-        .spawn();
+    let _exec = wire(&holly, tools, hooks);
 
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
@@ -303,6 +286,87 @@ async fn user_prompt_submit_hook_fires_on_prompt() {
     let v = read_json_when_ready(&out, 3).await;
     assert_eq!(v["event"], "user_prompt_submit");
     assert_eq!(v["prompt"], "please help");
+}
+
+/// The veto is a grade, so it reaches a script's nested call like any deny:
+/// the binding throws and the write never happens.
+#[tokio::test]
+async fn pre_tool_use_hook_vetoes_a_scripts_nested_call() {
+    let s = scratch("pre-nested");
+    let root = s.0.clone();
+    let script = r#"let r = "ran"; try { write("no.txt", "x"); } catch (e) { r = e; } r"#;
+    let (holly, tools) = engine(
+        &root,
+        Arc::new(vec![LlmResponse {
+            tool_calls: vec![ToolCall {
+                id: "s1".into(),
+                name: "rhai".into(),
+                input: serde_json::json!({ "script": script }).to_string(),
+                provider_meta: None,
+            }],
+            ..Default::default()
+        }]),
+    );
+    let hooks = Hooks {
+        pre_tool_use: vec![HookSpec {
+            tools: vec!["write".into()],
+            ..spec("exit 1")
+        }],
+        ..Default::default()
+    };
+    let _exec = wire(&holly, tools, hooks);
+
+    let sid = SessionId::new("s1");
+    let mut sub = holly.subscribe();
+    // `auto` runs an inline script with no launch card (`build` asks).
+    holly
+        .send(InMsg::SetMode {
+            session: sid.clone(),
+            mode: "auto".into(),
+        })
+        .await
+        .unwrap();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
+            Ok(Ok(OutEvent::ModeChanged { mode, .. })) if mode == "auto" => break,
+            Ok(Ok(_)) => {}
+            other => panic!("no mode confirmation: {other:?}"),
+        }
+    }
+    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
+    let events = collect(sub, &sid).await;
+
+    let output = tool_output(&events).expect("a ToolOutput");
+    assert!(output.contains("tool `write` denied"), "got: {output}");
+    assert!(!root.join("no.txt").exists(), "the vetoed write ran");
+}
+
+/// The executor plus `skutter`'s two hook seams, as `services.rs` wires them.
+fn wire(
+    holly: &Holly,
+    tools: entanglement_runtime::ToolRegistry,
+    hooks: Hooks,
+) -> (JoinHandle<()>, Option<JoinHandle<()>>) {
+    let hooks = Arc::new(hooks);
+    let tools = tools.shared();
+    let modes = Arc::new(Mutex::new(HashMap::new()));
+    let table = Arc::new(ModeTable::builtin().expect("built-in modes parse"));
+    let inner: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        modes.clone(),
+        table.clone(),
+        tools.clone(),
+        allow_all(),
+        None,
+    ));
+    let watcher = skutter::hooks::spawn(holly, hooks.clone());
+    let exec = ToolExecutor::builder(holly, tools)
+        .agents(built_in_registry().expect("built-in agents must parse"))
+        .base(allow_all())
+        .perm_modes(modes)
+        .mode_table(table)
+        .resolver(Arc::new(HookResolver::new(inner, hooks)))
+        .spawn();
+    (exec, watcher)
 }
 
 fn allow_all() -> entanglement_core::PermissionProfile {

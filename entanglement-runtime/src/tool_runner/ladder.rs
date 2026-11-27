@@ -28,7 +28,6 @@ use entanglement_core::{AgentCatalog, Catalog, Holly, SessionId, ToolEnvelope};
 
 use crate::agent_registry::AgentRegistry;
 use crate::cancel::CancelRegistry;
-use crate::hooks::Hooks;
 use crate::mcp::{ActiveServers, AvailableMcp};
 use crate::mode::ModeTable;
 use crate::plan_files::PlanFileRegistry;
@@ -163,7 +162,6 @@ pub(super) struct LadderCtx {
     pub grants: Arc<dyn GrantStore>,
     pub mcp_http: Option<entanglement_core::HttpClient>,
     pub active_skill: Arc<Mutex<std::collections::HashSet<SessionId>>>,
-    pub hooks: Arc<Hooks>,
     pub validation: Arc<crate::arg_validate::LoopBreaker>,
     pub denials: Arc<crate::run_limits::DenialTracker>,
     pub attendance: crate::attendance::Attendance,

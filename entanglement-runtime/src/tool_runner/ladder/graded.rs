@@ -56,7 +56,6 @@ pub(super) fn dispatcher(
         resolver: ctx.resolver.clone(),
         chain,
         grants: ctx.grants.clone(),
-        hooks: ctx.hooks.clone(),
         pending: ctx.pending.clone(),
         escape_root: ctx.escape_root.clone(),
         advertising: ctx.advertising.clone(),

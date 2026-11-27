@@ -1,7 +1,7 @@
 //! `rhai`'s own launch (ADR-0228), graded like any other tool call — the
 //! mode's rules (a `path` script graded on its canonical root-relative path,
 //! so `rhai(scripts/deploy/*)` matches; an inline one only by a bare `rhai`
-//! rule), the ceiling, grants and the `pre_tool_use` veto:
+//! rule), the ceiling and grants:
 //!
 //! - **Deny** refuses it, a trusted path included;
 //! - a `path` inside a `rhai.trusted` folder (not suppressed for this mode)
@@ -54,8 +54,8 @@ pub(super) enum Verdict {
     Stopped,
 }
 
-/// Gate one launch. `input` is the raw call input — the hooks, the grade
-/// and the escape-root target read it, exactly as for `read`.
+/// Gate one launch. `input` is the raw call input — the grade and the
+/// escape-root target read it, exactly as for `read`.
 pub(super) async fn gate(
     dispatcher: &Dispatcher,
     launch: &Launch,
@@ -67,9 +67,6 @@ pub(super) async fn gate(
     let root = launch_root(d, launch);
     let graded = graded_input(root, input);
     let (perm, arg) = d.grade(&d.tools, RHAI_TOOL, &graded).await;
-    if let Some(reason) = d.hooks.run_pre_tool_use(&d.session, RHAI_TOOL, input).await {
-        return Verdict::Refuse(reason);
-    }
     if perm == Permission::Deny {
         return Verdict::Refuse(format!(
             "tool `{RHAI_TOOL}` denied by mode `{}` — use /mode to switch",

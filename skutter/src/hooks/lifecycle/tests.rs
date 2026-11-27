@@ -214,7 +214,7 @@ fn approval_and_question_park_fire_notification() {
 }
 
 #[test]
-fn has_lifecycle_tracks_only_the_observer_points() {
+fn has_observers_ignores_only_pre_tool_use() {
     let none = Hooks {
         pre_tool_use: vec![super::super::HookSpec {
             command: "true".into(),
@@ -223,13 +223,21 @@ fn has_lifecycle_tracks_only_the_observer_points() {
         }],
         ..Default::default()
     };
-    assert!(!none.has_lifecycle());
+    assert!(!none.has_observers());
     let some = Hooks {
         notification: none.pre_tool_use.clone(),
         ..Default::default()
     };
-    assert!(some.has_lifecycle());
+    assert!(some.has_observers());
     assert!(!some.is_empty());
+    let post = Hooks {
+        post_tool_use: none.pre_tool_use.clone(),
+        ..Default::default()
+    };
+    assert!(
+        post.has_observers(),
+        "post_tool_use rides the watcher (#964)"
+    );
 }
 
 /// A hung observer is killed at its timeout and does not stop later hooks:

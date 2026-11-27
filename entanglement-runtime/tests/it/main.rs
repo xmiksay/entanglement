@@ -64,8 +64,6 @@ mod aux_models;
 mod compact_fork;
 mod discovery_tools;
 mod executor_builder;
-mod hook_events;
-mod hooks;
 mod host_tools;
 mod list_operations;
 mod list_pending;

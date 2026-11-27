@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use entanglement_core::{Agent, AgentCatalog, Holly, PermissionProfile, SessionId};
 
-use crate::hooks::Hooks;
 use crate::plan_files::PlanFileRegistry;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::skills::SkillRegistry;
@@ -32,22 +31,6 @@ pub fn spawn_tool_executor(
         .spawn()
 }
 
-/// Equivalent to [`spawn_tool_executor`] plus `.hooks(hooks)`.
-#[deprecated(since = "0.7.0", note = "use ToolExecutor::builder")]
-pub fn spawn_tool_executor_with_hooks(
-    holly: &Holly,
-    tools: ToolRegistry,
-    agents: AgentCatalog,
-    base: PermissionProfile,
-    hooks: Hooks,
-) -> tokio::task::JoinHandle<()> {
-    ToolExecutor::builder(holly, tools.shared())
-        .agents(agents)
-        .base(base)
-        .hooks(hooks)
-        .spawn()
-}
-
 /// Every seam spelled positionally; each argument maps 1:1 onto the
 /// [`ToolExecutor::builder`] setter of the same name (`agents` →
 /// `live_agents`, `skills` → `live_skills`, an `Option` → setter only when
@@ -67,7 +50,6 @@ pub fn spawn_tool_executor_with_policy(
     perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
     resolver: Arc<dyn PermissionResolver>,
     grants: Arc<dyn GrantStore>,
-    hooks: Hooks,
     escape_root: Option<EscapeRoot>,
     mode_table: Arc<crate::mode::ModeTable>,
     plan_files: Arc<PlanFileRegistry>,
@@ -86,7 +68,6 @@ pub fn spawn_tool_executor_with_policy(
         .perm_modes(perm_modes)
         .resolver(resolver)
         .grants(grants)
-        .hooks(hooks)
         .mode_table(mode_table)
         .plan_files(plan_files)
         .discovery(discovery.unwrap_or_default());

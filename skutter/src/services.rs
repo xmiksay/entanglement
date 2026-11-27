@@ -11,7 +11,8 @@ use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 use tokio::task::JoinHandle;
 
 use crate::boot::Engine;
-use crate::policy::DefaultGrantStore;
+use crate::hooks::{HookResolver, Hooks};
+use crate::policy::{DefaultGrantStore, ModeResolver, PermissionResolver};
 use crate::tool_runner::DiscoverySurface;
 use crate::{
     capability, config, history, logging, mcp, mode, persistence, plan_files, plan_watch, throttle,
@@ -41,6 +42,7 @@ pub(crate) struct Head {
 /// The background tasks [`Services::shutdown`] tears down.
 pub(crate) struct Services {
     tool_executor: JoinHandle<()>,
+    hooks: Option<JoinHandle<()>>,
     mcp_responder: JoinHandle<()>,
     throttle: JoinHandle<()>,
     session_title: JoinHandle<()>,
@@ -92,8 +94,7 @@ pub(crate) fn start(
     // Runtime owns tool execution (#58) and permission dispatch + approval (#59):
     // answer the engine's ToolExec round-trip, gating each call on
     // `live_profiles`. The user config's `permissions` section is the global
-    // ceiling clamped over every resolved grade (#172), and its `hooks` section
-    // wires the lifecycle hooks (#199) around tool dispatch and prompt ingress.
+    // ceiling clamped over every resolved grade (#172).
     // Per-session permission mode (ADR-0207 stage 4), folded from
     // `OutEvent::ModeChanged` the same way `active` folds `AgentChanged` —
     // `ModeResolver` grades every call from this map, not from `active`.
@@ -132,9 +133,24 @@ pub(crate) fn start(
     // Cloned before `escape_root` moves into the executor below — reused for
     // the plans watcher's own root (#627).
     let plan_root = escape_root.root.clone();
-    // The resolver is the builder's default `ModeResolver` over exactly
+    // The `hooks:` section (#199) is skutter's own: the library runs no hooks
+    // (#964). `pre_tool_use` wraps the resolver — `ModeResolver` over exactly
     // these `perm_modes`/`mode_table`/`tools`/ceiling, with root-relative arg
-    // normalization off `escape_root` (#485, ADR-0125).
+    // normalization off `escape_root` (#485, ADR-0125) — and every other point
+    // is a watcher on the event stream, subscribed here before any prompt.
+    let hooks = Arc::new(Hooks::parse(&user_config.hooks)?);
+    let mode_resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
+        perm_modes.clone(),
+        mode_table.clone(),
+        tools.clone(),
+        user_config.permissions.clone(),
+        Some(escape_root.root.clone()),
+    ));
+    let resolver: Arc<dyn PermissionResolver> = match hooks.pre_tool_use.is_empty() {
+        true => mode_resolver,
+        false => Arc::new(HookResolver::new(mode_resolver, hooks.clone())),
+    };
+    let hooks_handle = crate::hooks::spawn(&holly, hooks);
     // The credentialed-`http()` gate (ADR-0227): `http_auth:` is user-layer
     // only (the config loader drops a project layer's); the builder registers
     // the script-only `http` tool over this same gate, after the advertised
@@ -163,7 +179,7 @@ pub(crate) fn start(
         .base(user_config.permissions.clone())
         .perm_modes(perm_modes)
         .grants(grants.clone())
-        .hooks(user_config.hooks.clone())
+        .resolver(resolver)
         // Escape-root approval (ADR-0109): the same store the host tools read.
         .escape_root(escape_root)
         // `mode_table` carries the `config.yml` `modes:` tuning; sandboxing
@@ -288,6 +304,7 @@ pub(crate) fn start(
     };
     let services = Services {
         tool_executor,
+        hooks: hooks_handle,
         mcp_responder: mcp_responder_handle,
         throttle: throttle_handle,
         session_title: session_title_handle,
@@ -311,6 +328,9 @@ impl Services {
     /// guard, #545) stops too.
     pub(crate) async fn shutdown(self, holly: &Holly) {
         self.tool_executor.abort();
+        if let Some(h) = self.hooks {
+            h.abort();
+        }
         self.mcp_responder.abort();
         self.throttle.abort();
         self.session_title.abort();

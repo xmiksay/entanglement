@@ -271,21 +271,6 @@ async fn the_headless_head_runs_ask_per_command_and_refuses_nested_asks() {
     assert!(!root.join("a.txt").exists());
 }
 
-#[tokio::test]
-async fn a_pre_tool_use_hook_vetoes_the_launch() {
-    let (_tmp, root, mut setup) = trusted_fixture();
-    setup.hooks = serde_yaml::from_str(
-        "pre_tool_use:\n  - command: \"echo no scripts today >&2; exit 1\"\n    tools: [rhai]\n",
-    )
-    .unwrap();
-    let seen = run(&root, &[ADD], setup).await;
-    assert!(
-        seen.outputs[0].contains("no scripts today"),
-        "{:?}",
-        seen.outputs
-    );
-}
-
 /// Without Rhai's `metadata` feature a `///` or `/** */` that is not
 /// followed by `fn` is an ordinary comment — in an inline script and a file.
 #[tokio::test]

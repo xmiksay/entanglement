@@ -9,7 +9,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::{HookEvent, HookSpec};
-use crate::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
+use entanglement_runtime::exec::{own_process_group, wait_or_kill_group, ExecOutcome};
 
 /// The result of running one hook command.
 pub(super) struct Outcome {
@@ -94,7 +94,7 @@ pub(super) async fn invoke(
     if let Some(t) = tool {
         cmd.env("ENTANGLEMENT_TOOL_NAME", t);
     }
-    crate::secret_env::scrub(&mut cmd);
+    entanglement_runtime::secret_env::scrub(&mut cmd);
     own_process_group(&mut cmd);
 
     let mut child = match cmd.spawn() {

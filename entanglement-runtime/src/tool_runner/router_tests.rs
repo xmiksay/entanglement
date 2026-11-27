@@ -17,7 +17,6 @@ use crate::seam::Decision;
 pub(super) fn router(holly: &Holly) -> Router {
     Router {
         cancels: Default::default(),
-        hooks: Default::default(),
         pending: Default::default(),
         open_questions: Default::default(),
         jobs: Default::default(),

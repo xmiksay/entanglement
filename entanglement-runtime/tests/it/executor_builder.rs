@@ -2,7 +2,7 @@
 //! behaves exactly like the deprecated 4-arg `spawn_tool_executor` it
 //! replaces, and a `.grants(..)` seam is actually wired through to the
 //! dispatch path. The other seams have their own suites over the builder:
-//! `.hooks` in `hooks.rs`, `.resolver`/custom `.grants` in `policy_seam.rs`,
+//! `.resolver`/custom `.grants` in `policy_seam.rs`,
 //! `.escape_root` in `permission_dispatch.rs`, `.mcp_scopes` in `mcp_scoped.rs`.
 
 use std::borrow::Cow;

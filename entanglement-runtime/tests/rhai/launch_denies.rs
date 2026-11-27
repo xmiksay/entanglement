@@ -1,7 +1,6 @@
 //! ADR-0228's explicit denies: a mode deny of `rhai` itself refuses even a
 //! trusted path (before the file is touched), and inside a trusted or
-//! **Run all** script a `pre_tool_use` veto and a ceiling deny of a nested
-//! tool are each a catchable error. Plus the never-hang
+//! **Run all** script a ceiling deny of a nested tool is a catchable error. Plus the never-hang
 //! posture of a script `path` naming a FIFO.
 
 use std::path::Path;
@@ -71,20 +70,6 @@ async fn a_mode_deny_of_rhai_refuses_even_a_trusted_path() {
 }
 
 #[tokio::test]
-async fn a_nested_pre_tool_use_veto_wins_under_trust_and_run_all() {
-    assert_nested_write_refused(
-        |s| {
-            s.hooks = serde_yaml::from_str(
-                "pre_tool_use:\n  - command: \"echo no writes >&2; exit 1\"\n    tools: [write]\n",
-            )
-            .unwrap()
-        },
-        "no writes",
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn a_ceiling_deny_of_a_nested_tool_wins_under_trust_and_run_all() {
     assert_nested_write_refused(
         // Arg-scoped: a bare `write` ceiling rule also clamps the inline
@@ -96,21 +81,6 @@ async fn a_ceiling_deny_of_a_nested_tool_wins_under_trust_and_run_all() {
         "denied by mode",
     )
     .await;
-}
-
-/// The checks that need only the input run first: a hook can still create
-/// the very file the launch then reads.
-#[tokio::test]
-async fn the_file_is_read_only_after_the_pre_tool_use_hook() {
-    let (_tmp, root) = fixture();
-    let mut setup = trusted(&root, Launch::Reject);
-    setup.hooks = serde_yaml::from_str(&format!(
-        "pre_tool_use:\n  - command: \"printf 41+1 > {}\"\n    tools: [rhai]\n",
-        root.join("scripts/late.rhai").display()
-    ))
-    .unwrap();
-    let seen = run(&root, &[r#"{"path":"scripts/late.rhai"}"#], setup).await;
-    assert!(seen.outputs[0].contains("42"), "{:?}", seen.outputs);
 }
 
 fn mkfifo(path: &Path) {
