@@ -144,7 +144,7 @@ namespaced form; `disabled_decline` renders the one truthful-decline string.
   `mcp::available::try_lazy_connect`: `Available` connects
   (`ensure_connected`, same timeout and per-server guard), re-snapshots the
   live registry and **continues the same function** — grading,
-  escape-root, hooks, approval all still run unchanged, since a
+  escape-root, approval all still run unchanged, since a
   connect restores registration only, never permission. A connected server
   without the named tool answers "has no tool named … — `mcp_tools` lists its
   tools". `Disabled` → `disabled_decline`. `Unknown` → the Levenshtein-hinted

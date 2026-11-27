@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: crate split (#931)
+# Migration notes — 0.7 → 0.8: crate split (#931, #964)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md).
 
@@ -40,3 +40,35 @@ names anything below. What changes:
   crates.io), or keeps its own copy. Drop `cli`/`tui`/`serve` from any
   `entanglement-runtime` feature list; drop the `commands` argument from
   `LiveDefinitions::new`.
+
+## Hook execution out of the library executor (#964)
+
+The library runs no hooks. Lifecycle hooks moved to `skutter`, which runs
+them from the seams any embedder has: a blocking `pre_tool_use` is a
+`PermissionResolver` wrapper (`skutter::hooks::HookResolver`), every other
+point a subscriber on the `InMsg`/`OutEvent` fan-out
+(`skutter::hooks::spawn`). No new trait replaces them. Site passes
+`Hooks::default()` to `spawn_tool_executor_with_policy` and nexial names no
+hook item. What changes:
+
+- **Removed API:** the `entanglement_runtime::hooks` module (`Hooks`,
+  `HookSpec`, `HookEvent`); `ToolExecutorBuilder::hooks`;
+  `tool_runner::spawn_tool_executor_with_hooks`; the `hooks` argument of
+  `tool_runner::spawn_tool_executor_with_policy`.
+- **Changed API:** `config::Config::hooks` is the `hooks:` section as raw
+  `serde_yaml::Value` (`Null` when absent), no longer a parsed `Hooks`: the
+  library no longer validates it, so a typo in it is no longer a config
+  load error in the library.
+- **Changed behaviour (`skutter`):** a `pre_tool_use` veto grades the call
+  `Deny` — the model sees the plain `denied by mode` text, the hook's own
+  output is logged instead of returned; the hooks run wherever the resolver
+  is asked (once per session in a sub-agent call's ancestor chain,
+  `propose_plan` and an in-call redirect hop included). `post_tool_use`
+  fires on the `ToolOutput` of every call the runtime was asked to run
+  (`ToolExec`) — a refused one included, a script's nested calls not — and
+  runs after the result folded back instead of before. `user_prompt_submit`
+  runs on the first event a prompt causes.
+- **Instead:** drop `Hooks::default()` from `spawn_tool_executor_with_policy`
+  calls and any `.hooks(..)` builder call. An embedder that wants a veto
+  wraps its resolver the way `HookResolver` does; one that wants to observe
+  calls subscribes to `ToolExec`/`ToolOutput` itself.

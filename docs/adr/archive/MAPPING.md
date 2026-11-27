@@ -97,7 +97,7 @@ the code, never as a description of current behaviour — that is
 | [0063](0063-realtime-model-provider-switch.md) | Realtime model/provider switch without engine restart | current; amended by 0207 | — |
 | [0064](0064-message-content-blocks.md) | `Message`/`Prompt` carry multimodal content blocks | current | — |
 | [0065](0065-read-emits-image-content-blocks.md) | `read` emits image files as image content blocks | current | — |
-| [0066](0066-lifecycle-hooks-as-runtime-interceptors.md) | Lifecycle hooks are runtime interceptors around tool dispatch and prompt ingress | current | — |
+| [0066](0066-lifecycle-hooks-as-runtime-interceptors.md) | Lifecycle hooks are runtime interceptors around tool dispatch and prompt ingress | current; changed by #964 | — |
 | [0067](0067-mcp-client-as-runtime-tool-provider.md) | MCP client is a runtime-side tool provider | current; amended by 0193 | — |
 | [0068](0068-shared-per-session-seq-counter.md) | Shared per-session `seq` counter: runtime mints fresh seqs via `Holly::emit_for_session` | current; amended by 0239, 0244 | — |
 | [0069](0069-trusted-untrusted-wire-frame-split.md) | Trusted/untrusted wire-frame split: privileged in-process `ToolResult`/`Spawn` | current; amended by 0124 | — |

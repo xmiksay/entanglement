@@ -152,7 +152,7 @@ matches only a bare `rhai` rule. Then:
 
 | grade / script | launch | nested calls |
 | --- | --- | --- |
-| Deny (mode, ceiling, hook veto) | refused, a catchable error — a trusted path too | — |
+| Deny (mode, ceiling, a resolver veto such as `skutter`'s `pre_tool_use` hook) | refused, a catchable error — a trusted path too | — |
 | `path` inside a trusted folder (`TrustedFolders::runs_trusted`) | no card | force-allowed (`Posture::Trusted`) |
 | Allow (mode rule, grant) | no card | graded like direct calls (`Posture::AskPerCommand`) |
 | Ask | one card: **Run all** · **Ask per command** · **Reject** (`InMsg::Approve.run_all`) + scope | Run all → force-allowed (`Posture::RunAll`); Ask per command → graded like direct calls |
@@ -173,8 +173,8 @@ only `script_launch`/`inline_launch` start, so an out-of-root launch
 (`launch_escape`) is refused.
 
 *Force-allowed* is a branch of the shared seam (`Dispatcher::clear` with a
-`run_all` script): the hook veto and a mode/ceiling
-`Deny` still refuse (a catchable exception), and every later gate passes — a
+`run_all` script): a mode/ceiling/resolver
+`Deny` still refuses (a catchable exception), and every later gate passes — a
 graded `Ask`, the escape-root gate (a single-use token the host tool
 spends), the credentialed-`http` per-host approval — except a **floored
 write** under Run all, which gets its own nested card (below).

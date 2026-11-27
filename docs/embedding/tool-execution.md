@@ -32,7 +32,6 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `grants(Arc<dyn GrantStore>)` | **in-memory only** — `Always` grants never touch `grants.yml` (#747/#775) |
 | `mode_table(Arc<ModeTable>)` | `ModeTable::builtin()` |
 | `perm_modes(..)` / `active(..)` | private maps. **A custom `.resolver(..)` (or sandbox resolver) that reads a mode map must get the same `Arc` via `.perm_modes(..)`** — otherwise the executor folds `ModeChanged` into its private map and your resolver silently grades from a map that never changes |
-| `hooks(Hooks)` | no hooks |
 | `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
 | `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your `BashTool`/plans watcher if you wire those) |
 | `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
@@ -113,7 +112,6 @@ over: the fork's id is minted in its source's lineage.
 **Migrating from the positional constructors** (deprecated in 0.7, removed
 after): `spawn_tool_executor(h, t, a, b)` →
 `ToolExecutor::builder(h, t.shared()).agents(a).base(b).spawn()`;
-`spawn_tool_executor_with_hooks` adds `.hooks(hooks)`;
 `spawn_tool_executor_with_policy(h, t, …)` maps each positional argument onto
 the setter of the same name (`agents` → `live_agents`, `skills` →
 `live_skills`, an `Option` argument → its setter only when `Some`; its former
@@ -126,7 +124,9 @@ any setter whose argument was just the default above.
 [ADR-0079](../adr/archive/0079-pluggable-permission-resolver-and-grant-store.md)) are the
 seam: two trait objects instead of the CLI's file-backed defaults, so a
 per-tenant DB-backed policy plugs in without forking the executor
-(spawn bounds, hooks, `rhai`, the plan/tasks tools all stay shared):
+(spawn bounds, `rhai`, the plan/tasks tools all stay shared). A
+resolver can also wrap another to add a veto — `skutter`'s `pre_tool_use`
+hooks are exactly that (`skutter::hooks::HookResolver`, #964):
 
 ```rust
 #[async_trait]

@@ -33,7 +33,7 @@ Four crates, dependency direction `provider (leaf) ← core ← runtime ← skut
 | `entanglement-provider` | leaf: the `Llm` trait + DTOs, all LLM clients (OpenAI-compat, Anthropic, Gemini, Responses), per-endpoint pool/retry/rate-limit, the YAML catalog, the MCP client mechanism (HTTP transport + OAuth). [provider](../docs/architecture/provider.md) | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, turn loop, `Context`. Advertises tool *schemas* only — no executable tools, no policy. Re-exports the provider ABI. [engine](../docs/architecture/engine.md) | no UI/web-server deps (`clap`/`axum`/`crossterm`/`ratatui`); `make tree` enforces. |
 | `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, host tools, permission dispatch, sub-agents, config, persistence, the definitions watcher. No binary. Features `provider`/`mcp-http`/`rhai`/`web-fetch`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
-| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, user slash commands, log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
+| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, user slash commands, lifecycle hooks (#964), log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
 
 ## Commands — drive through `make`
 
@@ -114,7 +114,7 @@ list; a var no longer listed here is simply not read (no retired-var warning,
 | `ENTANGLEMENT_STATE_DIR` | relocate all seven managed-state files (`grants`, `agent-models`, `agent-generation`, `aux-models`, `extra-roots`, `mcp-tokens`, `mcp-tools` `.yml`; default `${config_dir}/entanglement`) |
 | `ENTANGLEMENT_DEBUG` | comma list: `bodies` (LLM request-body logging), `echo` (`EchoLlm` appends the full system text), `no-shared-state` (no cross-process endpoint sharing); unknown token warns once |
 | `ENTANGLEMENT_SANDBOX=bwrap` / `ENTANGLEMENT_SANDBOX_NETWORK=1` | bubblewrap-confine `bash`; only ever *tightens* the mode's own sandbox posture (ADR-0207 §6) |
-| `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child by the runtime (read-only context) |
+| `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` / `ENTANGLEMENT_TOOL_NAME` | set on every hook child by `skutter` (read-only context) |
 
 Moved to `config.yml`/catalog by ADR-0213: `session_retention_days`,
 `tui: {notify, mouse}` (also `theme`/`keybindings`/`statusline`),
