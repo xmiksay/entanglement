@@ -223,9 +223,9 @@ The staleness guard above only fires at the *next* `propose_plan(path=...)`
 call; a dedicated, debounced plans-folder watch (#627,
 [ADR-0173](../../adr/archive/0173-watcher-driven-plan-file-changed-notice.md),
 `entanglement-runtime/src/plan_watch.rs`) surfaces the same out-of-band-edit
-detection live instead. It reuses `watch.rs`'s `spawn_debounced_watcher`
-primitive only — never its agent/skill/config `LiveDefinitions` reload, a
-deliberately unrelated reload action — and shares the exact same
+detection live instead. It reuses the library's `watch::spawn_debounced_watcher`
+primitive — the same one `skutter`'s agent/skill/config `LiveDefinitions`
+reload uses, a deliberately unrelated reload action — and shares the exact same
 `PlanFileRegistry` instance as the staleness guard and the `FileChange`
 listener: a debounced firing re-hashes every currently bound file, and a
 mismatch both self-heals the registry (so the guard doesn't also refuse the

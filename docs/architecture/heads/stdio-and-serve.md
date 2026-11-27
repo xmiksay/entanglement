@@ -45,7 +45,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   ([ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)). `ask_user` questions keep
   auto-answering their first option (ADR-0027). `skutter inspect prompt --agent <name> [--parts]` prints an
   agent's **assembled** system prompt (#184) — it re-runs the load-time discovery
-  (`PromptContext::load` + skill/agent registries) with no engine, so a wrong
+  (`PromptContext::load_with` + skill/agent registries) with no engine, so a wrong
   brief pick, an empty preamble override, or a subagent losing the skill index is
   visible before model behaviour degrades; `--parts` breaks the prompt into its
   component slices, each tagged with the source it came from (built-in default,
@@ -63,7 +63,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   onto the session's independent permission mode, so this view lost the
   columns those facts used to fill — a profile has no posture left to
   render here at all. Same engine-free discovery as `inspect prompt`, via a
-  `(layer, source)` provenance sidecar (`agents::resolve_registry`); `load_registry`
+  `(layer, source)` provenance sidecar (`agents::resolve_registry_in`); `load_registry_in`
   also emits a `replaces=<prior layer>` `debug!` at each overriding insert.
   What replaces the old mask/dispatch-state columns is `skutter inspect modes
   [name]` (§permission modes in [agents & permissions](../agents/modes.md)):
@@ -92,8 +92,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   a `name` **dry-runs the `load_skill` path
   substitution** (`${SKILL_DIR}` + relative-ref resolution) plus layer provenance,
   so a wrong payload path surfaces without a model. Engine-free via
-  `skills::resolve_registry` (the `(layer, source, shadowed)` sidecar mirroring
-  agents); `load_registry` emits a `replaces=<prior layer>` `debug!` at each
+  `skills::resolve_registry_in` (the `(layer, source, shadowed)` sidecar mirroring
+  agents); `load_registry_in` emits a `replaces=<prior layer>` `debug!` at each
   overriding insert, and a broken symlink under a skills dir is now a `warn!`
   (was a silent skip). Logs go to **stderr**, keeping stdout clean for the
   prompt / disclosures / NDJSON frames — **except under the TUI**, whose raw mode
@@ -110,7 +110,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   syntect syntax/theme sets load on the first fenced code block, not before
   the first frame. `inspect config` (#172) prints the resolved
   user config with per-field provenance — every fallback setting in
-  [`config::Config`](../../../entanglement-runtime/src/config/mod.rs), including
+  [`config::Config`](../../../skutter/src/config/mod.rs), including
   `max_turns`/`idle_ttl_secs`/`auto_compact`/`editor`/`session_retention_days`
   and the `tui:` block (#558, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)), the load's non-fatal findings
   (as a `warnings:` section), and an **advanced catalog** section listing each

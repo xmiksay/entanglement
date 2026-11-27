@@ -53,7 +53,7 @@ which it takes as it is (#906,
 Deliberately **stricter** than manual `HibernateSession`
 (which is stop-then-hibernate): a timer must never cancel live work, so the
 sweep only touches a session already at rest, never one mid-stream.
-`entanglement-runtime` exposes this as the `idle_ttl_secs` `config.yml` setting
+`skutter` exposes this as the `idle_ttl_secs` `config.yml` setting
 (#401, [ADR-0105](../../adr/archive/0105-expose-idle-ttl-via-runtime-config.md)) — whole
 seconds, copied onto `EngineConfig.idle_ttl` in `build_config` alongside
 `max_turns`; one engine-global setting shared by every head (`Holly::spawn`

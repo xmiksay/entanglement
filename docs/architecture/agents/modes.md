@@ -86,12 +86,15 @@ below realize one model:
   an *explicit* `ENTANGLEMENT_AGENTS_DIR`/`ENTANGLEMENT_SKILLS_DIR` override that
   points at a missing directory is `warn!`ed instead of silently swallowed (the
   default `${config_dir}` path being absent stays the normal "no user layer"
-  case). The user layer is a `layers::UserLayer` parameter — `FromEnv` (that
-  override, else the real home/config dirs) in every head, or `Dir(path)` via
-  the `*_in` loader variants (`skills::load_registry_in`,
+  case). The user layer is the embedder's `layers::UserLayer` argument to
+  every loader (`skills::load_registry_in`/`resolve_registry_in`,
   `agents::load_registry_in`/`resolve_registry_in`/`prompt_report_in`,
-  `slash_commands::resolve_registry_in`) for tests and embedders that must not
-  touch process env or the real user dirs (#773). **Cross-vendor dirs are scanned too**
+  `slash_commands::resolve_registry_in`): `Empty` (the default), `Dir(path)`
+  (exactly one dir, strict) or `Home { home, config }` (the cross-vendor +
+  native dirs under them). The library reads no env var or user dir for it
+  (#967): `skutter` maps `ENTANGLEMENT_*_DIR` to `Dir` and otherwise passes
+  its real home/config dirs (`user_dirs::user_layer`); tests pass a `Dir`
+  (#773). **Cross-vendor dirs are scanned too**
   ([ADR-0074](../../adr/archive/0074-cross-vendor-skill-and-agent-discovery.md)): within
   the user layer `~/.claude/<kind>` before the native `${config_dir}` dir, and
   within the project layer `.claude/<kind>` then `.agents/<kind>` before the

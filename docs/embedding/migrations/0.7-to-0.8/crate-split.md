@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965, #966, #962)
+# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965, #966, #962, #967)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md).
 
@@ -218,3 +218,62 @@ functions (site's resolver has its own `permission_arg` analog).
   `policy::ModeResolver` does), not a `ToolRegistry` clone: the builder
   registers `http` at spawn and lazy MCP tools register later, so a clone
   never scopes their rules.
+
+## Config, managed files and live reload move to `skutter` (#967)
+
+The library reads no config file, no env file and no user directory: the
+embedder hands it plain values. The layered `config.yml`, the managed pin
+files (`agent-models.yml`, `agent-generation.yml`, `aux-models.yml`,
+`extra-roots.yml`), the state-dir resolution, the definitions watcher and
+the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
+`skutter::state`). Site and nexial name none of the items below (both use
+`session_store` records and `SkillRegistry::default()` only).
+
+- **Removed API:** the whole `entanglement_runtime::config` module —
+  `Config`, `Resolved`, `ConfigLayer`, `ScopedRule`, `TuiConfig`,
+  `scaffold_if_missing`, `user_config_path` and the submodules
+  `agent_generation`, `agent_models`, `atomic`, `aux_models`, `env_file`,
+  `env_key`, `http_auth`, `keybindings`, `keychord`, `lock`, `state_dir`,
+  `statusline`, `theme`, `tui`, `undo`, `write_key`; `watch::spawn_watcher`,
+  `watch::LiveDefinitions`, `watch::ReloadNotice`, `watch::COMMANDS_DIR_ENV`;
+  `ExtraRootStore::load`/`load_from`; `layers::UserLayer::FromEnv`;
+  `agents::load_registry`/`resolve_registry`/`prompt_report` and
+  `skills::load_registry`/`resolve_registry` (the env-reading wrappers);
+  `system_prompt::PromptContext::load`; `AuxModelStore::load`/`load_from`/
+  `reload`; `BackupLimits`'s `Deserialize`. The runtime drops its `dirs`
+  and `fd-lock` dependencies.
+- **Moved API:** `config::http_auth::{HttpAuth, HttpAuthEntry, ResolvedAuth,
+  ProjectHttpRules}` → `http_auth::…` (plain data, unchanged);
+  `config::aux_models::{AuxModelStore, Purpose}` → `aux_llm::…`;
+  `config::undo::format_size` → `file_backup::format_size`.
+- **New API:** `extra_roots::AlwaysRoots` (`load`, `add`) and
+  `ExtraRootStore::with_always_roots(Arc<dyn AlwaysRoots>)`;
+  `layers::UserLayer::Empty` (the default) and `UserLayer::Home { home,
+  config }`; `layers::candidate_dirs(root, kind, &UserLayer)` is public;
+  `watch::spawn_debounced_watcher` is public (the one watch primitive left);
+  `AuxModelStore::pins`; `mode::capability_class`, `mode::rule_tool_name`
+  and `mode::deserialize_grade` are public (for an embedder's own config
+  checks).
+- **Changed API:** `AuxModelStore` is in memory: `set` is infallible and
+  writes nothing. `layers::load_layers` drops its `env` argument.
+  `SessionStore::for_cwd(base, cwd)` takes the base dir
+  (`<base>/<safe_cwd_name(cwd)>`; `skutter`'s base is
+  `<data_dir>/entanglement/sessions`).
+- **Changed behaviour (library):** an `ExtraRootStore` without
+  `with_always_roots` keeps `Always` escape-root grants for the process —
+  0.7 read and wrote `extra-roots.yml` by default. A loader given
+  `UserLayer::default()` reads no user layer; 0.7's `FromEnv` read
+  `ENTANGLEMENT_AGENTS_DIR`/`ENTANGLEMENT_SKILLS_DIR` or `~/.claude/<kind>`
+  and `${config_dir}/entanglement/<kind>`. The library reads none of
+  `ENTANGLEMENT_CONFIG_FILE`, `ENTANGLEMENT_ENV_FILE`,
+  `ENTANGLEMENT_STATE_DIR`, `ENTANGLEMENT_*_DIR`.
+- **Changed behaviour (`skutter`):** none; every file, env var and reload
+  works as in 0.7.
+- **Instead:** pass `UserLayer::Dir(path)` or `UserLayer::Home { home,
+  config }` to the `*_in` loaders; build `PromptContext::load_with(root,
+  &sessions)` and `SessionStore::at(dir)` (or `for_cwd(base, cwd)`); fill an
+  `AuxModelStore::in_memory(pins)` from your own storage; implement
+  `AlwaysRoots` over your storage to keep `Always` escape-root grants; build
+  `BackupLimits`, `HttpAuth` and `TrustedFolders` from your own config; call
+  `watch::spawn_debounced_watcher` for your own reloads. The scope warnings
+  of the previous section are `skutter::config::Config`'s now.

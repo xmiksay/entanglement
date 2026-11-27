@@ -6,12 +6,15 @@
   roster collapsed by [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §1):** agents are markdown files with YAML frontmatter (the config bundle)
   + a body (the system prompt), discovered at startup by the **runtime**
-  (`entanglement_runtime::agents::load_registry`) into a `AgentCatalog`.
+  (`entanglement_runtime::agents::load_registry_in`) into a `AgentCatalog`.
   Three layers, later wins on a `name` collision: embedded built-ins —
   **`general`, `plan`, `debug`** — shipped as `include_str!` `.md` and parsed
   through the *same* loader) < user (`~/.claude/agents/*.md` then
-  `${config_dir}/entanglement/agents/*.md`) < project (`.claude/agents` then
-  `.agents/agents` then `<root>/.entanglement/agents/*.md`). Editing a
+  `${config_dir}/entanglement/agents/*.md`, or exactly
+  `ENTANGLEMENT_AGENTS_DIR` — the embedder's `layers::UserLayer`, which
+  `skutter` resolves; the library reads no env var or user dir, #967) <
+  project (`.claude/agents` then `.agents/agents` then
+  `<root>/.entanglement/agents/*.md`). Editing a
   built-in = dropping a same-`name` file in a higher layer — one mechanism
   for all three, same defaults+override shape as the provider catalog
   (#118). A malformed *native* file is a loud error; the cross-vendor dirs
@@ -150,10 +153,10 @@
   active writes the pin to a **managed** `<state dir>/agent-models.yml`
   (`ENTANGLEMENT_STATE_DIR`, ADR-0213; shape `agents: { general: { provider,
   model } }`), overlaid onto matching profiles at startup — **persisted file >
-  frontmatter**. Managed (not layered) like the grants + env files: the runtime
+  frontmatter**. Managed (not layered) like the grants + env files: `skutter`
   rewrites it, so it stays out of the hand-edited `config.yml`. Missing/malformed
   → empty + warn (fail-open); a write failure is logged, never fatal
-  (`entanglement_runtime::config::agent_models`).
+  (`skutter::config::agent_models`, #967).
 - **Per-profile generation-parameter persistence (✅ #374, [ADR-0094](../../adr/archive/0094-reasoning-effort-and-per-profile-generation-persistence.md)):**
   mirrors the model pin above — same three-tier precedence (session memory >
   persisted > current binding), applied at the same **session-start** locus —
@@ -168,8 +171,8 @@
   (session memory) and the resolver's return (the persisted tier) are both
   **full** `GenerationParams` snapshots, applied by direct assignment — unlike
   the partial-merge `GenerationParams::apply_overrides` a live
-  `InMsg::SetGeneration` itself uses. **Persistence:** the runtime's
-  `entanglement_runtime::config::agent_generation::AgentGenerationStore`
+  `InMsg::SetGeneration` itself uses. **Persistence:** `skutter`'s
+  `skutter::config::agent_generation::AgentGenerationStore`
   (`<state dir>/agent-generation.yml`, sibling of `agent-models.yml`) has the
   same `load`/`get`/`set`/`reload` shape and the same fail-open/locked-write
   behavior — but **no** `apply(&mut AgentCatalog)`: there's nothing on
@@ -191,12 +194,13 @@
   every wire; a stale `tool_advertising:` is an unknown-field `config.yml`
   parse error (#920).
 - **Live reload + managed-file locking (✅ #329, [ADR-0084](../../adr/archive/0084-runtime-live-reload-and-managed-file-locking.md)):**
-  a runtime-side `watch.rs` watches every resolvable agent/skill/command dir plus
+  `skutter`'s `watch.rs` (moved out of the library, #967) watches every
+  resolvable agent/skill/command dir plus
   `${config_dir}/entanglement/`, the managed-state dir (`ENTANGLEMENT_STATE_DIR`)
   and `<root>/.entanglement/` (`notify`, debounced
   500ms so a burst of edits collapses into one reload) and, on change, re-runs the
-  skill + agent loaders and swaps the result into **runtime-held mirrors**
-  (`watch::LiveDefinitions { agents, skills, agent_models,
+  skill + agent loaders and swaps the result into **head-held mirrors**
+  (`skutter::watch::LiveDefinitions { agents, skills, agent_models,
   mcp_capabilities, file_backups }`, built via `LiveDefinitions::new` +
   `with_file_backups`; the config's `undo:` block is re-applied onto
   `file_backups` on every change, #787) — never
@@ -254,8 +258,8 @@
   the watched trees here — a plan-file edit is a different reload action
   entirely (nothing to reload, just a live notice), covered by its own
   dedicated watch (`plan_watch.rs`, #627) that reuses only the
-  `spawn_debounced_watcher` primitive (`entanglement-runtime/src/watch.rs`),
-  not `LiveDefinitions`; see [engine §5 sub-agents &
+  `spawn_debounced_watcher` primitive (`entanglement-runtime/src/watch.rs`,
+  the library's one watch piece), not `LiveDefinitions`; see [engine §5 sub-agents &
   plans](../engine/subagents-and-plans.md) for that watcher's own detail.
 
 ---

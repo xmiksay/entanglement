@@ -32,8 +32,8 @@ Four crates, dependency direction `provider (leaf) ← core ← runtime ← skut
 | --- | --- | --- |
 | `entanglement-provider` | leaf: the `Llm` trait + DTOs, all LLM clients (OpenAI-compat, Anthropic, Gemini, Responses), per-endpoint pool/retry/rate-limit, the YAML catalog, the MCP client mechanism (HTTP transport + OAuth). [provider](../docs/architecture/provider.md) | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, turn loop, `Context`. Advertises tool *schemas* only — no executable tools, no policy. Re-exports the provider ABI. [engine](../docs/architecture/engine.md) | no UI/web-server deps (`clap`/`axum`/`crossterm`/`ratatui`); `make tree` enforces. |
-| `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, host tools, permission dispatch, sub-agents, config, persistence, the definitions watcher. No binary. Features `provider`/`mcp-http`/`rhai`/`web-fetch`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
-| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, user slash commands, lifecycle hooks (#964), the file-backed grants/MCP stores (#966), log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
+| `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, host tools, permission dispatch, sub-agents, persistence. Reads no config/env file and resolves no user dir — the embedder hands it plain values (#967). No binary. Features `provider`/`mcp-http`/`rhai`/`web-fetch`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
+| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, user slash commands, lifecycle hooks (#964), the file-backed grants/MCP/escape-root stores (#966), the layered `config.yml` + managed pin files + definitions watcher + key writer (#967), log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
 
 ## Commands — drive through `make`
 
@@ -228,7 +228,8 @@ doc, never here**:
   files; `tools:`/`user_only` frontmatter removed (a parse error, #920)
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/archive/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0229](../docs/adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)).
 - **Definitions are data, layered** embedded < user < project (project
-  trusted); managed files are advisory-locked and live-reloaded
+  trusted); the embedder names the user layer (`layers::UserLayer`);
+  `skutter`'s managed files are advisory-locked and live-reloaded
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [heads §6c](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0047](../docs/adr/archive/0047-local-trust-boundary.md)/[ADR-0084](../docs/adr/archive/0084-runtime-live-reload-and-managed-file-locking.md)).
 - **Plans** — `propose_plan` (only in `plan` mode) is file-backed; approval
   switches the session's mode in place, to the approver's choice

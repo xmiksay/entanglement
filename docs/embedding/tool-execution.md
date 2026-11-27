@@ -78,8 +78,8 @@ changes fall back to the logs' latest parent edges.
 `FileBackups::new` uses the default caps (8 MiB per file, 256 MiB per root
 session). For your own, build it with
 `FileBackups::with_backup_limits(store, BackupLimits { enabled, max_file_bytes,
-max_root_bytes })` — or pass `Config::load(root)?.undo` to honor a
-`config.yml` `undo:` block — and call `backups.set_limits(..)` on any clone to
+max_root_bytes })` — your own values; the library reads no config file
+(`skutter` maps its `config.yml` `undo:` block onto it) — and call `backups.set_limits(..)` on any clone to
 change them live; the next recorded write sees the new limits, and backups
 already taken stay restorable even with `enabled: false`.
 

@@ -11,7 +11,7 @@ sessions are cheap tasks keyed by `SessionId`
 on first message per the unknown-session policy (§3). Spinning up a whole
 engine per user buys you nothing the session key doesn't already give you, and
 it multiplies every piece of shared state (the provider connection pool,
-[ADR-0050](../adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md); the
+[ADR-0050](../adr/archive/0050-per-endpoint-connection-pool-retry-rate-limit.md); a head's
 definitions watcher, [ADR-0084](../adr/archive/0084-runtime-live-reload-and-managed-file-locking.md))
 by tenant count for no isolation benefit — `SessionId` is a plain string
 (`pub struct SessionId(pub String)`), so the isolation you actually need is a

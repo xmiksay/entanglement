@@ -4,7 +4,8 @@
 
 ## 6c. Managed provider-key env file — [ADR-0073](../../adr/archive/0073-managed-env-file-writer-and-key-surfaces.md) (`config::env_file` + `config::env_key`)
 
-Provider API keys live in `${config_dir}/entanglement/.env` (override
+All of this is `skutter`'s (`skutter::config`, moved out of the library by
+#967): the library reads no `.env` and writes no key. Provider API keys live in `${config_dir}/entanglement/.env` (override
 `ENTANGLEMENT_ENV_FILE`, #220), a sibling of `config.yml`. `env_file` scaffolds a
 commented `#KEY=` template on first run and `load()`s `KEY=VALUE` lines into the
 process env for any var the real environment left unset (env > file). `env_key`
@@ -14,9 +15,8 @@ matching `load()` — else the `#KEY=`/`# KEY=` placeholder, else append; other
 lines byte-for-byte preserved; idempotent) plus `set_key(key, value) ->
 Result<PathBuf>` (loud error with no managed path; create from `template` when
 missing; atomic temp-file-in-dir + rename; `0o600` on unix; reject empty/`\n`
-values). `env_key` is pure std + `anyhow` (lean/gate-clean); only the
-`config set-key` handler (rpassword + catalog) lives in `skutter`
-(`config_keys`, #931).
+values). `env_key` is pure std + `anyhow`; the `config set-key` handler
+(rpassword + catalog) is the binary's `config_keys` (#931).
 `set_key_at(path, …)` is the same write against an explicit path.
 
 **First-run onboarding** (✅ #732,
@@ -42,8 +42,10 @@ and exits 2.
 ## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../../adr/archive/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate`)
 
 Side transformations (a compaction summary, an auto session title) can run on
-a cheaper/faster model than the session's own. The pin store is a managed
-`<state dir>/aux-models.yml` (`ENTANGLEMENT_STATE_DIR`, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md), sibling
+a cheaper/faster model than the session's own. The pins are the library's
+in-memory `aux_llm::AuxModelStore` (with the `Purpose` enum); `skutter`
+persists them in a managed `<state dir>/aux-models.yml`
+(`skutter::config::aux_models::AuxModelsPath`, #967) (`ENTANGLEMENT_STATE_DIR`, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md), sibling
 of `agent-models.yml`, same
 `with_locked_file`+`atomic_write` discipline) mapping a closed `Purpose` enum
 (`summarize` | `session_title` | `narrate`) to a `{provider, model}` pin.
@@ -141,8 +143,7 @@ conforming to [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.
 the runtime holds **no per-user module** — a multi-user embedder builds a
 per-user registry itself from two public pieces. It looks the user's pins up
 in its own storage (it owns the session→user mapping) and wraps them via
-`AuxModelStore::in_memory` (the production sibling of the test-only
-`for_test`); and it closes its multi-user `ModelResolver` over the right user
+`AuxModelStore::in_memory`; and it closes its multi-user `ModelResolver` over the right user
 in a small adapter closure *before* constructing an ordinary, unmodified
 `AuxLlmRegistry` — the registry carries no user notion and always passes
 `None` to its injected resolver, so the closure substitutes the captured

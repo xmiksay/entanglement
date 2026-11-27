@@ -99,8 +99,10 @@
   the executor (the tool's `Tool::escape_target` + `path_grading::escaping_path`) and
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
   still wins). The approval is recorded in a **separate** store from the
-  permission grants above — `runtime::extra_roots::ExtraRootStore`, managed file
-  `<state dir>/extra-roots.yml` (`ENTANGLEMENT_STATE_DIR`, ADR-0213) — keyed by `(tool, resolved-absolute-path)`,
+  permission grants above — `runtime::extra_roots::ExtraRootStore`, in memory;
+  its `Always` grants reach the embedder's `extra_roots::AlwaysRoots`
+  (`skutter`: `state::FileExtraRoots`, the managed
+  `<state dir>/extra-roots.yml`, `ENTANGLEMENT_STATE_DIR`, ADR-0213, #967) — keyed by `(tool, resolved-absolute-path)`,
   **per tool** (a `read` grant never unlocks `write`), at `Once` (single-use,
   additionally bound to the approving call's `request_id` so a concurrent
   in-flight call can't spend it, #449,
@@ -113,8 +115,10 @@
   key spaces differ — a permission grant upgrades `Ask→Allow` on a `tool(command)`
   key, an escape grant relaxes *containment* on a `(tool, absolute-path)` key.
 - **User config file + permission ceiling (✅ #172, [ADR-0047](../../adr/archive/0047-local-trust-boundary.md)):**
-  a general user settings file, same layered loader as everything else — embedded
-  default (`entanglement-runtime/src/config/defaults.yml`) < user
+  `skutter`'s general user settings file (`skutter::config`; the library reads
+  none, #967 — the ceiling reaches it as a plain `PermissionProfile`), same
+  layered loader as everything else — embedded
+  default (`skutter/src/config/defaults.yml`) < user
   (`${config_dir}/entanglement/config.yml`, path override `ENTANGLEMENT_CONFIG_FILE`)
   < project (`<root>/.entanglement/config.yml`), deep-merged at the
   `serde_yaml::Value` level (a field override keeps its siblings) with
@@ -164,7 +168,7 @@
   (`find . && rm -rf /` no longer rides `bash(find *)`).
 - **Managed provider-key env file (✅ #220):** a sibling
   `${config_dir}/entanglement/.env` (path override `ENTANGLEMENT_ENV_FILE`) holds
-  the provider API keys outside any repo (`entanglement-runtime/src/config/env_file.rs`).
+  the provider API keys outside any repo (`skutter/src/config/env_file.rs`).
   Startup scaffolds a **commented** template listing the catalog's known key vars
   (`catalog.key_envs()` — `ZAI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, …)
   when the file is missing, then loads its `KEY=VALUE` lines into the process

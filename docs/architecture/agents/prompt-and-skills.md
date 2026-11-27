@@ -14,7 +14,7 @@
   `system_prompt::TOOL_CONVENTIONS`: call the advertised tools directly, MCP
   through `mcp(server, tool, args)`, `rhai` for anything else — the skill
   roster that used to sit here moved to `list_skills`, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) + **preloaded skill bodies** (frontmatter
-  `skills: [name, …]`, ✅ #117, below). Inputs come from `PromptContext::load(root)`
+  `skills: [name, …]`, ✅ #117, below). Inputs come from `PromptContext::load_with(root, &sessions)`
   (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE`; brief via
   `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets `preamble + body (+ brief)` +
   any preloaded bodies — and never the parent's assembled
@@ -50,7 +50,7 @@
   tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
   (YAML frontmatter + markdown body) plus optional supporting files
   (`references/*.md`, `scripts/*`). The **runtime**
-  (`entanglement_runtime::skills::load_registry`) discovers them into a
+  (`entanglement_runtime::skills::load_registry_in`) discovers them into a
   `SkillRegistry` — three layers, later wins on a `name` collision: embedded stock
   skills (single-file, `include_str!` `SKILL.md`, parsed through the *same* loader)
   < user (`~/.claude/skills/**/SKILL.md` then

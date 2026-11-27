@@ -78,8 +78,9 @@ allows reads only, `http(* https://api.github.com/*)` every method. Rides
 is graded as a fresh `http` call (ADR-0225's `check_hop`), `Ask` stops it.
 Returns the body; a non-2xx status is an error (thrown in the script).
 
-**Hidden credentials — `config.yml` `http_auth:`** (`config::http_auth`,
-`http_gate::HttpGate`): host → `headers:`/`cookies:` with `${VAR}` from the
+**Hidden credentials — `config.yml` `http_auth:`** (the plain
+`http_auth::HttpAuth` the embedder hands `http_gate::HttpGate`; `skutter`
+reads it from `config.yml`, `skutter::config::http_auth`): host → `headers:`/`cookies:` with `${VAR}` from the
 environment (the managed `.env` lands there at startup). **User layer only** —
 a project layer's is dropped before the merge with a warning. Matched on host
 only (exact or dot-boundary suffix, longest key wins), injected per hop over

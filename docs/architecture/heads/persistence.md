@@ -9,10 +9,11 @@ Sessions are event-sourced to disk, one JSONL file per **root** session under
 That directory is a `SessionStore` value handed to every reader/writer — the
 persistence tap, the `ReplayFrom` responder, the startup prune, resume and the
 TUI resume modal — rather than re-resolved from the data dir at each call
-(#747): the in-tree heads build `SessionStore::for_cwd(cwd)` (the layout
-above), an embedder or test pins `SessionStore::at(dir)`. Under `cfg(test)` the
-data-dir resolution panics, so a unit test can never read, write or prune the
-developer's real logs. `spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
+(#747): `skutter` builds `SessionStore::for_cwd(<data_dir>/entanglement/sessions,
+cwd)` (the layout above; `user_dirs::session_store`, the library resolves no
+data dir, #967), an embedder or test pins `SessionStore::at(dir)` or its own
+base. Under `cfg(test)` skutter's data-dir resolution panics, so a unit test
+can never read, write or prune the developer's real logs. `spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
 ABI — `holly.subscribe()` for `OutEvent`s and `holly.subscribe_inbound()` for
 `InMsg`s — and appends each frame as a `LogRecord { ts, session, payload }` where
 `payload` is `LogPayload::In(InMsg) | Out(OutEvent) | Gap { dropped } | Retired { kind }`
