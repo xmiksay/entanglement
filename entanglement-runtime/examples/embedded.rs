@@ -31,7 +31,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::permission::permission_arg;
 use entanglement_runtime::policy::{Grade, GrantStore, PermissionResolver};
-use entanglement_runtime::{host, tool_runner, ToolRegistry};
+use entanglement_runtime::{host, tool_runner, SharedRegistry};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Grades each tool call by the calling session's tenant — the part of the
@@ -44,15 +44,21 @@ use tokio::sync::broadcast::error::RecvError;
 /// key durable grants by the tenant in your own store.
 struct TenantResolver {
     tenants: HashMap<&'static str, PermissionProfile>,
-    /// The registry the executor dispatches against: each tool declares its
-    /// own permission argument (#962), so a resolver asks it.
-    tools: ToolRegistry,
+    /// The live registry the executor dispatches against: each tool declares
+    /// its own permission argument (#962), so a resolver asks it. Never a
+    /// clone: the builder registers `http` at `spawn` and a lazy MCP connect
+    /// registers its tools later, so a snapshot misses them and their scoped
+    /// rules (`http(POST *)`) would never match.
+    tools: SharedRegistry,
 }
 
 #[async_trait]
 impl PermissionResolver for TenantResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
-        let arg = permission_arg(&self.tools, tool, input);
+        let arg = {
+            let tools = self.tools.read().expect("tool registry lock poisoned");
+            permission_arg(&tools, tool, input)
+        };
         // An unknown tenant's deny says why (#964), instead of the mode-deny
         // text a mode grade gets.
         match self.tenants.get(tenant_of(session)) {
@@ -103,6 +109,8 @@ fn tenant_of(session: &SessionId) -> &str {
 async fn main() -> anyhow::Result<()> {
     let tools = host::host_tools(std::env::temp_dir());
     let tool_specs = tools.specs();
+    // One shared handle for both the resolver and the executor builder.
+    let tools = tools.shared();
     let profiles = AgentCatalog::new(); // just the built-in `general` agent
 
     let holly = Holly::spawn(EngineConfig {
@@ -148,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
     // table for spawn bounds, allow-all ceiling, private registries).
     // Grants default to in-memory only (`skutter` passes its file-backed
     // store); this embedder routes them to its own store instead.
-    let _executor = tool_runner::ToolExecutor::builder(&holly, tools.shared())
+    let _executor = tool_runner::ToolExecutor::builder(&holly, tools)
         .agents(profiles)
         .resolver(resolver)
         .grants(grants)

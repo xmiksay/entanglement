@@ -213,3 +213,8 @@ functions (site's resolver has its own `permission_arg` analog).
   `permission_arg`/`permission_workdir`/`grading_arg`, and call
   `Config::warn_unscopable_rules` once your registry is complete (after the
   executor builder's `spawn`, which registers `http`) if you load `Config`.
+  A custom `PermissionResolver` must read the live `SharedRegistry` (the
+  handle passed to `ToolExecutor::builder`, read-locked per call as
+  `policy::ModeResolver` does), not a `ToolRegistry` clone: the builder
+  registers `http` at spawn and lazy MCP tools register later, so a clone
+  never scopes their rules.

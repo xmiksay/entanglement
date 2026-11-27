@@ -182,14 +182,19 @@ lines:
 ```rust
 struct TenantResolver {
     tenants: HashMap<&'static str, PermissionProfile>,
-    tools: ToolRegistry, // the registry the executor dispatches against
+    // The live registry the executor dispatches against — the same
+    // `shared()` handle passed to `ToolExecutor::builder`, never a clone.
+    tools: SharedRegistry,
 }
 
 #[async_trait]
 impl PermissionResolver for TenantResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
         // Each tool declares its own argument (#962), so ask the registry.
-        let arg = permission_arg(&self.tools, tool, input);
+        let arg = {
+            let tools = self.tools.read().expect("tool registry lock poisoned");
+            permission_arg(&tools, tool, input)
+        };
         match self.tenants.get(tenant_of(session)) {
             Some(profile) => profile.resolve(tool, arg.as_deref()).into(),
             // Fail closed on an unknown tenant, and say why.
@@ -198,6 +203,12 @@ impl PermissionResolver for TenantResolver {
     }
 }
 ```
+
+Read-lock the registry inside `resolve`, as the library's `ModeResolver`
+does: the executor builder registers `http` at `spawn` and a lazy MCP connect
+registers its tools later, so a resolver holding a `ToolRegistry` clone gets no
+argument for them and a scoped rule such as `http(POST *)` never matches — the
+call falls through to the tool's bare rules (#962).
 
 `resolve` is `async` (a real embedder hits its DB) but
 `GrantStore::is_granted(session, tool, arg, mode)` is deliberately **sync** —
