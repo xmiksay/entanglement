@@ -76,6 +76,9 @@ impl Tool for ApplyPatchTool {
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Write]
     }
+    fn advertised(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Apply a unified diff (one or more `@@ -l,s +l,s @@` hunks) to a file \
          under the working directory. Context/deleted lines must match the \

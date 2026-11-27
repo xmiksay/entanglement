@@ -91,7 +91,7 @@ pub const LIST_MCP_TOOL: &str = "list_mcp";
 pub const MCP_TOOLS_TOOL: &str = "mcp_tools";
 
 /// The `mcp {server, tool, args}` envelope (ADR-0226) — the only way to call
-/// an MCP tool. Advertised (a [`KERNEL`] member) but never a registered tool:
+/// an MCP tool. Advertised (a runtime-owned spec) but never a registered tool:
 /// core unwraps it, so a `ToolExec` still carrying this name is one core
 /// refused to unwrap (malformed, or a reserved inner name) and is declined.
 pub use entanglement_core::MCP_TOOL;
@@ -176,39 +176,6 @@ pub fn non_maskable_reason(tool: &str) -> Option<String> {
         ),
     })
 }
-
-/// The one advertised surface (ADR-0226; ADR-0196's `TOOL_SEARCH_KERNEL`,
-/// renamed): the fixed host tools, the runtime-owned roster, the six
-/// discovery tools and the `mcp` envelope — byte-identical on every wire and
-/// snapshotted per session. Every model-facing tool must be named here or it
-/// is unreachable: `agent`/`agent_send` and `propose_plan`/`request_mode`
-/// ride the shared spec pool like everything else, so the filter keeps only
-/// what is listed. Registered but hidden: `glob`/`grep` (script-only
-/// rhai bindings, still graded under their names) and `read_raw`/
-/// `glob_json`/`grep_json`, and `http` (ADR-0227).
-pub const KERNEL: &[&str] = &[
-    "read",
-    "edit",
-    "write",
-    "apply_patch",
-    "bash",
-    POLL_TOOL,
-    ASK_USER_TOOL,
-    UPDATE_TASKS_TOOL,
-    LOAD_SKILL_TOOL,
-    PROPOSE_PLAN_TOOL,
-    REQUEST_MODE_TOOL,
-    AGENT_TOOL,
-    AGENT_SEND_TOOL,
-    RHAI_TOOL,
-    "web_fetch",
-    LIST_AGENTS_TOOL,
-    LIST_MODELS_TOOL,
-    LIST_SKILLS_TOOL,
-    LIST_MCP_TOOL,
-    MCP_TOOLS_TOOL,
-    MCP_TOOL,
-];
 
 /// Capability names an MCP server's config-side `capabilities:` annotation
 /// may use (#426). Orthogonal to mode/ceiling grading, which matches a bare
@@ -327,32 +294,6 @@ mod tests {
             "responses_tool_search",
         ] {
             assert!(!is_recognized_mask_entry(gone), "{gone} is retired");
-        }
-    }
-
-    /// ADR-0226: the kernel is exactly the one advertised surface — the
-    /// retired trio and the old envelope are out, `rhai`/`web_fetch` and the
-    /// six discovery tools plus `mcp` are in.
-    #[test]
-    fn kernel_is_the_one_advertised_surface() {
-        for gone in ["explore", "describe", "invoke", "mcp_enable"] {
-            assert!(!KERNEL.contains(&gone), "{gone} left the kernel");
-        }
-        for present in [
-            RHAI_TOOL,
-            "web_fetch",
-            LIST_AGENTS_TOOL,
-            LIST_MODELS_TOOL,
-            LIST_SKILLS_TOOL,
-            LIST_MCP_TOOL,
-            MCP_TOOLS_TOOL,
-            MCP_TOOL,
-        ] {
-            assert!(KERNEL.contains(&present), "{present} joined the kernel");
-        }
-        // Hidden-but-registered, script-only: never advertised.
-        for hidden in ["glob", "grep", "read_raw", "glob_json", "grep_json"] {
-            assert!(!KERNEL.contains(&hidden), "{hidden} is not model-facing");
         }
     }
 

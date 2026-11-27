@@ -79,6 +79,10 @@ impl Tool for WebFetchTool {
         &[Capability::Exec]
     }
 
+    fn advertised(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Fetch a public http(s) URL and return its content as readable text. \
          HTML is converted to Markdown by default; binary content (images, PDFs, \

@@ -99,6 +99,9 @@ impl Tool for ReadTool {
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Read]
     }
+    fn advertised(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Read a file under the working directory. A UTF-8 text file returns its \
          contents with 1-based line numbers (optional `offset` (line to start \

@@ -54,11 +54,15 @@ impl Llm for Recording {
     }
 }
 
-struct Echo(&'static str);
+/// A registered tool; the flag is its [`Tool::advertised`] answer.
+struct Echo(&'static str, bool);
 #[async_trait]
 impl Tool for Echo {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed(self.0)
+    }
+    fn advertised(&self) -> bool {
+        self.1
     }
     async fn run(&self, input: &str) -> anyhow::Result<String> {
         Ok(format!("ran: {input}"))
@@ -67,7 +71,7 @@ impl Tool for Echo {
 
 /// An engine whose `general` profile pins `<provider>/<model>`, wired exactly
 /// like the binary: production resolvers + executor over one
-/// `AdvertisingState`, with `read` (kernel), `glob` (hidden) and `gone`
+/// `AdvertisingState`, with `read` (advertised), `glob` (hidden) and `gone`
 /// registered.
 pub struct Harness {
     pub holly: Holly,
@@ -98,8 +102,8 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
 
     let advertising = Arc::new(AdvertisingState::new());
     let mut reg = ToolRegistry::new();
-    for name in ["read", "glob", "gone"] {
-        reg.register(Echo(name));
+    for (name, advertised) in [("read", true), ("glob", false), ("gone", false)] {
+        reg.register(Echo(name, advertised));
     }
     let tools = reg.shared();
     let resolved_factory = factory.clone();
@@ -248,11 +252,11 @@ async fn every_wire_gets_the_same_array() {
     assert_eq!(a.requests()[0].tools, b.requests()[0].tools);
 }
 
-/// The rendered round-1 request carries exactly the kernel: the `mcp`
-/// envelope and the discovery tools in, the retired surface and the
-/// script-only tools out.
+/// The rendered round-1 request carries exactly the advertised tools and the
+/// executor's routes: the `mcp` envelope and the discovery tools in, the
+/// retired surface and the unflagged tools out.
 #[tokio::test]
-async fn round_one_advertises_the_kernel_only() {
+async fn round_one_advertises_the_flagged_tools_only() {
     let h = harness("zai", "glm-5.3", vec![text()]);
     h.turn("one").await;
     let names = &h.requests()[0].names;
@@ -290,8 +294,8 @@ async fn registry_changes_never_move_the_array() {
     {
         let mut tools = h.tools.write().unwrap();
         tools.unregister("gone");
-        tools.register(Echo("mcp__kb__search"));
-        tools.register(Echo("write"));
+        tools.register(Echo("mcp__kb__search", false));
+        tools.register(Echo("write", true));
     }
     let events = h.turn("two").await;
     let rec = h.requests();

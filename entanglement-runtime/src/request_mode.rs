@@ -56,8 +56,8 @@ fn widens(from: &str, to: &str) -> bool {
 }
 
 /// The `request_mode` tool schema. Advertised **unconditionally** (ADR-0207
-/// §10), riding [`crate::discover::runtime_owned_specs`] and the
-/// [`KERNEL`][crate::tool_names::KERNEL] like `propose_plan` — a blocked model must always be
+/// §10), riding [`crate::discover::runtime_owned_specs`] like
+/// `propose_plan` — a blocked model must always be
 /// able to name what it needs, in every mode including the one that would
 /// deny the ask itself. The `enum` names only the two real widening targets;
 /// `run_request_mode` still validates at the widening-pair level regardless,

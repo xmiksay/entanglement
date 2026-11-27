@@ -141,6 +141,13 @@ pub trait Tool: Send + Sync {
     fn escape_target(&self, _input: &str) -> Option<String> {
         None
     }
+
+    /// Whether the spec joins the one surface every session is advertised
+    /// ([`crate::tool_advertising::surface`]). Default `false`: registered is
+    /// callable (by a script, by name), not model-facing.
+    fn advertised(&self) -> bool {
+        false
+    }
 }
 
 /// Per-call grading override returned by [`Tool::call_grading`]: the

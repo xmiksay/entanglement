@@ -1,11 +1,11 @@
 //! The one advertised surface (ADR-0226) and the per-session state around it.
 //!
 //! There is no advertising *mode* any more: every session on every wire gets
-//! the same [`KERNEL`][crate::tool_names::KERNEL] — native host tools, the
-//! six discovery tools, `rhai`, and the `mcp` envelope (`{server, tool,
-//! args}`) — snapshotted at its first resolution and never changed
-//! afterwards, so the
-//! provider's cached `tools` prefix holds for the whole session. MCP tool
+//! the same surface ([`surface::build_surface`]) — the registered tools that
+//! set [`Tool::advertised`][crate::Tool::advertised], the six discovery tools,
+//! `rhai`, and the `mcp` envelope (`{server, tool, args}`) — snapshotted at
+//! its first resolution and never changed afterwards, so the provider's
+//! cached `tools` prefix holds for the whole session. MCP tool
 //! schemas are never advertised; `mcp_tools` delivers them as a tool result.
 //!
 //! [`AdvertisingState`] is the one `Arc` the tool-spec resolver, the
@@ -44,8 +44,8 @@ impl AdvertisingState {
     }
 
     /// Release every per-session record on end/hibernate. A resumed session
-    /// re-snapshots at its first round — the same bytes, since the kernel is
-    /// compiled in.
+    /// re-snapshots at its first round — the same bytes while the registry
+    /// holds the same advertised tools.
     pub fn forget(&self, session: &SessionId) {
         self.delivered
             .lock()

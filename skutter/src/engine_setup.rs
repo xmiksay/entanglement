@@ -216,28 +216,21 @@ pub(crate) async fn build_config(
             .with_tool_cache(mcp::McpToolCache::managed()),
     );
     let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-    let tools = tools.shared();
-    let registered_specs = tools.read().expect("tool registry lock poisoned").specs();
     // `read_raw` and the script-facing search variants (rhai-only — see
     // `script.rs`'s `parse_json`/`parse_yaml` and the `glob_json`/`grep_json`
-    // bindings, ADR-0206) register *after* the specs snapshot above: present
-    // in `tools` for execution (the rhai bridge routes through the same
-    // `ToolRegistry`), but never advertised as standalone model-callable
-    // tools.
-    {
-        let mut registry = tools.write().expect("tool registry lock poisoned");
-        registry.register(ReadRawTool::new(root.clone()));
-        registry.register(GlobJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
-        registry.register(GrepJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
-    }
-    // The one advertised surface (ADR-0226): the kernel picked out of the
-    // registered specs plus the runtime-owned pseudo-tools (`agent`/
+    // bindings, ADR-0206): present in `tools` for execution (the rhai bridge
+    // routes through the same `ToolRegistry`), never advertised.
+    tools.register(ReadRawTool::new(root.clone()));
+    tools.register(GlobJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
+    tools.register(GrepJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
+    // The one advertised surface (ADR-0226): the registered tools that set
+    // `Tool::advertised` plus the runtime-owned pseudo-tools (`agent`/
     // `agent_send`, `update_tasks`, `ask_user`, `propose_plan`,
     // `request_mode`, `poll`, `rhai`, the discovery tools and the `mcp`
     // envelope). `boot` installs a resolver that snapshots exactly this per
     // session; `tool_specs` carries it for an embedder that wires none.
-    let agent_specs = subagent::agent_specs();
-    cfg.tool_specs = tool_advertising::surface::build_surface(registered_specs, agent_specs);
+    cfg.tool_specs = tool_advertising::surface::build_surface(&tools, subagent::agent_specs());
+    let tools = tools.shared();
     (
         cfg,
         model_info,

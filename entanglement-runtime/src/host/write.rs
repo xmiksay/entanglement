@@ -94,6 +94,9 @@ impl Tool for WriteTool {
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Write]
     }
+    fn advertised(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Create or fully overwrite a file under the working directory with the \
          given content; missing parent directories are created. Use this to \

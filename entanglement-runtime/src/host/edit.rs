@@ -90,6 +90,9 @@ impl Tool for EditTool {
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Write]
     }
+    fn advertised(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Exact-string replace within a file under the working directory. \
          Empty `oldString` creates a new file (refused if exists). \

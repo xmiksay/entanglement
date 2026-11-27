@@ -192,6 +192,9 @@ impl Tool for BashTool {
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Exec]
     }
+    fn advertised(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         if cfg!(feature = "rhai") {
             bash_description!(" For multi-step logic or JSON/YAML transforms, use `rhai`.")

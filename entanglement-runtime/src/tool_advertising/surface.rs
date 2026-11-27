@@ -5,15 +5,17 @@
 //!
 //! This resolver is the **only** thing that shapes the surface — core
 //! advertises its output verbatim — so a spec missing here is a spec no model
-//! ever sees (the ADR-0190 Bug-1 shape).
+//! ever sees (the ADR-0190 Bug-1 shape). The surface is every registered tool
+//! that sets [`Tool::advertised`][crate::Tool::advertised] plus the
+//! executor's own routes (the runtime-owned specs, `agent`/`agent_send`), which
+//! are always advertised; there is no name list (#965).
 
 use std::sync::Arc;
 
 use entanglement_core::{SessionId, SessionModel, ToolSpec, ToolSpecResolver};
 
 use super::SharedAdvertisingState;
-use crate::tool_names::KERNEL;
-use crate::{discover, SharedRegistry};
+use crate::{discover, SharedRegistry, ToolRegistry};
 
 /// Everything the resolver reads.
 #[derive(Clone)]
@@ -46,43 +48,52 @@ pub fn resolve_surface(src: &SurfaceSources, session: &SessionId) -> Vec<ToolSpe
     if let Some(specs) = surfaces.get(session) {
         return specs.clone();
     }
-    let registry_specs = src
-        .tools
-        .read()
-        .expect("tool registry lock poisoned")
-        .specs();
-    let specs = build_surface(registry_specs, src.agent_specs.clone());
+    let specs = build_surface(
+        &src.tools.read().expect("tool registry lock poisoned"),
+        src.agent_specs.clone(),
+    );
     surfaces.insert(session.clone(), specs.clone());
     specs
 }
 
-/// The kernel picked out of every registered spec plus the runtime-owned
-/// pseudo-tools, deduped and name-sorted so the order never depends on
+/// The advertised registered tools plus the runtime-owned pseudo-tools and
+/// `agent_specs`, deduped and name-sorted so the order never depends on
 /// registration order (#566).
-pub fn build_surface(registry_specs: Vec<ToolSpec>, agent_specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
-    let mut specs: Vec<ToolSpec> = registry_specs
+pub fn build_surface(registry: &ToolRegistry, agent_specs: Vec<ToolSpec>) -> Vec<ToolSpec> {
+    let mut specs: Vec<ToolSpec> = registry
+        .specs()
         .into_iter()
+        .filter(|s| registry.get(&s.name).is_some_and(|t| t.advertised()))
         .chain(discover::runtime_owned_specs())
         .chain(agent_specs)
-        .filter(|s| is_advertised(&s.name))
         .collect();
     specs.sort_by(|a, b| a.name.cmp(&b.name));
     specs.dedup_by(|a, b| a.name == b.name);
     specs
 }
 
-/// Kernel tools only (ADR-0226; ADR-0228 retired the interim `skill__*`
-/// exception with skill `tools:`).
-fn is_advertised(name: &str) -> bool {
-    KERNEL.contains(&name)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::borrow::Cow;
 
-    fn spec(name: &str) -> ToolSpec {
-        ToolSpec::new(name, "d")
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::Tool;
+
+    /// A registered tool that opts into the surface or not.
+    struct Flagged(&'static str, bool);
+    #[async_trait]
+    impl Tool for Flagged {
+        fn name(&self) -> Cow<'static, str> {
+            Cow::Borrowed(self.0)
+        }
+        fn advertised(&self) -> bool {
+            self.1
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
     }
 
     fn names(specs: &[ToolSpec]) -> Vec<&str> {
@@ -90,20 +101,22 @@ mod tests {
     }
 
     #[test]
-    fn only_kernel_and_definition_tools_are_advertised_sorted_once() {
-        let registry = [
-            "write",
-            "read",
-            "glob",
-            "grep",
-            "read_raw",
-            "mcp__gh__search",
-        ]
-        .map(spec)
-        .into_iter()
-        .chain([spec("skill__git__log"), spec("read")])
-        .collect();
-        let specs = build_surface(registry, vec![spec("agent")]);
+    fn flagged_tools_and_executor_routes_are_advertised_sorted_once() {
+        let mut registry = ToolRegistry::new();
+        for (name, advertised) in [
+            ("write", true),
+            ("read", true),
+            ("glob", false),
+            ("grep", false),
+            ("read_raw", false),
+            ("mcp__gh__search", false),
+            ("skill__git__log", false),
+            // A registered tool shadowing a runtime-owned name appears once.
+            ("poll", true),
+        ] {
+            registry.register(Flagged(name, advertised));
+        }
+        let specs = build_surface(&registry, vec![ToolSpec::new("agent", "d")]);
         let got = names(&specs);
         for hidden in [
             "glob",
@@ -121,6 +134,7 @@ mod tests {
             "read",
             "write",
             "agent",
+            "poll",
             "mcp",
             "list_mcp",
             "mcp_tools",
@@ -134,5 +148,14 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(got, sorted, "name-sorted, no duplicates");
+    }
+
+    /// The flag, not the name, decides: an unflagged `read` stays hidden.
+    #[test]
+    fn a_kernel_name_without_the_flag_is_not_advertised() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Flagged("read", false));
+        let specs = build_surface(&registry, Vec::new());
+        assert!(!names(&specs).contains(&"read"), "{:?}", names(&specs));
     }
 }

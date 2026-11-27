@@ -85,6 +85,9 @@ impl Tool for LoadSkillTool {
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Control]
     }
+    fn advertised(&self) -> bool {
+        true
+    }
     fn description(&self) -> &str {
         "Load a skill's full instructions by name (list_skills shows them). \
          Returns the skill body with every file path \
