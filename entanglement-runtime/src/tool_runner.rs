@@ -144,7 +144,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
     // One gate for the tool that injects and the seam that forces approval.
     #[cfg(feature = "rhai")]
     if let Some(gate) = &http_gate {
-        match crate::host::HttpTool::new(gate.clone()) {
+        match crate::http_tool::HttpTool::new(gate.clone()) {
             Ok(tool) => tools
                 .write()
                 .expect("tool registry lock poisoned")

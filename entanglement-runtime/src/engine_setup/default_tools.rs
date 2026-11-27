@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use crate::host::BashTool;
-use crate::{host, policy, ToolRegistry};
+use crate::{host, ToolRegistry};
 
 /// What [`register_default_tools`] wires into the host tools.
 pub(crate) struct DefaultTools {
@@ -12,7 +12,7 @@ pub(crate) struct DefaultTools {
     /// store is shared with `bash`.
     pub(crate) host: host::HostToolOptions,
     pub(crate) secret_env: Vec<String>,
-    pub(crate) sandbox_resolver: Arc<dyn policy::SandboxResolver>,
+    pub(crate) sandbox_resolver: Arc<dyn host::SandboxResolver>,
     pub(crate) jobs: crate::jobs::JobRegistry,
 }
 

@@ -17,8 +17,8 @@ use crate::tool_runner::EscapeRoot;
 
 mod default_tools;
 use crate::{
-    config, extra_roots, file_backup, host, jobs, mcp, policy, retained_output, script_ops,
-    session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
+    config, extra_roots, file_backup, host, jobs, mcp, retained_output, script_ops, session_store,
+    skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
 use default_tools::{register_default_tools, DefaultTools};
 
@@ -75,7 +75,7 @@ pub(crate) async fn build_config(
     mcp::ActiveServers,
     Arc<mcp::AvailableMcp>,
     EscapeRoot,
-    policy::SandboxConfig,
+    host::SandboxConfig,
     jobs::JobRegistry,
     retained_output::RetainedOutputRegistry,
     script_ops::ScriptRegistry,
@@ -129,7 +129,7 @@ pub(crate) async fn build_config(
     // tighten-only env override (`SandboxPolicy::most_confined`). Off by
     // default — an unset `ENTANGLEMENT_SANDBOX` and a mode with no
     // `sandbox:` key mean unsandboxed, full-privilege execution.
-    let sandbox_config = policy::SandboxConfig::new(perm_modes.clone(), mode_table.clone());
+    let sandbox_config = host::SandboxConfig::new(perm_modes.clone(), mode_table.clone());
     // Per-project scratch dir (#524, ADR-0142) — a pre-trusted write location
     // the model is steered toward over `/tmp` (see `system_prompt`'s env
     // block) — a general-purpose scratch carve-out.

@@ -35,8 +35,6 @@ mod brace;
 pub mod edit;
 pub mod glob;
 pub mod grep;
-#[cfg(feature = "rhai")]
-pub mod http;
 pub mod read;
 mod registry;
 pub mod sandbox;
@@ -52,11 +50,9 @@ pub use bash::BashTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
-#[cfg(feature = "rhai")]
-pub use http::HttpTool;
 pub use read::{ReadRawTool, ReadTool};
 pub use registry::{host_tools, host_tools_with, host_tools_with_extra_roots, HostToolOptions};
-pub use sandbox::{SandboxBackend, SandboxPolicy};
+pub use sandbox::{SandboxBackend, SandboxConfig, SandboxPolicy, SandboxResolver};
 pub use search_json::{GlobJsonTool, GrepJsonTool};
 pub(crate) use walk::MAX_RESULTS;
 pub use walk::{list_files, list_files_with_extra_roots, FileList};

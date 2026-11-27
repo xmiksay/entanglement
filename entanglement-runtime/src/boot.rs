@@ -15,7 +15,7 @@ use crate::engine_setup::build_config;
 use crate::factories::build_model_resolver;
 use crate::tool_runner::EscapeRoot;
 use crate::{
-    agents, config, file_backup, logging, mcp, mode, policy, retained_output, script_ops, skills,
+    agents, config, file_backup, host, logging, mcp, mode, retained_output, script_ops, skills,
     subagent, system_prompt, system_prompt_mode, tool_advertising, SharedRegistry,
 };
 
@@ -32,7 +32,7 @@ pub(crate) struct Engine {
     pub(crate) mcp_configs: mcp::ServerConfigs,
     pub(crate) mcp_capabilities: HashMap<String, Vec<String>>,
     pub(crate) escape_root: EscapeRoot,
-    pub(crate) sandbox_config: policy::SandboxConfig,
+    pub(crate) sandbox_config: host::SandboxConfig,
     pub(crate) jobs: crate::jobs::JobRegistry,
     pub(crate) retained: retained_output::RetainedOutputRegistry,
     pub(crate) scripts: script_ops::ScriptRegistry,

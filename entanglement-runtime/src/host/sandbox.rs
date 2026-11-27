@@ -15,6 +15,9 @@ use std::path::Path;
 
 use tokio::process::Command;
 
+mod resolve;
+pub use resolve::{mode_policy, ModeSandboxResolver, SandboxConfig, SandboxResolver};
+
 /// Which confinement mechanism (if any) wraps a spawned `bash` child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxBackend {

@@ -93,27 +93,6 @@ pub struct Mode {
 }
 
 impl Mode {
-    /// This mode's confinement policy for `bash` (ADR-0207 §6, stage
-    /// 5b): `sandbox`/`sandbox_network` translated into a
-    /// [`crate::host::SandboxPolicy`]. `ENTANGLEMENT_SANDBOX`/
-    /// `ENTANGLEMENT_SANDBOX_NETWORK` are then layered on top via
-    /// [`SandboxPolicy::most_confined`] — env may only tighten what the mode
-    /// declares, never loosen it, which `most_confined` gives for free since
-    /// it always picks the more-confined of the two.
-    pub fn sandbox_policy(&self) -> crate::host::SandboxPolicy {
-        use crate::host::{SandboxBackend, SandboxPolicy};
-        let backend = match self.sandbox.as_deref() {
-            Some("bwrap") | Some("bubblewrap") => SandboxBackend::Bubblewrap,
-            _ => SandboxBackend::None,
-        };
-        SandboxPolicy {
-            backend,
-            network: self.sandbox_network,
-        }
-    }
-}
-
-impl Mode {
     /// Convert a legacy-shaped [`entanglement_core::PermissionProfile`] (the
     /// runtime-wide ceiling carrier type every dispatch call site —
     /// `ToolExecutor::builder`, ~30 test fixtures — already

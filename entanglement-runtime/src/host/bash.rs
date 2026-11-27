@@ -5,12 +5,12 @@
 //! always closed, not inherited from the engine (#389); use
 //! shell-native `< file` redirection if a command needs input.
 
+use super::sandbox::SandboxResolver;
 use super::sandbox::{self, SandboxPolicy};
 use crate::capability::Capability;
 use crate::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
 use crate::jobs::JobRegistry;
 use crate::output::{bounded_result, tail_lines, DEFAULT_TAIL};
-use crate::policy::SandboxResolver;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -814,7 +814,7 @@ mod tests {
     }
 
     /// #479, ADR-0104 amendment; ADR-0207 §6 stage 5b: one `BashTool` instance
-    /// backed by a [`crate::policy::SandboxResolver`] confines only the
+    /// backed by a [`super::sandbox::SandboxResolver`] confines only the
     /// session whose **mode** confines — proving mode-scoped confinement in
     /// one process, not the previous all-or-nothing global switch. Two
     /// sessions, two modes, one shared table.
@@ -848,7 +848,7 @@ mod tests {
         };
         let confined = SessionId::new("confined-session");
         let unconfined = SessionId::new("unconfined-session");
-        let cfg = crate::policy::SandboxConfig {
+        let cfg = crate::host::SandboxConfig {
             base: SandboxPolicy::none(),
             modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
                 (confined.clone(), "confined".to_string()),

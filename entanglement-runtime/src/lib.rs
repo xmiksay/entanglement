@@ -71,6 +71,9 @@ pub mod host_ns;
 // The credentialed-`http()` gate (ADR-0227) — shared by the `http` tool and
 // the dispatch seam; ungated so the lean executor compiles the same ladder.
 pub mod http_gate;
+// The rhai-only `http` tool behind that gate.
+#[cfg(feature = "rhai")]
+pub mod http_tool;
 pub mod inspect;
 pub mod jobs;
 pub mod layers;
