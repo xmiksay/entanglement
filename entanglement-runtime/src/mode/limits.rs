@@ -28,13 +28,6 @@ pub struct Limits {
     /// while `question_timeout` is `0`.
     #[serde(default)]
     pub on_timeout: OnTimeout,
-    /// Turn budget for an unattended run (ADR-0207 §11). `None` = unbounded.
-    #[serde(default)]
-    pub max_turns: Option<u32>,
-    /// Wall-clock budget in seconds for an unattended run (ADR-0207 §11).
-    /// `None` = unbounded.
-    #[serde(default)]
-    pub max_duration: Option<u64>,
 }
 
 /// What happens when `question_timeout` elapses (ADR-0207 §11): an options
@@ -60,8 +53,6 @@ mod tests {
         let limits = Limits::default();
         assert_eq!(limits.max_depth, None);
         assert_eq!(limits.max_agents, None);
-        assert_eq!(limits.max_turns, None);
-        assert_eq!(limits.max_duration, None);
     }
 
     #[test]

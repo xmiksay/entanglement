@@ -122,11 +122,6 @@ pub mod propose_plan;
 pub mod questions;
 pub mod request_mode;
 pub mod retained_output;
-// Wall-clock/turn-count budget enforcement for a mode's `max_turns`/
-// `max_duration` (ADR-0207 §11, stage 5c) — spawned by
-// `tool_runner::ToolExecutor::builder` alongside its other
-// background tasks.
-pub mod run_budget;
 // `question_timeout`/`on_timeout` unattended-run policy (ADR-0207 §11,
 // stage 5c): the `Ask`-collapses-to-deny rule, its repeat-denial
 // escalation, and a timed-out `ask_user` call's default answers.

@@ -1,6 +1,6 @@
 //! Integration tests for ADR-0207 §11 (stage 5c): making a mode with a
-//! finite `question_timeout`/`max_turns`/`max_duration` — `auto`, or any
-//! other mode tuned the same way — genuinely unattended.
+//! finite `question_timeout` — `auto`, or any other mode tuned the same
+//! way — genuinely unattended.
 //!
 //! Mirrors `permission_dispatch.rs`'s harness shape (its helpers are private
 //! to that module, hence the local copies here) but exercises `Limits`
@@ -435,75 +435,6 @@ async fn ask_user_timeout_with_no_options_is_an_error() {
         )),
         "a free-text question with no default must fail as is_error, not invent an answer; \
          got {events:?}"
-    );
-}
-
-#[tokio::test]
-async fn max_turns_ends_the_run_with_a_stated_reason() {
-    let limits = Limits {
-        max_turns: Some(1),
-        ..Limits::default()
-    };
-    let mut reg = ToolRegistry::new();
-    reg.register(EchoBash);
-    // Three rounds queued; only the first is allowed to complete.
-    let holly = spawn_with_policy(
-        reg,
-        one_mode_table(Permission::Allow, limits),
-        vec![
-            bash_call("t1", "1"),
-            bash_call("t2", "2"),
-            bash_call("t3", "3"),
-        ],
-    );
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    let events = collect_for(sub, &sid, Duration::from_secs(3)).await;
-
-    assert!(
-        events.iter().any(|e| matches!(
-            e,
-            OutEvent::Error { message, .. } if message.contains("max_turns")
-        )),
-        "expected a stated max_turns reason; got {events:?}"
-    );
-    let bash_calls = events
-        .iter()
-        .filter(|e| matches!(e, OutEvent::ToolExec { tool, .. } if tool == "bash"))
-        .count();
-    assert!(
-        bash_calls <= 1,
-        "the run must stop at the turn budget instead of continuing past it; \
-         got {bash_calls} bash call(s) in {events:?}"
-    );
-}
-
-#[tokio::test]
-async fn max_duration_ends_the_run_with_a_stated_reason() {
-    let limits = Limits {
-        max_duration: Some(1),
-        ..Limits::default()
-    };
-    let holly = spawn_with_policy(
-        ToolRegistry::new(),
-        one_mode_table(Permission::Allow, limits),
-        vec![done_text()],
-    );
-    let sid = SessionId::new("s1");
-    let sub = holly.subscribe();
-    holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    // The turn itself finishes almost instantly; the budget watcher's own
-    // periodic sweep (every 5s) is what has to catch the stale session, so
-    // this window has to clear that sweep at least once past the 1s budget.
-    let events = collect_for(sub, &sid, Duration::from_secs(8)).await;
-
-    assert!(
-        events.iter().any(|e| matches!(
-            e,
-            OutEvent::Error { message, .. } if message.contains("max_duration")
-        )),
-        "expected a stated max_duration reason; got {events:?}"
     );
 }
 

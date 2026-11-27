@@ -168,12 +168,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
     // race ahead of the watcher's subscription (the `user_prompt_submit` hook,
     // #199, depends on catching that first prompt).
     let inbound = holly.subscribe_inbound();
-    // Same discipline for the budget watcher's own subscription (ADR-0207
-    // §11, stage 5c): it's handed off to a task scheduled inside the
-    // `tokio::spawn` below, so subscribing there (instead of here) could
-    // race a `SessionStarted`/`Usage` broadcast sent right after this
-    // function returns and silently miss it.
-    let budget_sub = holly.subscribe();
     // Same discipline for the lifecycle hook watcher (#734): a first
     // `SessionStarted` must not race its subscription. Skipped entirely when
     // no observe-only hook point is configured (the norm).
@@ -304,15 +298,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
                 inbound,
             );
         }
-        // `max_turns`/`max_duration` enforcement (ADR-0207 §11, stage 5c):
-        // its own subscriber, parked in the same `JoinSet` as every other
-        // background task here so it's aborted alongside them rather than
-        // leaking a `Holly` clone past shutdown.
-        background.spawn(crate::run_budget::watch(
-            ctx.holly.clone(),
-            budget_sub,
-            ctx.mode_table.clone(),
-        ));
         lifecycle::run(sub, &ctx, &active).await;
     })
 }

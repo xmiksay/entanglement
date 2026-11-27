@@ -47,8 +47,8 @@
 //!   **Which mode**: the prompt offers exactly two — `auto` (the *default*: a
 //!   bare accept with no mode named lands here, since accepting a plan
 //!   ordinarily means "go do it", and `auto` is the bounded posture with its
-//!   own `max_turns`/`max_duration`/timeout/deny-list guarding an unattended
-//!   run, ADR-0207 §11) or `build` (an explicit opt-in to the supervised
+//!   own `question_timeout` and deny-list guarding an unattended run,
+//!   ADR-0207 §11) or `build` (an explicit opt-in to the supervised
 //!   posture instead). The choice is carried on [`InMsg::Approve::mode`] —
 //!   the head's own record of what its user pressed — and read here off
 //!   [`seam::Decision::Approve::mode`]; [`resolve_accept_mode`] is the single

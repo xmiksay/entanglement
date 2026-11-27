@@ -155,20 +155,6 @@ pub(super) fn render_mode_detail(m: &Mode) -> String {
             format!("{}s", m.limits.question_timeout)
         }
     );
-    let _ = writeln!(
-        out,
-        "  max_turns:        {}",
-        m.limits
-            .max_turns
-            .map_or("unlimited".to_string(), |v| v.to_string())
-    );
-    let _ = writeln!(
-        out,
-        "  max_duration:     {}",
-        m.limits
-            .max_duration
-            .map_or("unlimited".to_string(), |v| format!("{v}s"))
-    );
 
     let _ = writeln!(
         out,
