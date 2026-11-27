@@ -160,7 +160,7 @@
   `question_timeout`). A `UserQuestion` for an id you already queue is a
   re-offer: do not queue a second one. (The retract/replace question frames
   this note once listed are gone in 0.8, see
-  [0.7 → 0.8](0.7-to-0.8.md#retractreplace-question-frames-removed-922).)
+  [0.7 → 0.8](0.7-to-0.8/sessions-and-approvals.md#retractreplace-question-frames-removed-922).)
 - **API:** `PendingDecisions::resolve` returns `Resolution`
   (`Delivered`/`Absent`/`Misaimed { kind }`); a router of your own should
   report `Misaimed`. Parks receive `seam::ApprovalDecision` or

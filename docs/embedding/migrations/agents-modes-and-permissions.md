@@ -189,7 +189,7 @@ permission mode (next section).
   async fn record(&self, session: &SessionId, tool: &str, arg: Option<&str>,
                   scope: ApprovalScope, mode: &str);
   fn forget_session(&self, session: &SessionId);
-  fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String; // default: echoes `dir`
+  fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String; // default: echoes `dir`; removed in 0.8 (#925)
   ```
 
   The executor passes the mode the call was graded under, and calls `record`

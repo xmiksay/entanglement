@@ -157,7 +157,7 @@ the code, never as a description of current behaviour — that is
 | [0123](0123-agent-poll-zero-timeout-waits-for-notification.md) | `agent_poll` `timeout_secs: 0` waits for the child's notification | current; amended by 0155, 0161 | — |
 | [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current; changed by #916 | — |
 | [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916 | — |
-| [0126](0126-session-scoped-directory-grants.md) | Session-scoped directory grants via `ApprovalScope::SessionDir` and TUI `/allow` | current; changed by #916 | — |
+| [0126](0126-session-scoped-directory-grants.md) | Session-scoped directory grants via `ApprovalScope::SessionDir` and TUI `/allow` | current; changed by #916; removed by #925 | — |
 | [0127](0127-ask-user-v2-multi-question-envelope.md) | `ask_user` v2 — multi-question envelope, always-on free text, multi-select | current; amended by 0143, 0146 | — |
 | [0128](0128-mcp-http-var-header-expansion-leak-surface.md) | MCP HTTP `${VAR}` header expansion is a documented, consented leak surface | current | — |
 | [0129](0129-thread-the-skill-mask-into-rhai-binding-resolution.md) | Thread the skill `allowed_tools` mask into `rhai` binding resolution | superseded by 0194 (binding snapshot by 0227) | — |
@@ -248,7 +248,7 @@ the code, never as a description of current behaviour — that is
 | [0214](0214-retired-agent-logs-resume-as-general.md) | Logs naming a retired agent resume as `general` | current; amended by 0215 | — |
 | [0215](0215-resume-fallback-per-session-and-read-only-narrowing.md) | Resume fallback per session, with read-only narrowing | current; amended by 0216 | — |
 | [0216](0216-resume-modes-ride-the-replay.md) | Resume modes ride the replay when any session is forced | current; amended by 0218 | — |
-| [0217](0217-list-pending-query-for-parked-approvals.md) | `ListPending`: a correlation-id query for parked approvals | current; amended by 0230, 0237 | — |
+| [0217](0217-list-pending-query-for-parked-approvals.md) | `ListPending`: a correlation-id query for parked approvals | current; amended by 0230, 0237; changed by #925 | — |
 | [0218](0218-agent-default-mode-is-a-starting-hint.md) | An agent's `default_mode` is a starting hint, not authority | current; amended by 0246 | — |
 | [0219](0219-tui-themes-and-keybindings.md) | TUI themes and keybindings are named slots and validated action maps | current | — |
 | [0220](0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) | `web_fetch` is an Exec-graded, SSRF-guarded host tool; the TUI pastes clipboard images for vision models | current; amended by 0225 | — |
@@ -261,7 +261,7 @@ the code, never as a description of current behaviour — that is
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920 | — |
 | [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248; changed by #920; changed by #923 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920; changed by #923 | — |
-| [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237 | — |
+| [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237; changed by #925 | — |
 | [0231](0231-compaction-successor-inherits-background-work.md) | A compaction successor inherits its predecessor's background work | current; amended by 0234, 0238, 0241, 0242 | — |
 | [0232](0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md) | Spawning is graded; the bookkeeping Control tools are non-maskable | current; amended by 0235; changed by #923 | — |
 | [0233](0233-live-only-nested-call-events-for-rhai-scripts.md) | Live-only `NestedCall` events report a script's binding calls | current | — |

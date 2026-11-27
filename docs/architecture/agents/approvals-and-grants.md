@@ -70,35 +70,6 @@
   store loads empty and a write failure is logged — both fail *closed* (ask again),
   the safe direction. The TUI modal offers `y` once / `s` session / `a` always /
   `n` reject / `e` edit-reason / `Esc` interrupt.
-- **Session-scoped directory grants (✅ #486, [ADR-0126](../../adr/archive/0126-session-scoped-directory-grants.md)):**
-  a fourth `ApprovalScope::SessionDir` — session-only like `Session`, but
-  widened to every later call whose grading argument falls under the approved
-  call's directory (`grants::dir_covers`, a plain path-component-prefix check
-  on the #485-normalized argument — no symlink resolution, so a granted
-  directory can cover an arg whose path component is an in-root symlink
-  pointing elsewhere, skipping the *prompt* but never the filesystem
-  boundary: host tools re-canonicalize and stay root-contained; an accepted
-  prompt-UX nuance, 2026-07-23 audit) instead of matching one exact call.
-  Restricted to the read-only triad (`read`/`grep`/`glob`, the ADR-0114 `read`
-  capability's members, reused via `tool_names::is_read_capability_member` so
-  the grant store, the TUI's `[d]` key gate, and its footer hint can never
-  drift apart); any other tool — or an escape-forced prompt, in
-  `ExtraRootStore` — degrades it to an exact `Session` grant rather than
-  widening. `FileGrantStore` gains a separate, never-persisted
-  `session_dirs: HashMap<SessionId, BTreeSet<String>>` (no `Always`-directory
-  scope, so `grants.yml`'s shape is untouched); `grants::dir_for(tool, arg)`
-  derives the directory an approved call implies (parent dir for
-  `read`/`edit`/`write`/`apply_patch`, the path filter verbatim for `grep`,
-  the literal non-wildcard prefix for `glob`). `GrantStore::grant_session_dir`
-  is default-implemented (a no-op echo), so the #311 seam's existing custom
-  implementations keep compiling untouched — only `DefaultGrantStore`
-  overrides it for real. Two TUI surfaces: `[d]` on an approval prompt
-  (`tui/event_loop/approval_keys.rs`, gated on the pending tool being read-like) and a
-  proactive `/allow <path>` command (`tui/allow_command.rs`, normalizing the
-  path against the head's root and rejecting anything outside it) — both call
-  `grant_session_dir` synchronously through a cloned `Arc<DefaultGrantStore>`
-  handle threaded into the TUI, introducing no new wire surface (`Approve`
-  was already wire-allowed).
 - **Per-user permission ceiling + grants (#522, [ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md);
   reframed embedder-side by [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../../adr/archive/0184-provider-hosted-multi-user-seams.md)):**
   built entirely on the #311 seams above, no core change. A session carries an

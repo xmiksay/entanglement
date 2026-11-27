@@ -145,8 +145,6 @@ pub trait GrantStore: Send + Sync {
         mode: &str,
     );
     fn forget_session(&self, session: &SessionId);
-    // Default: a no-op that echoes `dir` back.
-    fn grant_session_dir(&self, session: &SessionId, dir: &str, mode: &str) -> String;
 }
 ```
 
@@ -155,7 +153,7 @@ the mode the call was graded under to both `is_granted` and `record`, so key you
 grants by it: a grant matches only the mode it was recorded under, and one
 earned in `build` never upgrades a call in `research`
 ([ADR-0207](../adr/archive/0207-permission-modes-replace-agent-borne-authority.md) §8).
-A 0.6.0 store gains the parameter on all three methods
+A 0.6.0 store gains the parameter on both methods
 ([migration](migrations/agents-modes-and-permissions.md#mode-scoped-grants-adr-0207-8-634)).
 
 `resolve` is called once per session in a call's ancestor chain; the executor

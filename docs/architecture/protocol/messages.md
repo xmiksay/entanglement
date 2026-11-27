@@ -212,9 +212,7 @@ and is `[once]` for `propose_plan`/`request_mode` (the approver picks a mode),
 a **floored write** (it always asks, so no grant is recorded) and an **inline**
 rhai launch (no path to key a grant on, likewise a `path` launch whose
 script could not be read). An `agent_send` card gets once/session only (its
-grant is keyed on a handle minted for this run, [ADR-0235](../../adr/archive/0235-scoped-spawn-rules-grade-the-target.md)). Every other card gets once/session/always, plus
-`session_dir` for the read triad — but not on a `root_escape` card, whose
-grant is keyed on the exact path. The runtime **enforces** the list:
+grant is keyed on a handle minted for this run, [ADR-0235](../../adr/archive/0235-scoped-spawn-rules-grade-the-target.md)). Every other card gets once/session/always. The runtime **enforces** the list:
 `PendingDecisions::resolve` clamps an `Approve` whose scope the card did not
 offer to `once` and logs a warning, so a wire client cannot earn a wider
 grant (for example a durable escape-root grant) than the card advertised.
