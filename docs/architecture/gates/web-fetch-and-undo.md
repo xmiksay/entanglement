@@ -151,10 +151,11 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   restore … no backup (…)"). A backup failure is logged, never a tool error —
   the edit already happened.
 - **Configuration** (#787): `config.yml` `undo: {enabled, max_file_bytes,
-  max_root_bytes}` (`skutter/src/config/undo.rs` owns the size grammar: bytes or
-  `B`/`KB`/`MB`/`GB`/`KiB`/`MiB`/`GiB`, 1 byte – 64 GiB, `0` rejected in
-  favor of `enabled: false`) becomes the library's plain
-  `file_backup::BackupLimits` (no serde, #967); `boot.rs` builds `FileBackups::with_backup_limits`
+  max_root_bytes}` deserializes straight into the library's
+  `file_backup::BackupLimits`, whose serde form owns the size grammar
+  (`file_backup/size.rs`: bytes or `B`/`KB`/`MB`/`GB`/`KiB`/`MiB`/`GiB`,
+  1 byte – 64 GiB, `0` rejected in favor of `enabled: false`); `skutter`'s
+  `boot.rs` builds `FileBackups::with_backup_limits`
   from it, and the definitions watcher re-applies it on every config change
   via `FileBackups::set_limits` (a config that no longer parses keeps the
   previous limits). Limits are read per record, so a change applies to the

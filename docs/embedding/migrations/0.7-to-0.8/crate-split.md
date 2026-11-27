@@ -240,8 +240,9 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   `agents::load_registry`/`resolve_registry`/`prompt_report` and
   `skills::load_registry`/`resolve_registry` (the env-reading wrappers);
   `system_prompt::PromptContext::load`; `AuxModelStore::load`/`load_from`/
-  `reload`; `BackupLimits`'s `Deserialize`. The runtime drops its `dirs`
-  and `fd-lock` dependencies.
+  `reload`; `aux_llm::Purpose`'s `Serialize`/`Deserialize` (key it with
+  `as_str`/`parse`). The runtime drops its `dirs` and `fd-lock`
+  dependencies.
 - **Moved API:** `config::http_auth::{HttpAuth, HttpAuthEntry, ResolvedAuth,
   ProjectHttpRules}` → `http_auth::…` (plain data, unchanged);
   `config::aux_models::{AuxModelStore, Purpose}` → `aux_llm::…`;
@@ -254,6 +255,12 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   `AuxModelStore::pins`; `mode::capability_class`, `mode::rule_tool_name`
   and `mode::deserialize_grade` are public (for an embedder's own config
   checks).
+- **Serde rule:** a plain data type the embedder hands the library keeps
+  its `Deserialize` and field grammar, so an embedder can read it from its
+  own config format; the library itself opens no file. That covers
+  `BackupLimits` (sizes as bytes or e.g. `8MiB`, unchanged from 0.7),
+  `HttpAuth`/`HttpAuthEntry` and the mode grades (`mode::deserialize_grade`).
+  A derive nothing deserializes through is dropped (`Purpose`).
 - **Changed API:** `AuxModelStore` is in memory: `set` is infallible and
   writes nothing. `layers::load_layers` drops its `env` argument.
   `SessionStore::for_cwd(base, cwd)` takes the base dir

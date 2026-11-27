@@ -6,8 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
-
 /// A recognized auxiliary LLM purpose (Issue 5). Each one has its own
 /// `(provider, model)` pin and a runtime-side call site.
 ///
@@ -19,10 +17,10 @@ use serde::{Deserialize, Serialize};
 ///   "what the agent is doing now" phrase, set as `Session.action` on every
 ///   tool call (purely runtime-side, `narrate.rs`).
 ///
-/// Serialized as the lowercase snake-case key (`summarize`, `session_title`,
-/// `narrate`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Keyed in text by [`as_str`](Self::as_str) / [`parse`](Self::parse)
+/// (`summarize`, `session_title`, `narrate`) — `skutter`'s `aux-models.yml`
+/// keys through them, so the type carries no serde form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Purpose {
     Summarize,
     SessionTitle,
@@ -36,7 +34,7 @@ impl std::fmt::Display for Purpose {
 }
 
 impl Purpose {
-    /// The stable string key (the serde spelling), reachable without
+    /// The stable string key, reachable without
     /// constructing the enum first (e.g. the `/aux-model` parser).
     pub fn as_str(self) -> &'static str {
         match self {
@@ -97,11 +95,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn purpose_roundtrips_through_serde_keys() {
+    fn purpose_roundtrips_through_its_keys() {
         for p in [Purpose::Summarize, Purpose::SessionTitle, Purpose::Narrate] {
-            let s = serde_yaml::to_string(&p).unwrap();
-            let back: Purpose = serde_yaml::from_str(s.trim()).unwrap();
-            assert_eq!(p, back);
+            assert_eq!(Purpose::parse(p.as_str()), Some(p));
         }
         // `title` is accepted as an alias of `session_title` (the friendly
         // spelling a user is likeliest to type at `/aux-model`).

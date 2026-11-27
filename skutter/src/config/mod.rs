@@ -62,7 +62,7 @@
 //!   ([`keybindings`]) once per rejected remap (#735).
 //! - `undo` — per-write file backups behind `/undo`/`/rewind` (#787,
 //!   ADR-0212): `enabled`, `max_file_bytes`, `max_root_bytes` in the size
-//!   grammar of [`undo`]. Live-reloaded by the definitions watcher; caps
+//!   grammar of `BackupLimits`' serde form. Live-reloaded by the definitions watcher; caps
 //!   apply to the next write, and disabling keeps existing backups
 //!   restorable.
 //! - general settings — `agent` / `mode` / `provider` / `model` / `verbose` /
@@ -335,7 +335,7 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
             .session_retention_days
             .unwrap_or(DEFAULT_SESSION_RETENTION_DAYS),
         tui: raw.tui,
-        undo: raw.undo.into(),
+        undo: raw.undo,
     };
     warnings.extend(config.tui.warnings());
     warnings.extend(config.http_auth.key_warnings());

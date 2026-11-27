@@ -92,7 +92,7 @@ pub(super) struct RawConfig {
     #[serde(default)]
     pub(super) tui: TuiConfig,
     /// Per-write file backups behind `/undo`/`/rewind` (#787, ADR-0212):
-    /// `enabled` + size caps, each field optional ([`super::undo`]).
+    /// `enabled` + size caps, each field optional (the library's serde form).
     #[serde(default)]
-    pub(super) undo: super::undo::RawUndo,
+    pub(super) undo: crate::file_backup::BackupLimits,
 }
