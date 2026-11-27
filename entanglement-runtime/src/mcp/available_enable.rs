@@ -10,7 +10,7 @@ use anyhow::{bail, Result};
 
 use crate::tools::SharedRegistry;
 
-use super::super::live::{install_server, ActiveServers};
+use super::super::active::{install_server, ActiveServers};
 use super::super::{connect_client, record_last_seen};
 use super::AvailableMcp;
 
@@ -228,7 +228,7 @@ pub async fn resolve_unregistered(
 mod tests {
     use std::collections::HashMap;
 
-    use crate::mcp::live::ActiveServer;
+    use crate::mcp::active::ActiveServer;
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::*;

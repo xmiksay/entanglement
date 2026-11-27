@@ -4,7 +4,7 @@
 
 use super::*;
 
-use crate::mcp::live::{ActiveServer, ActiveServers};
+use crate::mcp::active::{ActiveServer, ActiveServers};
 use crate::mcp::McpClient;
 use crate::tools::SharedRegistry;
 

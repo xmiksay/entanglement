@@ -3,7 +3,7 @@
 //! model-facing `list_mcp`. Pure reads of the roster and the connected set:
 //! listing never connects anything.
 
-use super::live::ActiveServers;
+use super::active::ActiveServers;
 use super::{transport_label, AvailableMcp};
 
 /// A registered server as the heads and the model see it.

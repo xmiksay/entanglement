@@ -10,9 +10,9 @@
 // The moved modules name runtime modules as `crate::<name>`, exactly as they
 // did inside `entanglement-runtime`.
 use entanglement_runtime::{
-    attendance, capability, discover, env_date, exec, exec_scope, file_change, jobs, mcp, mode,
-    output, path_grading, permission, policy, rhai_trust, script_ops, secret_env, tool_names,
-    tool_runner, tools,
+    attendance, capability, discover, env_date, exec, exec_scope, file_change, jobs, mode, output,
+    path_grading, permission, policy, rhai_trust, script_ops, secret_env, tool_names, tool_runner,
+    tools,
 };
 
 // File-based agent and skill definitions (#932): the layered dirs, the
@@ -44,7 +44,10 @@ pub mod hooks;
 // containment and the bubblewrap sandbox.
 pub mod host;
 pub mod inspect;
+// The global MCP roster, live add/remove and the OAuth flows over the
+// library's MCP layer (#932).
 pub mod logging;
+pub mod mcp;
 pub mod serve;
 // User-defined slash commands — layered prompt templates (#733): pure
 // discovery + text expansion, consumed by the TUI and the `run` head.
@@ -56,3 +59,14 @@ pub mod tool_vocab;
 mod user_dirs;
 // The definitions watcher: live reload of what `skutter` loads from disk.
 pub mod watch;
+
+/// A pool client with cross-process endpoint state disabled (#743): a unit
+/// test must never read or write the developer's real endpoint-state dir.
+#[cfg(test)]
+pub(crate) fn test_http_client() -> entanglement_core::HttpClient {
+    entanglement_core::HttpClient::with_shared_state(
+        entanglement_core::SharedStateLocation::Disabled,
+        entanglement_core::RetryConfig::default(),
+    )
+    .expect("reqwest client builds in tests")
+}

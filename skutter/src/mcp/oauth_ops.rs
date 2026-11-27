@@ -17,8 +17,8 @@ use entanglement_core::{AuthFlow, AuthOutcome, DeviceFlow, McpAuthAction, TokenS
 
 use crate::tools::SharedRegistry;
 
-use super::live::{ActiveServers, ServerConfigs};
-use super::McpServerConfig;
+use super::live::ServerConfigs;
+use super::{ActiveServers, McpServerConfig};
 
 /// How long the user gets to complete browser consent before the flow gives up
 /// and releases the loopback listener.

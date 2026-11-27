@@ -34,7 +34,7 @@ pub fn transport_label(cfg: &McpServerConfig) -> String {
 /// where an `oauth:` server's bearer comes from — the roster's store for a
 /// global connect, the scope's slice for a session-keyed one (#684); `None`
 /// connects without a bearer.
-pub(crate) async fn connect_client(
+pub async fn connect_client(
     name: &str,
     cfg: &McpServerConfig,
     secret_env: &[String],
@@ -101,7 +101,7 @@ pub(crate) fn register_tools(
 /// `list_mcp` shows — on the blocking pool, since a head's cache may take a
 /// file lock. A failure only costs a tool list for an unconnected server
 /// later, so it is logged, never surfaced.
-pub(crate) async fn record_last_seen(
+pub async fn record_last_seen(
     cache: &Arc<dyn McpToolCache>,
     server: &str,
     cfg: &McpServerConfig,

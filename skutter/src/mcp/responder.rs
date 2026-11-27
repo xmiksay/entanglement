@@ -1,11 +1,11 @@
 //! Runtime service answering the global MCP wire ops (#375) —
-//! `InMsg::McpList`/`McpAdd`/`McpRemove` — off the inbound fan-out.
+//! `InMsg::McpList`/`McpAdd`/`McpRemove`/`McpAuth` — off the inbound fan-out.
 //!
 //! MCP config is engine-global, not one session's, so core routes none of
 //! these to a session task (`msg_to_cmd` → `None`, mirroring
 //! `InMsg::ListSessions`). This mirrors
 //! [`crate::history::spawn_history_responder`]'s answer to `ReplayFrom`: a
-//! runtime-side subscriber is the sole answerer, since it alone holds the
+//! head-side subscriber is the sole answerer, since it alone holds the
 //! `SharedRegistry` + `ActiveServers` + live server-config map these ops read
 //! and mutate.
 //!
@@ -21,8 +21,8 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::tools::SharedRegistry;
 
-use super::available::AvailableMcp;
-use super::live::{mcp_add, mcp_remove, ActiveServers, ServerConfigs};
+use super::live::{mcp_add, mcp_remove, ServerConfigs};
+use super::{ActiveServers, AvailableMcp};
 
 /// Spawns a subscriber that answers `InMsg::McpList`/`McpAdd`/`McpRemove`.
 /// `secret_env` (the catalog's provider API-key env vars, #164) is scrubbed
@@ -479,7 +479,14 @@ mod tests {
         let holly = empty_engine();
         let mut sub = holly.subscribe();
         let avail = AvailableMcp::default();
-        avail.insert_user("my.docs", crate::mcp::available::tests::stdio("true"));
+        avail.insert_user(
+            "my.docs",
+            crate::mcp::McpServerConfig {
+                command: Some("true".into()),
+                url: None,
+                ..http_cfg(false)
+            },
+        );
         let handle = spawn_mcp_responder(
             &holly,
             Arc::new(RwLock::new(ToolRegistry::new())),

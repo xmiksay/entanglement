@@ -42,16 +42,13 @@ use crate::tool_names;
 // that dep is optional (`provider` feature) and absent from the lean build.
 pub use entanglement_core::OauthConfig;
 
+pub mod active;
 pub mod available;
-pub mod browser;
 pub mod client;
 #[path = "connect.rs"]
 mod connect_impl;
 mod in_flight;
-pub mod live;
 mod memory;
-pub mod oauth_ops;
-pub mod responder;
 mod result;
 mod roster;
 pub mod scoped;
@@ -61,29 +58,20 @@ pub mod tool;
 pub use available::AvailableMcp;
 pub use client::{McpClient, McpToolDef};
 pub use memory::{InMemoryMcpToolCache, InMemoryTokenStore, McpToolCache};
-// Split out of this file along the 400-line file cap (#559): crate-internal
-// helpers every connect path (lazy connect, live `/mcp add`, `/mcp connect`)
+// Split out of this file along the 400-line file cap (#559): the helpers
+// every connect path (lazy connect, an embedder's live add or reconnect)
 // shares.
-pub use connect_impl::transport_label;
-pub(crate) use connect_impl::{connect_client, record_last_seen, register_tools};
+pub(crate) use connect_impl::register_tools;
+pub use connect_impl::{connect_client, record_last_seen, transport_label};
 pub(crate) use in_flight::InFlight;
 pub use scoped::{McpScope, McpScopeResolver, McpScopes};
 
-/// The handles a head reads MCP state through — the TUI `/tools` view lists
-/// the roster and connected tools from these.
-#[derive(Clone)]
-pub struct McpHandles {
-    pub avail: std::sync::Arc<AvailableMcp>,
-    pub registry: crate::tools::SharedRegistry,
-    pub active: ActiveServers,
-}
 // The streamable-HTTP transport moved to `entanglement-provider` (ADR-0153).
 // Kept exported under its historical runtime name so embedders building a
 // per-tenant client (`mcp::HttpClient::connect`) are unaffected by the move.
+pub use active::{drop_server, install_server, mcp_list, ActiveServer, ActiveServers};
 #[cfg(feature = "mcp-http")]
 pub use entanglement_core::McpHttpClient as HttpClient;
-pub use live::{mcp_add, mcp_list, mcp_remove, ActiveServer, ActiveServers, ServerConfigs};
-pub use responder::spawn_mcp_responder;
 pub use roster::{roster, ServerRow};
 pub use stdio::StdioClient;
 pub use tool::McpTool;

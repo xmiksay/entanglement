@@ -91,7 +91,9 @@ impl AvailableMcp {
             .insert(server.to_string(), Instant::now());
     }
 
-    pub(crate) fn clear_connect_failure(&self, server: &str) {
+    /// Forget `server`'s recent connect failure, so the next lazy connect is
+    /// not guarded — after a head reconnected it out of band.
+    pub fn clear_connect_failure(&self, server: &str) {
         self.recent_connect_failures
             .lock()
             .expect("MCP connect-failure mutex poisoned")
