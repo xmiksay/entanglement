@@ -1,5 +1,7 @@
 //! The tracker's `post_tool_use` and `user_prompt_submit` firings (#964):
-//! derived from `ToolExec`/`ToolOutput` and the inbound `Prompt`.
+//! derived from `ToolExec`/`ToolOutput` and the inbound `Prompt`. Its
+//! `post_tool_use` is for tools that are not `skutter`'s own (#968): an MCP
+//! server's here.
 
 use entanglement_core::ContentPart;
 
@@ -52,16 +54,16 @@ fn refused(s: &str, rid: &str) -> OutEvent {
 fn a_run_call_fires_post_tool_use_with_its_input_and_result() {
     let mut t = Tracker::default();
     assert!(t
-        .observe(&exec("s", "r1", "bash", r#"{"command":"ls"}"#))
+        .observe(&exec("s", "r1", "mcp__gh__run", r#"{"command":"ls"}"#))
         .is_none());
     let f = t
         .observe(&output("s", "r1", "[exit 3]\nboom", false, Some(3)))
         .expect("post_tool_use fires");
     assert_eq!(f.event, HookEvent::PostToolUse);
-    assert_eq!(f.tool.as_deref(), Some("bash"));
+    assert_eq!(f.tool.as_deref(), Some("mcp__gh__run"));
     assert_eq!(f.payload["event"], "post_tool_use");
     assert_eq!(f.payload["session"], "s");
-    assert_eq!(f.payload["tool"], "bash");
+    assert_eq!(f.payload["tool"], "mcp__gh__run");
     assert_eq!(f.payload["input"]["command"], "ls");
     assert_eq!(f.payload["output"], "[exit 3]\nboom");
     assert_eq!(f.payload["is_error"], false);
@@ -71,7 +73,7 @@ fn a_run_call_fires_post_tool_use_with_its_input_and_result() {
 #[test]
 fn a_failed_call_carries_is_error_and_a_null_exit_code() {
     let mut t = Tracker::default();
-    t.observe(&exec("s", "r1", "write", "{}"));
+    t.observe(&exec("s", "r1", "mcp__fs__put", "{}"));
     let f = t
         .observe(&output("s", "r1", "disk full", true, None))
         .unwrap();
@@ -84,7 +86,7 @@ fn a_failed_call_carries_is_error_and_a_null_exit_code() {
 #[test]
 fn a_refused_call_fires_no_post_tool_use() {
     let mut t = Tracker::default();
-    t.observe(&exec("s", "r1", "write", "{}"));
+    t.observe(&exec("s", "r1", "mcp__fs__put", "{}"));
     assert!(t.observe(&refused("s", "r1")).is_none());
     assert!(t.execs.is_empty());
     t.observe(&exec("s", "r2", "update_tasks", "{}"));
@@ -125,7 +127,7 @@ fn route_tools_fire_no_post_tool_use() {
 fn only_a_call_the_runtime_ran_fires_and_only_once() {
     let mut t = Tracker::default();
     assert!(t.observe(&output("s", "r1", "x", true, None)).is_none());
-    t.observe(&exec("s", "r2", "read", "{}"));
+    t.observe(&exec("s", "r2", "mcp__fs__get", "{}"));
     assert!(t
         .observe(&output("other", "r2", "x", false, None))
         .is_none());
@@ -136,7 +138,7 @@ fn only_a_call_the_runtime_ran_fires_and_only_once() {
 #[test]
 fn a_session_end_forgets_its_open_calls() {
     let mut t = Tracker::default();
-    t.observe(&exec("s", "r1", "read", "{}"));
+    t.observe(&exec("s", "r1", "mcp__fs__get", "{}"));
     t.observe(&OutEvent::SessionEnded {
         session: sid("s"),
         ts: 1,
@@ -152,12 +154,12 @@ fn open_calls_are_kept_only_when_needed_and_dropped_on_lag() {
         skip_execs: true,
         ..Tracker::default()
     };
-    idle.observe(&exec("s", "r1", "read", "{}"));
+    idle.observe(&exec("s", "r1", "mcp__fs__get", "{}"));
     assert!(idle.execs.is_empty());
     assert!(idle.observe(&output("s", "r1", "x", false, None)).is_none());
 
     let mut t = Tracker::default();
-    t.observe(&exec("s", "r1", "read", "{}"));
+    t.observe(&exec("s", "r1", "mcp__fs__get", "{}"));
     t.forget_after_lag();
     assert!(t.execs.is_empty());
 }
@@ -178,35 +180,17 @@ fn a_prompt_fires_user_prompt_submit_with_its_text() {
     assert_eq!(f.payload["prompt"], "hello there");
 }
 
-/// A `/cd sub` session's relative path reaches `post_tool_use` joined onto
-/// the workdir, as the executor ran it (and as `pre_tool_use` graded it):
-/// the hook runs from the project root.
+/// `skutter`'s own tools run `post_tool_use` themselves (#968): the
+/// tracker keeps nothing for them, so the hook never fires twice.
 #[test]
-fn a_workdir_call_carries_its_root_relative_paths() {
-    let root = std::path::PathBuf::from("/proj");
-    let tools = crate::host::host_tools(root.clone()).shared();
-    let mut t = Tracker {
-        paths: Some(CallPaths { tools, root }),
-        ..Tracker::default()
-    };
-    let mut ev = exec("s", "r1", "edit", r#"{"path":"a.rs","old":"x","new":"y"}"#);
-    if let OutEvent::ToolExec { workdir, .. } = &mut ev {
-        *workdir = Some("/proj/sub".into());
+fn host_tools_fire_no_post_tool_use_here() {
+    let mut t = Tracker::default();
+    for tool in crate::tool_vocab::HOST_TOOL_NAMES {
+        t.observe(&exec("s", tool, tool, "{}"));
+        assert!(
+            t.observe(&output("s", tool, "x", false, None)).is_none(),
+            "{tool}"
+        );
     }
-    t.observe(&ev);
-    let f = t.observe(&output("s", "r1", "ok", false, None)).unwrap();
-    assert_eq!(f.payload["input"]["path"], "sub/a.rs");
-    assert_eq!(f.payload["input"]["old"], "x");
-
-    // No workdir (the root) and an absolute path both stay as emitted.
-    t.observe(&exec("s", "r2", "edit", r#"{"path":"a.rs"}"#));
-    let f = t.observe(&output("s", "r2", "ok", false, None)).unwrap();
-    assert_eq!(f.payload["input"]["path"], "a.rs");
-    let mut ev = exec("s", "r3", "write", r#"{"path":"/etc/x"}"#);
-    if let OutEvent::ToolExec { workdir, .. } = &mut ev {
-        *workdir = Some("/proj/sub".into());
-    }
-    t.observe(&ev);
-    let f = t.observe(&output("s", "r3", "ok", false, None)).unwrap();
-    assert_eq!(f.payload["input"]["path"], "/etc/x");
+    assert!(t.execs.is_empty());
 }

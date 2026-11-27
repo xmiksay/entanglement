@@ -22,7 +22,7 @@ use entanglement_runtime::agents::built_in_registry;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::policy::{ModeResolver, PermissionResolver};
 use entanglement_runtime::tool_runner::ToolExecutor;
-use skutter::hooks::{CallPaths, HookResolver, HookSpec, Hooks};
+use skutter::hooks::{wrap_host_tools, HookResolver, HookSpec, Hooks};
 use skutter::host::host_tools;
 use tokio::task::JoinHandle;
 
@@ -348,6 +348,8 @@ fn wire_trusted(
 ) -> Wired {
     let root = root.canonicalize().expect("scratch root resolves");
     let hooks = Arc::new(hooks);
+    let mut tools = tools;
+    wrap_host_tools(&mut tools, &hooks);
     let tools = tools.shared();
     let modes = Arc::new(Mutex::new(HashMap::new()));
     let table = Arc::new(ModeTable::builtin().expect("built-in modes parse"));
@@ -358,11 +360,7 @@ fn wire_trusted(
         allow_all(),
         Some(root.clone()),
     ));
-    let paths = CallPaths {
-        tools: tools.clone(),
-        root: root.clone(),
-    };
-    let watcher = skutter::hooks::spawn(holly, hooks.clone(), paths);
+    let watcher = skutter::hooks::spawn(holly, hooks.clone());
     let exec = ToolExecutor::builder(holly, tools)
         .agents(built_in_registry().expect("built-in agents must parse"))
         .base(allow_all())

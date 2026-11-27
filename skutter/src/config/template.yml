@@ -80,9 +80,9 @@
 #                        and its output is the tool result the model sees.
 #                        `tools` matches the graded name (read_raw → read).
 #   post_tool_use      — after a tool ran (never for a refused call);
-#                        observe-only. Runs asynchronously, racing the
-#                        agent's next call, and not for a script's nested
-#                        calls (see the prettier caveat below).
+#                        observe-only. skutter's own tools run it before
+#                        their result returns (a script's calls to them
+#                        too); an MCP tool's fires asynchronously.
 #   user_prompt_submit — when a prompt arrives; observational.
 # Observe-only lifecycle points (none can block; payload fields in brackets):
 #   session_start      — a session started [source: fresh|resume|compact].
@@ -97,9 +97,6 @@
 #      tools: [bash]
 #  post_tool_use:
 #    - command: "jq -c '{tool, is_error}' >> ~/.local/state/entanglement-tools.jsonl"
-#    # CAVEAT: a formatter here races the agent's next read/edit of the same
-#    # file and skips a script's writes, until post hooks run synchronously
-#    # inside skutter's own tools (#968, #933). Prefer formatting on `stop`.
 #    - command: "jq -r '.input.path' | xargs -r prettier --write"
 #      tools: [write, edit]
 #  user_prompt_submit:

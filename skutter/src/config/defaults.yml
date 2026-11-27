@@ -68,11 +68,10 @@ modes: {}
 #                        gate. `tools` matches the graded name (`read_raw` →
 #                        `read`).
 #   post_tool_use      — after a tool ran (never for a refused call); an
-#                        observe-only telemetry sink. Runs asynchronously,
-#                        racing the agent's next call, and not for a script's
-#                        nested calls — a formatter (`prettier --write`) here
-#                        can clobber the agent's next edit until post hooks
-#                        run inside skutter's own tools (#968, #933).
+#                        observe-only sink. skutter's own tools run it before
+#                        their result returns (a script's calls to them too),
+#                        so a formatter here finishes before the agent's
+#                        next call; an MCP tool's fires asynchronously.
 #   user_prompt_submit — when a prompt reaches the engine; observational.
 # Six more points (#734) are observe-only — none can block anything:
 #   session_start      — a session started (`source`: fresh | resume | compact).

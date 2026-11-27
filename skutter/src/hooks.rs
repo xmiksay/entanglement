@@ -13,10 +13,12 @@
 //!   call** (a `Deny` carrying the hook's output, which the model receives):
 //!   the tool never runs. This is the policy gate — a hook can veto a
 //!   `bash rm …` or an `edit` outside a path.
-//! - **`post_tool_use`** — fires on the `ToolOutput` of a host-tool call the
-//!   runtime ran (`ToolExec`; not a refused call, not `agent`/`poll`/
-//!   `ask_user`/…, not a script's nested calls). Observe-only: the exit code
-//!   is logged, never fed back to the model.
+//! - **`post_tool_use`** — fires after a tool call ran (never a refused
+//!   call, never `agent`/`poll`/`ask_user`/…). `skutter`'s own tools run it
+//!   themselves, before their result returns (#968, [`wrap_host_tools`]) —
+//!   a script's calls to them included; any other tool's call (an MCP
+//!   server's) fires it from the `ToolOutput` on the event stream.
+//!   Observe-only: the exit code is logged, never fed back to the model.
 //! - **`user_prompt_submit`** — fires on an inbound `InMsg::Prompt`.
 //!   Observational (telemetry/logging); it does not gate the prompt.
 //! - **`session_start`/`session_end`/`stop`/`pre_compact`/`subagent_stop`/
@@ -37,12 +39,14 @@ use serde_json::json;
 
 mod invoke;
 mod lifecycle;
+mod post_tool;
 mod resolver;
 
 use invoke::invoke;
 #[cfg(test)]
 use invoke::Outcome;
-pub use lifecycle::{spawn, CallPaths};
+pub use lifecycle::spawn;
+pub use post_tool::wrap_host_tools;
 pub use resolver::HookResolver;
 
 /// Default per-hook wall-clock timeout. A hook that hangs must not stall the turn

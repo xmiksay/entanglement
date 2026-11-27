@@ -172,11 +172,13 @@ pub(crate) fn start(
         escape_root.store.clone(),
         tools.clone(),
     ));
-    let call_paths = crate::hooks::CallPaths {
-        tools: tools.clone(),
-        root: escape_root.root.clone(),
-    };
-    let hooks_handle = crate::hooks::spawn(&holly, hooks, call_paths);
+    // `post_tool_use` runs inside `skutter`'s own tools, before their result
+    // returns (#968); the watcher fires it for every other tool.
+    crate::hooks::wrap_host_tools(
+        &mut tools.write().expect("tool registry lock poisoned"),
+        &hooks,
+    );
+    let hooks_handle = crate::hooks::spawn(&holly, hooks);
     // The credentialed-`http()` gate (ADR-0227): `http_auth:` is user-layer
     // only (the config loader drops a project layer's); the builder registers
     // the script-only `http` tool over this same gate, after the advertised

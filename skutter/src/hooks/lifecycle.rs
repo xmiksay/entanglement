@@ -1,5 +1,6 @@
-//! The observe-only hook points: `post_tool_use`, `user_prompt_submit` (#964)
-//! and the lifecycle points of #734 — `session_start`, `session_end`, `stop`,
+//! The observe-only hook points: `post_tool_use` for a tool that is not
+//! `skutter`'s own (its own run the hook themselves, [`super::post_tool`]),
+//! `user_prompt_submit` (#964) and the lifecycle points of #734 — `session_start`, `session_end`, `stop`,
 //! `pre_compact`, `subagent_stop` and `notification`.
 //!
 //! Core and the library stay policy-free (ADR-0066, #964): every point is
@@ -17,7 +18,6 @@
 //! within each while a slow hook never lags the subscription.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use entanglement_core::{AgentState, CompactionMode, InMsg, OutEvent, SessionId};
 use entanglement_runtime::tool_names::{
@@ -25,10 +25,10 @@ use entanglement_runtime::tool_names::{
     LIST_SKILLS_TOOL, MCP_TOOLS_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL, RHAI_TOOL,
     UPDATE_TASKS_TOOL,
 };
-use entanglement_runtime::tools::SharedRegistry;
 use serde_json::{json, Value};
 
 use super::{parse_input, HookEvent, Hooks};
+use crate::tool_vocab::HOST_TOOL_NAMES;
 use resume::ResumeMarks;
 pub use watch::spawn;
 
@@ -66,25 +66,6 @@ const ROUTE_TOOLS: [&str; 12] = [
     MCP_TOOLS_TOOL,
 ];
 
-/// How the executor saw a call's paths: it joins a `/cd` session's relative
-/// path arguments onto the workdir before running the call (#764), so
-/// `post_tool_use` gets the same root-relative input `pre_tool_use` was
-/// graded on — the hook runs from the project root, not the workdir.
-#[derive(Clone)]
-pub struct CallPaths {
-    pub tools: SharedRegistry,
-    /// The canonical project root (the escape-root policy's root).
-    pub root: PathBuf,
-}
-
-impl std::fmt::Debug for CallPaths {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CallPaths")
-            .field("root", &self.root)
-            .finish()
-    }
-}
-
 /// One hook point to run: its payload already carries `event` and `session`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Firing {
@@ -115,15 +96,14 @@ pub(crate) struct Tracker {
     /// the turn ended (`emit_turn_done`/`emit_turn_error` always pair them).
     ended_turn: HashSet<SessionId>,
     last_error: HashMap<SessionId, String>,
-    /// `(tool, input)` of each host-tool call the runtime was asked to run
-    /// (no [`ROUTE_TOOLS`]), by `(session, request_id)`, until its
-    /// `ToolOutput` fires `post_tool_use`.
+    /// `(tool, input)` of each registry-tool call the runtime was asked to
+    /// run (no [`ROUTE_TOOLS`], no host tool — those fire their own), by
+    /// `(session, request_id)`, until its `ToolOutput` fires
+    /// `post_tool_use`.
     execs: HashMap<(SessionId, String), (String, String)>,
     /// No `post_tool_use` command: keep no `execs`, so a long-lived session
     /// with only other points configured can't grow the map.
     skip_execs: bool,
-    /// `None` (unit tests): the input is kept as core emitted it.
-    paths: Option<CallPaths>,
 }
 
 impl Tracker {
@@ -244,12 +224,13 @@ impl Tracker {
                 request_id,
                 tool,
                 input,
-                workdir,
                 ..
-            } if !self.skip_execs && !ROUTE_TOOLS.contains(&tool.as_str()) => {
+            } if !self.skip_execs
+                && !ROUTE_TOOLS.contains(&tool.as_str())
+                && !HOST_TOOL_NAMES.contains(&tool.as_str()) =>
+            {
                 let key = (session.clone(), request_id.clone());
-                let input = self.as_run(tool, workdir.as_deref(), input);
-                self.execs.insert(key, (tool.clone(), input));
+                self.execs.insert(key, (tool.clone(), input.clone()));
                 None
             }
             OutEvent::ToolOutput {
@@ -316,18 +297,6 @@ impl Tracker {
             }
             _ => None,
         }
-    }
-
-    /// `input` as the executor ran it: relative paths joined onto `workdir`.
-    fn as_run(&self, tool: &str, workdir: Option<&str>, input: &str) -> String {
-        let rewritten = self.paths.as_ref().and_then(|p| {
-            // A poisoned registry lock: keep the input as emitted rather than
-            // take the watcher down.
-            let tools = p.tools.read().ok()?;
-            let wd = workdir.map(Path::new);
-            entanglement_runtime::path_grading::rewrite(&tools, &p.root, wd, tool, input)
-        });
-        rewritten.unwrap_or_else(|| input.to_string())
     }
 
     /// After a broadcast lag the `Done`/`Status` pairing can't be trusted,

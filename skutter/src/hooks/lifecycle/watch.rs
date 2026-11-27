@@ -9,14 +9,13 @@ use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 
-use super::{CallPaths, Firing, HookEvent, Hooks, Tracker};
+use super::{Firing, HookEvent, Hooks, Tracker};
 
 /// Spawn the watcher when any observer point has a command (`None`
 /// otherwise — the norm). Both receivers are subscribed here, before this
 /// returns, so a first `Prompt` or `SessionStarted` is never missed. Abort the
 /// handle to stop it (its two tasks live in a `JoinSet` dropped with it).
-/// `paths` rewrites a `post_tool_use` payload's paths as the executor did.
-pub fn spawn(holly: &Holly, hooks: Arc<Hooks>, paths: CallPaths) -> Option<JoinHandle<()>> {
+pub fn spawn(holly: &Holly, hooks: Arc<Hooks>) -> Option<JoinHandle<()>> {
     if !hooks.has_observers() {
         return None;
     }
@@ -24,7 +23,7 @@ pub fn spawn(holly: &Holly, hooks: Arc<Hooks>, paths: CallPaths) -> Option<JoinH
     let inbound = holly.subscribe_inbound();
     Some(tokio::spawn(async move {
         let mut tasks = JoinSet::new();
-        watch(&mut tasks, hooks, paths, events, inbound);
+        watch(&mut tasks, hooks, events, inbound);
         while tasks.join_next().await.is_some() {}
     }))
 }
@@ -36,7 +35,6 @@ pub fn spawn(holly: &Holly, hooks: Arc<Hooks>, paths: CallPaths) -> Option<JoinH
 fn watch(
     tasks: &mut JoinSet<()>,
     hooks: Arc<Hooks>,
-    paths: CallPaths,
     mut events: broadcast::Receiver<OutEvent>,
     mut inbound: broadcast::Receiver<InMsg>,
 ) {
@@ -45,7 +43,6 @@ fn watch(
     tasks.spawn(async move {
         let mut tracker = Tracker {
             skip_execs: hooks.specs(HookEvent::PostToolUse).is_empty(),
-            paths: Some(paths),
             ..Tracker::default()
         };
         let send = |f: Firing| {
