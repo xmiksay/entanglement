@@ -9,8 +9,8 @@
 http(s) URL. HTML becomes Markdown (`htmd`; script/style/head/svg dropped),
 `text` also strips link/image targets, `raw` is verbatim. Output is paged at
 the 32 KiB host-tool cap with an `offset=` pointer. A non-text body is never
-inlined: `[binary omitted: mime, size, url]`. Registered at startup and part
-of the advertised kernel ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md): with `describe` gone every model-facing host
+inlined: `[binary omitted: mime, size, url]`. Registered at startup and on
+the advertised surface — it sets `Tool::advertised` ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md): with `describe` gone every model-facing host
 tool must be).
 
 **Grading.** It declares `Capability::Exec`: outbound network to a

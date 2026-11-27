@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: crate split (#931, #964)
+# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md).
 
@@ -93,3 +93,26 @@ changes:
   calls and any `.hooks(..)` builder call. An embedder that wants a veto
   wraps its resolver the way `HookResolver` does; one that wants to observe
   calls subscribes to `ToolExec`/`ToolOutput` itself.
+
+## The advertised surface is a per-tool flag (#965)
+
+The hard-coded `KERNEL` name list is gone. A registered tool is advertised
+when its new defaulted `Tool::advertised` returns `true` (default `false`);
+the executor's own routes (`discover::runtime_owned_specs`,
+`subagent::agent_specs`) are always advertised. The built-in tools that were
+`KERNEL` members (`read`, `edit`, `write`, `apply_patch`, `bash`,
+`web_fetch`, `load_skill`) set it, so `skutter`'s first-request surface is
+byte-identical to 0.7's. Neither site nor nexial names `KERNEL` or
+`build_surface`, and neither installs `tool_advertising::surface`'s
+resolver. What changes:
+
+- **Removed API:** `tool_names::KERNEL`.
+- **Changed API:** `tool_advertising::surface::build_surface` takes the
+  `&ToolRegistry` instead of a `Vec<ToolSpec>` snapshot of its specs, so it
+  can ask each tool for the flag.
+- **Changed behaviour:** a tool is no longer advertised because of its
+  name. An embedder tool registered as `read`, `bash`, … under the library's
+  surface resolver was advertised in 0.7 and is not now unless it sets
+  `advertised`; any other embedder tool can now join the surface.
+- **Instead:** override `fn advertised(&self) -> bool { true }` on each
+  tool the model should see directly; pass `&registry` to `build_surface`.

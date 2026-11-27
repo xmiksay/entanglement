@@ -155,7 +155,8 @@ doc, never here**:
   batch parks the turn as serde `TurnState`; results (structured
   `is_error`/`duration_ms`/`exit_code`/`envelope`) resolve in any order
   ([engine](../docs/architecture/engine.md), [ADR-0061](../docs/adr/archive/0061-parked-turn-state-batch-tool-resolution.md)/[ADR-0176](../docs/adr/archive/0176-structured-tool-result-is-error-and-duration-fields.md)/[ADR-0186](../docs/adr/archive/0186-exit-code-joins-the-structured-tool-result-side-channel.md)).
-- **One advertised surface** — the compiled-in `KERNEL`, snapshotted at a
+- **One advertised surface** — the tools that set `Tool::advertised` plus
+  the executor's routes (no name list, #965), snapshotted at a
   session's first resolution, identical on every wire, never changed
   mid-session (any change busts the prompt cache); no mode, no knob
   ([gates §one surface](../docs/architecture/gates/one-surface.md), [ADR-0226](../docs/adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0202](../docs/adr/archive/0202-prompt-cache-discipline-anchors-deferral-replay-compaction-date.md)).

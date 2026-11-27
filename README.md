@@ -143,8 +143,9 @@ it differs from where the TUI runs. Other trusted heads send
 
 Every session is advertised **one tool surface**, identical on every wire
 and pinned for the session so the provider's prompt cache holds (ADR-0226):
-the compiled-in `KERNEL` — the file tools `read`/`write`/`edit`/`apply_patch`,
-`bash`, `web_fetch`, `rhai`, the orchestration tools (`agent`/`agent_send`,
+the registered tools that set `Tool::advertised` — the file tools
+`read`/`write`/`edit`/`apply_patch`, `bash`, `web_fetch` — plus the
+executor's own routes: `rhai`, the orchestration tools (`agent`/`agent_send`,
 `poll`, `ask_user`, `update_tasks`, `propose_plan`, `request_mode`), six
 discovery tools — `list_agents`, `list_models`, `list_skills`, `load_skill`,
 `list_mcp`, `mcp_tools` — and the `mcp(server, tool, args)` envelope, the only

@@ -77,7 +77,8 @@
   [agents & permissions](../agents/approvals-and-grants.md) §permission ceiling.
   **Advertisement ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)):** `glob`/`grep` are registered but
   **never advertised** — script-only `rhai` bindings, still graded under
-  their own names; `bash` is in the kernel and is the one exec tool.
+  their own names; `bash` is advertised (`Tool::advertised`) and is the one
+  exec tool.
   A `bash()` binding run from inside a `rhai` script grades identically to
   a direct `bash` call — both run the same seam (ADR-0227).
 

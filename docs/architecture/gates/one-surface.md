@@ -7,12 +7,15 @@
 (Supersedes [ADR-0196](../../adr/archive/0196-tool-search-and-lazy-discovery-replace-the-invoke-envelope.md)
 §1–§4 and [ADR-0204](../../adr/archive/0204-invoke-fallback-for-client-side-discovery.md).)
 There is no advertising mode, per-wire encoding or discovery strategy. Every
-session on every wire is advertised the compiled-in **`KERNEL`**
-(`tool_names::KERNEL`): `read`/`edit`/`write`/`apply_patch`/`bash`/`web_fetch`,
+session on every wire is advertised the same surface: every registered tool
+whose **`Tool::advertised`** returns `true` (default `false`; the host tools
+`read`/`edit`/`write`/`apply_patch`/`bash`/`web_fetch` and `load_skill` set
+it), plus the executor's own routes, always advertised:
 `poll`/`ask_user`/`update_tasks`, `propose_plan`/`request_mode`,
-`agent`/`agent_send`, `rhai`, the six discovery tools and the `mcp` envelope.
-`tool_advertising::surface` builds it from the registered and runtime-owned
-specs (deduped, name-sorted), **snapshots it at the session's first
+`agent`/`agent_send`, `rhai`, the other five discovery tools and the `mcp`
+envelope. There is no name list (#965): an embedder's tool joins the surface
+by setting the flag. `tool_advertising::surface::build_surface` builds it
+from the registry and the runtime-owned specs (deduped, name-sorted), **snapshots it at the session's first
 resolution** (`AdvertisingState::surfaces`) and returns the same bytes every
 later round — a tool registered or removed afterwards never moves the cached
 prefix, and an MCP connect never touches it. End/hibernate
@@ -22,7 +25,7 @@ names, like `read_raw`/`glob_json`/`grep_json`) and every `mcp__*` tool.
 ADR-0226's interim `endpoint__*`/`skill__*` additions are gone
 ([ADR-0227](../../adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md),
 [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
-the surface is exactly `KERNEL`.
+the surface is exactly the flagged tools plus the executor's routes.
 
 **The six discovery tools** — each with no argument or one `name`, all
 `Capability::Control` and non-maskable — the `poll` pattern: a Control

@@ -57,8 +57,8 @@ own `Deny`/`Ask` grading and the discovery tools).
 
 **One advertised surface** ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), superseding ADR-0196 §1–§4 and
 ADR-0204): there is no advertising mode, wire encoding or discovery knob. The
-runtime's resolver yields the compiled-in kernel (`tool_names::KERNEL`: the
-file/exec tools, `web_fetch`, `poll`/`ask_user`/`update_tasks`,
+runtime's resolver yields the registered tools that set `Tool::advertised`
+plus the executor's own routes (#965: the file/exec tools, `web_fetch`, `poll`/`ask_user`/`update_tasks`,
 `propose_plan`/`request_mode`, `agent`/`agent_send`, `rhai`, the six
 discovery tools `list_agents`/`list_models`/`list_skills`/`load_skill`/
 `list_mcp`/`mcp_tools`, and the `mcp` envelope), snapshotted at the session's

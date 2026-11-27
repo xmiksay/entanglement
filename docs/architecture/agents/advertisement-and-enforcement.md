@@ -13,8 +13,9 @@
   surface that is stable **within** a session keeps that cache warm; what is
   traded away is only "the model cannot even attempt the call" — every
   attempt is now visibly graded instead, and no capability changes hands.
-  The universal, session-stable surface is the compiled-in `KERNEL`
-  ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md); see [engine](../engine/turn-loop.md) §turn loop): `read`/`edit`/`write`/
+  The universal, session-stable surface is every registered tool that sets
+  `Tool::advertised` plus the executor's own routes
+  ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), #965; see [engine](../engine/turn-loop.md) §turn loop): `read`/`edit`/`write`/
   `apply_patch`/`bash`/`web_fetch`, `rhai` when the feature is on,
   `update_tasks`, `ask_user`, `poll`, `propose_plan`, `request_mode`,
   `agent`/`agent_send`, the `mcp` envelope, and the six discovery tools

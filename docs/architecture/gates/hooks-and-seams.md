@@ -173,8 +173,8 @@ same `SharedRegistry` handle it hands the executor, reproducing
 `cfg.tool_specs`' composition: registry tools plus the runtime-intercepted
 pseudo-tool specs that aren't `ToolRegistry` entries
 (`update_tasks`/`ask_user`/`poll`/`bash`/`rhai`), sorted by name and deduped.
-The resolver projects the one **`KERNEL`** surface out of that roster and
-snapshots it per session ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), §One advertised surface in [one surface](one-surface.md)) — dynamic
+The resolver keeps the registry tools that set **`Tool::advertised`** (plus
+every pseudo-tool spec) and snapshots that one surface per session ([ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md), §One advertised surface in [one surface](one-surface.md)) — dynamic
 tools (MCP, script-only built-ins) stay registered and dispatchable, just
 absent from the advertised array.
 Because core advertises the resolver's output verbatim now — there is no
