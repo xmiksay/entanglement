@@ -46,9 +46,6 @@ pub async fn eventually(mut cond: impl FnMut() -> bool) -> bool {
 // `policy_seam`) build their own table instead.
 mod mode_support;
 
-// A `skutter` child isolated from the developer's real dirs (#747).
-mod skutter_cmd;
-
 mod advertising_pin;
 mod agent_definitions;
 mod agent_generation;
@@ -63,40 +60,30 @@ mod ask_user;
 mod attended_mode;
 mod attended_rejoin;
 mod attended_resume;
-#[cfg(feature = "serve")]
-mod attended_serve;
-#[cfg(feature = "serve")]
-mod attended_wake;
-#[cfg(feature = "serve")]
-mod attended_wake_queue;
-#[cfg(feature = "serve")]
-mod attended_wake_tree;
 mod aux_models;
 mod compact_fork;
 mod discovery_tools;
-#[cfg(feature = "serve")]
 mod executor_builder;
 mod hook_events;
 mod hooks;
 mod host_tools;
-mod launch_mode_typo;
 mod list_operations;
 mod list_pending;
 mod load_skill;
 mod log_compat_v060;
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 mod mcp_compat;
 mod mcp_envelope_runtime;
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 mod mcp_http;
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 mod mcp_lazy_connect;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_device;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_refresh;
 mod mcp_schema_violation;
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 mod mcp_scoped;
 mod misaimed_decisions;
 #[cfg(feature = "provider")]
@@ -109,7 +96,6 @@ mod plan_watch;
 mod policy_seam;
 mod poll_subtree;
 mod propose_plan;
-mod provider_selection;
 mod record_sink;
 mod reoffer_dedupe;
 mod reparent_persistence;
@@ -120,19 +106,15 @@ mod resumable_prefix;
 mod resume_config_mode;
 mod resume_mode_narrowing;
 mod revert_files;
-#[cfg(feature = "serve")]
-mod serve;
 mod session_fork;
 #[cfg(feature = "provider")]
 mod session_title;
 mod session_workdir;
 mod skill_posture;
-mod slash_commands;
 mod spawn_grading;
 mod spawn_grading_park;
 mod spawn_grading_scoped;
 mod spawn_prompt_persistence;
-mod startup_warnings;
 mod state_dir;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;
@@ -142,6 +124,5 @@ mod system_prompt_assembly;
 mod tool_mask;
 mod unattended_mode;
 mod undo_config;
-mod user_config;
 #[cfg(feature = "web-fetch")]
 mod web_fetch;

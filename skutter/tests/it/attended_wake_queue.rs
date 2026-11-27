@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use entanglement_core::{InMsg, OutEvent, SessionId};
 
-use crate::attended_mode::approve;
 use crate::attended_serve::{connect, first, send};
 use crate::attended_wake::{asleep_with_card, drain, errors, served};
+use crate::support::approve;
 
 /// A slow re-offer (its grade takes 400ms): the listing waits for the card
 /// rather than answering empty — and a session-less frame sent right behind

@@ -33,9 +33,6 @@ pub enum ReloadNotice {
 pub struct LiveDefinitions {
     pub agents: Arc<RwLock<AgentCatalog>>,
     pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
-    /// User slash commands (#733) — read by the heads on every use, so a
-    /// reload is live in the very next popup or `/name` invocation.
-    pub commands: crate::slash_commands::LiveCommands,
     pub agent_models: Arc<Mutex<AgentModelStore>>,
     pub grants: Arc<DefaultGrantStore>,
     /// The MCP capability index (#426), captured once at startup like the
@@ -61,7 +58,6 @@ impl LiveDefinitions {
     pub fn new(
         agents: Arc<RwLock<AgentCatalog>>,
         skills: Arc<RwLock<Arc<SkillRegistry>>>,
-        commands: crate::slash_commands::LiveCommands,
         agent_models: Arc<Mutex<AgentModelStore>>,
         grants: Arc<DefaultGrantStore>,
         mcp_capabilities: mcp::McpCapabilityIndex,
@@ -69,7 +65,6 @@ impl LiveDefinitions {
         Self {
             agents,
             skills,
-            commands,
             agent_models,
             grants,
             mcp_capabilities,
@@ -101,7 +96,6 @@ impl LiveDefinitions {
 /// changed, so every call here is expected to produce a real notice.
 pub(super) fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let new_skills = crate::skills::load_registry(cwd)?;
-    let new_commands = crate::slash_commands::load_registry(cwd)?;
     let prompt_ctx = match &live.sessions {
         Some(sessions) => PromptContext::load_with(cwd, sessions),
         None => PromptContext::load(cwd),
@@ -121,13 +115,11 @@ pub(super) fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<Strin
 
     let agent_count = new_profiles.iter().count();
     let skill_count = new_skills.disclosures().len();
-    let command_count = new_commands.len();
     *live.skills.write().unwrap() = Arc::new(new_skills);
-    *live.commands.write().unwrap() = Arc::new(new_commands);
     *live.agents.write().unwrap() = new_profiles;
 
     Ok(format!(
-        "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s), \
-         {command_count} command(s) — new sessions see the update"
+        "definitions reloaded: {agent_count} agent(s), {skill_count} skill(s) \
+         — new sessions see the update"
     ))
 }

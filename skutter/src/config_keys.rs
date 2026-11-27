@@ -1,7 +1,7 @@
 //! `skutter config set-key <provider>` — persist a provider API key (#304).
 //!
 //! Resolves the provider's key env var from the catalog and writes the value to
-//! the managed env file via the shared [`super::env_key::set_key`] writer. The
+//! the managed env file via the shared [`env_key::set_key`] writer. The
 //! value comes from (in order): the `--key`/positional argument, a hidden
 //! terminal prompt (rpassword — never echoed), or a plain stdin read when stdin
 //! is piped (scripting). The key is never printed back.
@@ -9,7 +9,7 @@
 use anyhow::{bail, Context, Result};
 use entanglement_provider::Catalog;
 
-use super::env_key;
+use entanglement_runtime::config::env_key;
 
 /// Run the `config set-key` command for `provider`, sourcing the value from
 /// `key_arg` when given, else prompting / reading stdin.

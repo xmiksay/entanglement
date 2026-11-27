@@ -154,7 +154,7 @@ fn opencode_subdirs(kind: &str) -> &'static [&'static str] {
 /// symlinked duplicate files and breaks symlink directory cycles.
 /// `std::fs::metadata` follows symlinks so a linked directory is still
 /// traversed once.
-pub(crate) fn walk_files(
+pub fn walk_files(
     dir: &Path,
     found: &mut Vec<PathBuf>,
     seen: &mut HashSet<PathBuf>,

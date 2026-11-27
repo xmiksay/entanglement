@@ -55,7 +55,9 @@ mod tests {
 
     #[test]
     fn renders_a_pinned_purpose_and_leaves_the_other_unset() {
-        let store = AuxModelStore::for_test(&[(Purpose::Summarize, "zai", "glm-4.5-flash")]);
+        let store = AuxModelStore::in_memory(
+            [(Purpose::Summarize, ("zai".into(), "glm-4.5-flash".into()))].into(),
+        );
         let rendered = render_aux_models(&store);
         assert!(rendered.contains("summarize: zai/glm-4.5-flash"));
         assert!(rendered.contains("session_title: (unset"));

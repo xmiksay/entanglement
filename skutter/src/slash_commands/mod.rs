@@ -31,6 +31,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use anyhow::{Context, Result};
 
 use crate::layers::{Layer, Strictness, UserLayer};
+use entanglement_runtime::watch::ReloadNotice;
 
 mod discovery;
 mod expand;
@@ -261,6 +262,33 @@ fn resolve(raws: Vec<discovery::RawCommand>) -> Result<Vec<CommandResolution>> {
 /// each warned once.
 pub fn load_registry(root: &Path) -> Result<CommandRegistry> {
     Ok(registry_from(resolve_registry(root)?))
+}
+
+/// Follow a definitions-watcher `notice` (its watch set covers the command
+/// dirs) by swapping `load`'s registry into `live` (`load` is
+/// [`load_registry`] outside tests). A clean reload adds the count to the
+/// summary; a malformed command file keeps the previous registry and turns
+/// the notice into a failure. A failed notice is passed through untouched.
+pub fn reload_on(
+    live: &LiveCommands,
+    notice: ReloadNotice,
+    load: impl FnOnce() -> Result<CommandRegistry>,
+) -> ReloadNotice {
+    let ReloadNotice::Reloaded(summary) = notice else {
+        return notice;
+    };
+    match load() {
+        Ok(fresh) => {
+            let count = fresh.len();
+            *live.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(fresh);
+            ReloadNotice::Reloaded(format!("{summary}; {count} command(s)"))
+        }
+        Err(e) => {
+            let msg = format!("slash commands reload failed, keeping previous ones: {e:#}");
+            tracing::warn!("{msg}");
+            ReloadNotice::Failed(msg)
+        }
+    }
 }
 
 fn registry_from(resolved: Vec<CommandResolution>) -> CommandRegistry {

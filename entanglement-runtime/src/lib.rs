@@ -1,35 +1,24 @@
 //! Runtime crate for the entanglement agent engine.
 //!
-//! This crate provides the runtime environment and host tool implementations
-//! for the headless agent engine defined in `entanglement-core`.
+//! The library half of the engine seam: the `Tool` trait + `ToolRegistry`,
+//! host tools, tool execution, permission dispatch, sub-agent spawn, user
+//! config and event-sourced persistence over `entanglement-core`. It carries
+//! no binary and no head: the `skutter` crate is the CLI built on it.
 //!
 //! # Feature gates (ADR-0025)
 //!
-//! The binary head (`skutter`) and the reusable library live in the same crate,
-//! split by cargo features:
-//!
-//! - `default = ["tui", "serve", "mcp-http", "rhai"]` — the full `skutter`
-//!   binary (stdio `run`/`pipe` plus the terminal UI and the local WebSocket
-//!   server), pulling clap, the LLM providers (reqwest), the render stack
-//!   (ratatui, syntect, …), axum, the HTTP MCP transport and the `rhai` tool.
-//! - `cli` — head plumbing: clap arg parsing + log init (tracing-subscriber).
-//! - `provider` — the LLM providers (reqwest via `entanglement-provider`), split
-//!   from `cli` (#208) so the `serve`/`ws` head pulls providers without dragging
-//!   in clap.
-//! - `tui` — the terminal UI head; implies `cli` + `provider`.
-//! - `serve` — the local WebSocket `serve` head (axum, #153); implies
-//!   `cli` + `provider`. Keeps axum out of the lean library (ADR-0025/ADR-0048).
-//! - `mcp-http` — the streamable-HTTP MCP transport + OAuth code paths; the stdio MCP
-//!   transport stays in the lean library.
+//! - `default = ["provider", "mcp-http", "rhai", "web-fetch"]`.
+//! - `provider` — the provider-backed aux-LLM helpers (session titles, the
+//!   action narrator, the throttle relay) that drain an
+//!   `entanglement-provider` stream directly.
+//! - `mcp-http` — the streamable-HTTP MCP transport + OAuth code paths; the
+//!   stdio MCP transport stays in the lean library.
 //! - `rhai` — the sandboxed `rhai` scripting tool (ADR-0046, #502).
+//! - `web-fetch` — the SSRF-guarded `web_fetch` host tool and its
+//!   HTML→Markdown converter.
 //!
-//! With `--no-default-features` the crate is a **lean library**: the modules
-//! below import only `entanglement-core` + tokio + serde/serde_yaml/anyhow/
-//! tracing + `glob`/`regex`/`dirs`, so a consumer can reuse the tool-execution
-//! loop, permission dispatch, sub-agent spawn, file-based agent definitions,
-//! skill discovery, and event-sourced persistence without compiling any
-//! CLI/TUI/transport dependency.
-//! `make check-lean` enforces this.
+//! No feature pulls a CLI, TUI or web-server crate (`make check-lean` gates
+//! both the default and the `--no-default-features` build).
 
 pub mod agent_registry;
 pub mod agent_send;
@@ -76,7 +65,6 @@ pub mod http_gate;
 // The rhai-only `http` tool behind that gate.
 #[cfg(feature = "rhai")]
 pub mod http_tool;
-pub mod inspect;
 pub mod jobs;
 pub mod layers;
 // The identifier mapping for generated rhai namespaces (ADR-0227).
@@ -147,10 +135,6 @@ pub mod script;
 // unconditionally (empty forever in a lean build without the `rhai` feature).
 pub mod script_ops;
 pub mod seam;
-// WebSocket `serve` head (#153, ADR-0048). Behind the `serve` feature so axum
-// stays out of the lean library and `--no-default-features` builds (ADR-0025).
-#[cfg(feature = "serve")]
-pub mod serve;
 pub mod session_store;
 #[cfg(feature = "provider")]
 pub mod session_title;
@@ -159,9 +143,6 @@ pub mod session_title;
 // scanning, no deps.
 pub mod shell_split;
 pub mod skills;
-// User-defined slash commands — layered prompt templates (#733). Ungated: pure
-// discovery + text expansion, consumed by the TUI and the `run` head.
-pub mod slash_commands;
 pub mod subagent;
 pub mod system_prompt;
 // Composes the ADR-0196 §5 `ToolSearch`-mode prompt slimming with the
@@ -195,13 +176,6 @@ pub mod watch;
 pub mod workdir;
 
 pub use tools::{SharedRegistry, Tool, ToolRegistry};
-
-// Tracing-subscriber setup is head plumbing, so it rides the `cli` feature and
-// stays out of the lean library (tracing-subscriber is on the `check-lean`
-// blocklist). The bin only ever builds with `cli`, so `logging` is always
-// available to it.
-#[cfg(feature = "cli")]
-pub mod logging;
 
 /// A pool client with cross-process endpoint state disabled (#743): a unit
 /// test must never read or write the developer's real endpoint-state dir, and

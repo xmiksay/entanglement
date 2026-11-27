@@ -65,7 +65,6 @@ pub(crate) enum Cmd {
         agent: Option<String>,
     },
     /// Local WebSocket server head (loopback-bound; browser twin of the TUI).
-    #[cfg(feature = "serve")]
     Serve {
         /// Port to bind on `127.0.0.1` (loopback-only by design — ADR-0048).
         #[arg(long, default_value_t = 4517)]

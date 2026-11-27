@@ -160,7 +160,7 @@ pub async fn tui(
     app.set_launch_mode(launch_mode);
     app.set_mcp_handles(mcp_handles);
     app.set_advertising_state(advertising_state);
-    app.slash_mut().set_user_commands(user_commands);
+    app.slash_mut().set_user_commands(user_commands.clone());
     app.init_head_context(root.clone());
     let config_root = root.clone();
     app.set_session_store(crate::session_store::SessionStore::for_cwd(&root));
@@ -230,6 +230,9 @@ pub async fn tui(
             // the definitions reload failed (#785).
             msg = reload_rx.recv() => {
                 if let Some(notice) = msg {
+                    let notice = crate::slash_commands::reload_on(&user_commands, notice, || {
+                        crate::slash_commands::load_registry(&config_root)
+                    });
                     if editor::apply_reload(&mut terminal, &mut attention, &mut app, &config_root, notice) {
                         let fresh = entry_profiles_from(&agents.read().unwrap());
                         app.refresh_profiles(fresh);

@@ -17,7 +17,7 @@ use super::{McpClient, McpServerConfig, McpTool, McpToolCache, McpToolDef};
 /// `"stdio"` or `"http"`, for the [`McpServerStatus`][entanglement_core::McpServerStatus]
 /// wire label — meaningful only after [`McpServerConfig::transport`] has already
 /// validated the XOR, so it just reads back which field was set.
-pub(crate) fn transport_label(cfg: &McpServerConfig) -> String {
+pub fn transport_label(cfg: &McpServerConfig) -> String {
     if cfg.command.is_some() {
         "stdio"
     } else {

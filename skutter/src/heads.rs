@@ -94,16 +94,15 @@ pub(crate) async fn dispatch(
                 SessionId::new(session.unwrap_or_else(|| mint_id(IdKind::Session, None)));
             pipe(holly, &session_id).await
         }
-        #[cfg(feature = "serve")]
         Some(Cmd::Serve { port, allow_origin }) => {
             // Runs until Ctrl-C; the executor/persistence teardown in `main`
             // then runs as for any other head. A fresh `Holly` clone keeps the
             // outer handle for that shutdown path.
-            let rejoin = entanglement_runtime::serve::Rejoin::new(
+            let rejoin = crate::serve::Rejoin::new(
                 session_store::SessionStore::for_cwd(cwd),
                 head.live_profiles.clone(),
             );
-            entanglement_runtime::serve::serve(
+            crate::serve::serve(
                 holly.clone(),
                 port,
                 allow_origin,

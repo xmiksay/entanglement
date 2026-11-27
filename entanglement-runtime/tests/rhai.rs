@@ -34,13 +34,13 @@ use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 mod unified;
 // #843: a per-tool mode deny refuses an `mcp` envelope call and a script's
 // `mcp::` binding identically.
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 #[path = "rhai/mcp_parity.rs"]
 mod mcp_parity;
 #[path = "rhai/unified_harness.rs"]
 mod unified_harness;
 // #831: a script-triggered lazy MCP connect is bounded by the script budget.
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 #[path = "rhai/connect_budget.rs"]
 mod connect_budget;
 
@@ -99,7 +99,7 @@ mod trusted_writes;
 mod launch_grading;
 // #844: a script's bad MCP call never poisons the model's delivered-schema
 // dedup or loop-breaker, and its decline shows the rhai path.
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 #[path = "rhai/schema_dedup.rs"]
 mod schema_dedup;
 // ADR-0229: every skill is listed, loaded and scriptable by the model.

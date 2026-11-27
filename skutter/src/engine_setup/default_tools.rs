@@ -45,7 +45,6 @@ pub(crate) fn register_default_tools(root: std::path::PathBuf, opts: DefaultTool
     tools.register(bash);
     // `web_fetch` (#736) is a kernel tool (ADR-0226): advertised natively
     // whenever it is compiled in and its client builds.
-    #[cfg(feature = "web-fetch")]
     match host::WebFetchTool::new() {
         Ok(tool) => tools.register(tool),
         Err(e) => tracing::warn!("web_fetch unavailable: {e:#}"),
@@ -85,7 +84,6 @@ mod tests {
         // modes' + the config ceiling's job, not the registry's.
         let names = tool_names();
         assert!(names.contains(&"bash".to_string()), "{names:?}");
-        #[cfg(feature = "web-fetch")]
         assert!(names.contains(&"web_fetch".to_string()), "{names:?}");
         // The sextet is still there alongside them.
         for expected in ["read", "glob", "grep", "edit", "write", "apply_patch"] {

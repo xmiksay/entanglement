@@ -6,14 +6,14 @@ use std::time::Duration;
 
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use entanglement_runtime::attendance::Attendance;
-use entanglement_runtime::serve::router;
 use futures::{SinkExt, StreamExt};
+use skutter::serve::router;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::attended_mode::approve;
-use crate::attended_rejoin::engine;
-use crate::unattended_mode::{ask_user_call, done_text, spawn_attended};
+use crate::support::approve;
+use crate::support::engine;
+use crate::support::{ask_user_call, done_text, spawn_attended};
 
 pub(crate) type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -100,7 +100,7 @@ async fn a_reconnecting_serve_client_lists_and_answers_the_question() {
     let attendance = Attendance::new();
     let holly = spawn_attended(
         entanglement_runtime::ToolRegistry::new(),
-        crate::unattended_mode::one_mode_table(
+        crate::support::one_mode_table(
             entanglement_core::Permission::Allow,
             entanglement_runtime::mode::Limits {
                 question_timeout: 1,
@@ -158,11 +158,11 @@ async fn a_reconnecting_serve_client_lists_and_answers_the_question() {
 #[tokio::test]
 async fn listing_alone_attends_and_keeps_the_card_waiting() {
     let attendance = Attendance::new();
-    let holly = crate::attended_mode::bash_engine(
-        crate::attended_mode::asking(2),
+    let holly = crate::support::bash_engine(
+        crate::support::asking(2),
         vec![
-            crate::unattended_mode::bash_call("t1", "echo hi"),
-            crate::unattended_mode::bash_call("t2", "echo hi"),
+            crate::support::bash_call("t1", "echo hi"),
+            crate::support::bash_call("t2", "echo hi"),
             done_text(),
         ],
         attendance.clone(),
@@ -171,7 +171,7 @@ async fn listing_alone_attends_and_keeps_the_card_waiting() {
     let sid = SessionId::new("ws-unowned");
     let mut sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
-    crate::attended_mode::card(&mut sub, &sid).await;
+    crate::support::card(&mut sub, &sid).await;
 
     let mut ws = connect(port).await;
     let list = InMsg::ListPending {

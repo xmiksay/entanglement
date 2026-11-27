@@ -8,7 +8,7 @@
 //! `Command::help_text()` renders the clap struct's own help for arg-bearing
 //! commands (so `-h`/`--help` and `/help <cmd>` agree), else the static
 //! description the palette shows. **Core hygiene:** `clap` stays in
-//! `entanglement-runtime` (`tui/`), never `entanglement-core` (`make tree`).
+//! `skutter` (`tui/`), never the runtime or core (`make tree`/`check-lean`).
 
 use clap::{CommandFactory, Parser};
 

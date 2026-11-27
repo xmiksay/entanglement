@@ -62,7 +62,8 @@ pub use last_seen::McpToolCache;
 // Split out of this file along the 400-line file cap (#559): crate-internal
 // helpers every connect path (lazy connect, live `/mcp add`, `/mcp connect`)
 // shares.
-pub(crate) use connect_impl::{connect_client, record_last_seen, register_tools, transport_label};
+pub use connect_impl::transport_label;
+pub(crate) use connect_impl::{connect_client, record_last_seen, register_tools};
 pub(crate) use in_flight::InFlight;
 pub use scoped::{McpScope, McpScopeResolver, McpScopes};
 

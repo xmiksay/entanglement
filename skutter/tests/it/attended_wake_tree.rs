@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use entanglement_core::{InMsg, OutEvent, SessionId};
 
-use crate::attended_mode::approve;
 use crate::attended_serve::{connect, first, send};
+use crate::support::approve;
 use entanglement_runtime::session_store::LogPayload;
 
 use crate::attended_wake::{
@@ -151,11 +151,11 @@ async fn a_sub_agents_own_listing_wakes_its_root() {
 /// The same for the child's `ask_user` question and `ListQuestions`.
 #[tokio::test]
 async fn a_sub_agents_question_listing_wakes_its_root() {
-    let ask = crate::unattended_mode::ask_user_call(
+    let ask = crate::support::ask_user_call(
         "q1",
         r#"{"questions":[{"question":"Which?","options":[{"label":"A"}]}]}"#,
     );
-    let s = served_with(false, vec![ask, crate::unattended_mode::done_text()]).await;
+    let s = served_with(false, vec![ask, crate::support::done_text()]).await;
     let (root, child) = (SessionId::new("ws-r3"), SessionId::new("ws-c3"));
     let rid = asleep_with_child(&s, &root, &child).await;
 

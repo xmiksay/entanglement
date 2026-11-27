@@ -50,7 +50,7 @@ pub fn own_process_group(cmd: &mut Command) {
 /// grandchildren orphaned exactly as on the timeout path (#168). Callers
 /// disarm it once the child has exited normally and either drop it armed to
 /// kill on timeout ([`wait_or_kill_group`] signals explicitly instead) or
-/// let a cancel drop it. Public only because the `skutter` binary's TUI
+/// let a cancel drop it. Public only because `skutter`'s TUI
 /// status-line command (`tui::statusline::command`) reuses it — not part of
 /// the embedder API.
 #[doc(hidden)]

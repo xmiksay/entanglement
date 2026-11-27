@@ -17,11 +17,11 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::attendance::Attendance;
-use entanglement_runtime::serve::router;
 use entanglement_runtime::tool_names::ASK_USER_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
 use futures::{SinkExt, StreamExt};
+use skutter::serve::router;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;

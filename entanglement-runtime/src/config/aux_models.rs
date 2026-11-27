@@ -186,8 +186,7 @@ impl AuxModelStore {
     }
 
     /// Build an in-memory store from `pins` directly — no file, no env var, no
-    /// re-write on [`set`](Self::set) (there is no `path` to write to). The
-    /// production counterpart of [`for_test`](Self::for_test): a multi-user
+    /// re-write on [`set`](Self::set) (there is no `path` to write to). A multi-user
     /// embedder looks a user's pins up in its own storage (ADR-0181 — the
     /// session→user mapping and per-user data live with the embedder) and
     /// wraps them into the same store shape
@@ -197,28 +196,6 @@ impl AuxModelStore {
         let aux = pins
             .into_iter()
             .map(|(p, (provider, model))| (p, AuxModelPin { provider, model }))
-            .collect();
-        Self { aux, path: None }
-    }
-
-    /// Build an in-memory store from `pins` directly — no file, no env var.
-    /// Lets a caller (e.g. `inspect::aux_models`'s render tests) exercise
-    /// [`get`](Self::get) without mutating the process-global
-    /// `ENTANGLEMENT_STATE_DIR` env var, which would race against
-    /// [`crate::aux_llm`]'s own tests under `cargo test`'s parallel threads.
-    #[cfg(test)]
-    pub(crate) fn for_test(pins: &[(Purpose, &str, &str)]) -> Self {
-        let aux = pins
-            .iter()
-            .map(|(p, provider, model)| {
-                (
-                    *p,
-                    AuxModelPin {
-                        provider: provider.to_string(),
-                        model: model.to_string(),
-                    },
-                )
-            })
             .collect();
         Self { aux, path: None }
     }

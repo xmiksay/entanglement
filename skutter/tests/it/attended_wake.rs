@@ -13,14 +13,14 @@ use entanglement_core::{Holly, InMsg, OutEvent, PendingApproval, Permission, Ses
 use entanglement_runtime::attendance::Attendance;
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
 use entanglement_runtime::policy::PermissionResolver;
-use entanglement_runtime::serve::{router, Rejoin};
 use entanglement_runtime::session_store::{LogPayload, SessionStore};
 use entanglement_runtime::ToolRegistry;
+use skutter::serve::{router, Rejoin};
 use tokio::net::TcpListener;
 
-use crate::attended_mode::{approve, asking};
 use crate::attended_serve::{connect, first, send, Ws};
-use crate::unattended_mode::{bash_call, done_text, spawn_wrapped, EchoBash};
+use crate::support::{approve, asking};
+use crate::support::{bash_call, done_text, spawn_wrapped, EchoBash};
 
 /// Grades like its inner resolver, after a pause: a re-offered call's card
 /// then arrives well after the resume, so a listing that did not wait for

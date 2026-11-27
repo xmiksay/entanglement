@@ -161,7 +161,7 @@ async fn unattended_refuses_a_credentialed_call_unless_a_rule_allows_it() {
     );
 }
 
-#[cfg(all(feature = "mcp-http", feature = "serve"))]
+#[cfg(feature = "mcp-http")]
 mod mcp_namespace {
     use super::*;
     use axum::http::StatusCode;

@@ -16,10 +16,10 @@ PKG ?=
 # this also bans the web/websocket stacks the old grep let sail through
 # (warp/actix/rocket/tungstenite/ureq — the #207 blocklist-completeness gap).
 CORE_FORBIDDEN ?= clap|axum|warp|actix-web|actix|rocket|tonic|tungstenite|crossterm|ratatui|ureq
-# LEAN_FORBIDDEN — CLI/TUI/transport crates that must stay out of the
-# no-default-features runtime library (ADR-0025's set, amended by ADR-0053).
-# `axum` rides the `serve` head's feature (#153, ADR-0048), so it must not leak
-# into the lean build either.
+# LEAN_FORBIDDEN — CLI/TUI/web-server crates that must stay out of the runtime
+# library, in its default *and* its no-default-features build (ADR-0025's set,
+# amended by ADR-0053). Since #931 every head (clap, the TUI render stack, the
+# axum `serve` server) lives in the `skutter` crate instead.
 LEAN_FORBIDDEN ?= clap|ratatui|crossterm|syntect|pulldown-cmark|diffy|tracing-subscriber|axum
 
 # Minimum line-coverage % the release gate enforces. First measured baseline
@@ -38,28 +38,28 @@ build: ## cargo build --workspace
 	$(CARGO) build --workspace
 
 install: ## install the `skutter` binary into $CARGO_HOME/bin (cargo install --path)
-	$(CARGO) install --path entanglement-runtime --locked
+	$(CARGO) install --path skutter --locked
 
 run: build ## run one turn on the configured provider (no key: hint + exit 2; ENTANGLEMENT_PROVIDER=echo for the offline stub)
-	$(CARGO) run -p entanglement-runtime -- run "Hello, Holly!" $(ARGS)
+	$(CARGO) run -p skutter -- run "Hello, Holly!" $(ARGS)
 
 run-json: build ## stream one turn as NDJSON events (like opencode run --format json; same provider rules as `run`)
-	$(CARGO) run -p entanglement-runtime -- run --format json "Hello, Holly!"
+	$(CARGO) run -p skutter -- run --format json "Hello, Holly!"
 
 run-tui: build ## launch the terminal UI (first-run setup dialog when no provider is configured)
-	$(CARGO) run -p entanglement-runtime -- tui
+	$(CARGO) run -p skutter -- tui
 
 pipe: build ## stdio pipe head — InMsg NDJSON on stdin, OutEvent NDJSON on stdout (same provider rules as `run`)
-	$(CARGO) run -p entanglement-runtime -- pipe
+	$(CARGO) run -p skutter -- pipe
 
 serve: build ## WebSocket serve head — local loopback HTTP+WS on 127.0.0.1 (ARGS='--port 4517')
-	$(CARGO) run -p entanglement-runtime -- serve $(ARGS)
+	$(CARGO) run -p skutter -- serve $(ARGS)
 
 sessions: build ## list past (resumable) sessions
-	$(CARGO) run -p entanglement-runtime -- sessions
+	$(CARGO) run -p skutter -- sessions
 
 inspect: build ## inspect resolved prompt/agents/skills/config/aux-models/mcp-tokens/mcp/session, no engine (ARGS='prompt --agent general' | agents | 'skills --disclosures' | config | aux-models | mcp-tokens | mcp | 'session <id>')
-	$(CARGO) run -p entanglement-runtime -- inspect $(ARGS)
+	$(CARGO) run -p skutter -- inspect $(ARGS)
 
 check: ## cargo check --workspace (fast typecheck)
 	$(CARGO) check --workspace
@@ -102,11 +102,13 @@ check-fmt: ## cargo fmt --check (CI)
 tree: ## fail if entanglement-core pulls a forbidden UI/web-server crate
 	@CARGO='$(CARGO)' sh scripts/dep-gate.sh entanglement-core '$(CORE_FORBIDDEN)' -p entanglement-core
 
-# Lean gate (ADR-0025, amended by ADR-0053): entanglement-runtime with
-# --no-default-features must stay free of CLI/TUI crates so library consumers get
-# a light build. `reqwest`/`hyper` ride in via core → provider and are not
-# forbidden here; the CLI/TUI crates still are. Same shared mechanism as `tree`.
-check-lean: ## fail if lean (no-default-features) runtime pulls CLI/TUI crates
+# Lean gate (ADR-0025, amended by ADR-0053): entanglement-runtime must stay free
+# of CLI/TUI/web-server crates so library consumers get a light build — with
+# its default features (#931: no head rides a runtime feature any more) and
+# with --no-default-features. `reqwest`/`hyper` ride in via core → provider and
+# are not forbidden here. Same shared mechanism as `tree`.
+check-lean: ## fail if the runtime library (default or no-default-features) pulls CLI/TUI/web-server crates
+	@CARGO='$(CARGO)' sh scripts/dep-gate.sh runtime '$(LEAN_FORBIDDEN)' -p entanglement-runtime
 	@CARGO='$(CARGO)' sh scripts/dep-gate.sh lean-runtime '$(LEAN_FORBIDDEN)' -p entanglement-runtime --no-default-features
 	$(CARGO) clippy -p entanglement-runtime --no-default-features --all-targets -- -D warnings
 
@@ -146,10 +148,12 @@ file-cap: ## fail if a src file exceeds 400 code lines and isn't grandfathered
 doc-cap: ## fail if a docs/**/*.md (outside docs/adr/) exceeds 400 lines
 	@sh scripts/doc-cap-gate.sh
 
-# UserId hygiene gate (ADR-0181/ADR-0184, #687): the runtime crate must never
-# name `UserId` — per-user seams live in the provider crate and the embedder.
-userid: ## fail if UserId appears anywhere in entanglement-runtime/src
-	@sh scripts/userid-gate.sh
+# UserId hygiene gate (ADR-0181/ADR-0184, #687): the runtime crate and the
+# `skutter` CLI must never name `UserId` — per-user seams live in the provider
+# crate and the embedder.
+userid: ## fail if UserId appears anywhere in entanglement-runtime/src or skutter/src
+	@sh scripts/userid-gate.sh entanglement-runtime/src
+	@sh scripts/userid-gate.sh skutter/src
 
 # MSRV gate (#728): typecheck on the declared `rust-version` toolchain against
 # the committed lockfile, so the claim is tested rather than asserted. Separate

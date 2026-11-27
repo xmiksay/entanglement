@@ -118,7 +118,7 @@ impl Rules {
     /// care about this order at resolution time ([`resolve`]), but a reader
     /// comparing a mode's built-in shape against its tuned one wants to see
     /// what was actually added, in the order it was added.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, Permission)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&str, Permission)> {
         self.entries.iter().map(|e| (e.key.as_str(), e.grade))
     }
 }

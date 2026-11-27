@@ -149,6 +149,41 @@ fn expand_or_literal_reads_the_live_handle() {
     assert_eq!(expand_or_literal(&live, "plain".into()), "plain");
 }
 
+#[test]
+fn a_watcher_notice_reloads_the_live_handle() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "hi.md", "Hello $ARGUMENTS!");
+    let live: LiveCommands = Arc::new(RwLock::new(Arc::new(CommandRegistry::default())));
+    let load =
+        || resolve(raws(&[(Layer::Project, dir.path(), Strictness::Strict)])).map(registry_from);
+
+    let notice = reload_on(&live, ReloadNotice::Reloaded("agents".into()), load);
+    assert_eq!(
+        notice,
+        ReloadNotice::Reloaded("agents; 1 command(s)".into())
+    );
+    assert_eq!(expand_or_literal(&live, "/hi bob".into()), "Hello bob!");
+
+    // A failed definitions reload is passed through without loading.
+    let failed = ReloadNotice::Failed("bad skill".into());
+    let notice = reload_on(&live, failed.clone(), || unreachable!("not reloaded"));
+    assert_eq!(notice, failed);
+
+    // A broken command file keeps the previous registry.
+    let notice = reload_on(&live, ReloadNotice::Reloaded("x".into()), || {
+        Err(anyhow::anyhow!("malformed"))
+    });
+    assert!(matches!(notice, ReloadNotice::Failed(m) if m.contains("malformed")));
+    assert_eq!(expand_or_literal(&live, "/hi bob".into()), "Hello bob!");
+}
+
+/// The runtime's definitions watcher names this env var by value; the two
+/// must agree or a relocated commands dir would go unwatched.
+#[test]
+fn the_watcher_watches_the_commands_dir_env() {
+    assert_eq!(COMMANDS_DIR_ENV, "ENTANGLEMENT_COMMANDS_DIR");
+}
+
 /// #798: `skutter run /review "a b"` keeps `"a b"` as one positional arg; a
 /// plain prompt is still the space-joined text.
 #[test]

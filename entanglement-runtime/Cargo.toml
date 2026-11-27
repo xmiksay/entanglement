@@ -1,6 +1,6 @@
 [package]
 name = "entanglement-runtime"
-description = "Head crate for the entanglement agent engine (binary `skutter`): stdio `run`/`pipe`, TUI `tui`, and the local WebSocket `serve` head (behind the `serve` feature). With `--no-default-features` it is a lean library exposing the tool-execution loop, permission dispatch, sub-agent spawn, and persistence machinery (no CLI/TUI/transport deps — see ADR-0025)."
+description = "Embeddable runtime for the entanglement agent engine: host tools, tool execution, permission dispatch, sub-agent spawn, user config and event-sourced persistence. No CLI, TUI or web-server deps; the `skutter` CLI is built on it."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,11 +20,6 @@ all-features = true
 name = "entanglement_runtime"
 path = "src/lib.rs"
 
-[[bin]]
-name = "skutter"
-path = "src/main.rs"
-required-features = ["cli", "provider", "tui"]
-
 # `mcp::HttpClient` (#312) is compiled out of the lean `--no-default-features`
 # library `embedded.rs`/`embedded_lifecycle.rs` build against, so it needs its
 # own example gated on the feature that carries it (#364).
@@ -41,24 +36,11 @@ path = "tests/rhai.rs"
 required-features = ["rhai"]
 
 [features]
-default = ["tui", "serve", "mcp-http", "rhai", "web-fetch"]
-# Head plumbing for `skutter`: arg parsing (clap) + log init (tracing-subscriber)
-# + hidden key prompt (rpassword, for `config set-key` — #304).
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:rpassword"]
-# LLM providers (reqwest via entanglement-provider). Split from `cli` (#208) so a
-# future `serve`/ws head can pull providers without dragging in clap. Pulls
-# `futures` too: the session-title generator (Issue 5) drains a provider
-# `LlmStream` for a one-shot call, and `futures::StreamExt` is the iterator.
+default = ["provider", "mcp-http", "rhai", "web-fetch"]
+# The provider-backed aux-LLM helpers (session titles, the narrator, the
+# throttle relay): they drain an `entanglement-provider` `LlmStream` for a
+# one-shot call, and `futures::StreamExt` is the iterator.
 provider = ["dep:entanglement-provider", "dep:futures"]
-# WebSocket `serve` head (#153, ADR-0048): a loopback-bound axum HTTP+WS server,
-# the browser twin of the TUI. Implies `cli` + `provider` (reached through the
-# clap CLI, drives a real provider); `axum`/`futures` stay behind it so the lean
-# library and `--no-default-features` builds carry no transport (ADR-0025).
-serve = ["cli", "provider", "dep:axum", "dep:futures"]
-# Terminal UI head (`skutter tui`). Implies `cli` + `provider`: the TUI is only
-# reachable through the clap CLI, and tui/ itself imports entanglement-provider
-# (ModelInfo, models_for, HttpClient in tui/app.rs + tui/mod.rs).
-tui = ["cli", "provider", "dep:ratatui", "dep:crossterm", "dep:pulldown-cmark", "dep:syntect", "dep:diffy", "dep:unicode-width"]
 # Streamable-HTTP MCP transport (#312, ADR-0080): remote MCP servers over
 # `POST /mcp` with per-server headers/auth, plus the OAuth flow that authenticates
 # them (ADR-0153). Since ADR-0153 the transport and the OAuth mechanism live in
@@ -72,7 +54,7 @@ mcp-http = []
 # amending ADR-0025): one of the heaviest always-compiled deps, so a lean
 # embedder that never registers `rhai` can now drop it via
 # `--no-default-features` (no `rhai` in that build's feature list). Every
-# existing default-feature build (incl. the `skutter` binary) is unaffected.
+# existing default-feature build (incl. `skutter`) is unaffected.
 rhai = ["dep:rhai"]
 # The SSRF-guarded `web_fetch` host tool (#736, ADR-0220; default-on). The
 # fetch mechanism itself is provider-owned and always compiled; this gate
@@ -83,39 +65,21 @@ web-fetch = ["dep:htmd", "dep:html5ever", "dep:markup5ever_rcdom"]
 [dependencies]
 entanglement-core = { workspace = true }
 entanglement-provider = { workspace = true, optional = true }
-# Per-crate feature trim (#502, ADR-0135): the head crate exercises nearly the
-# whole tokio surface — `rt`+`rt-multi-thread`+`macros` back `#[tokio::main]`
-# (`src/main.rs`) and the one `flavor = "multi_thread"` test
-# (`src/extra_roots.rs`); `sync`/`time` back the mpsc/broadcast/oneshot/watch +
-# sleep/timeout/interval usage throughout; `fs`/`process` back the host tools
-# (`host::edit`/`write`/`read`/`bash`/mcp stdio); `net` backs `serve` +
-# the streamable-HTTP MCP transport's tests; `io-util`/`io-std` back the exec
-# tools' piping and `pipe`'s stdin read; `signal` backs `ctrl_c()` in `serve`/
-# `tui`. The `tokio` dev-dependency adds only `test-util`; this list
-# otherwise has to satisfy every `#[cfg(test)]`/`tests/*.rs` need.
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "io-std", "signal"] }
+# Per-crate feature trim (#502, ADR-0135): `rt`+`rt-multi-thread`+`macros`
+# back the examples' `#[tokio::main]` and the one `flavor = "multi_thread"`
+# test (`src/extra_roots.rs`); `sync`/`time` the mpsc/broadcast/oneshot/watch
+# + sleep/timeout/interval usage throughout; `fs`/`process`/`io-util` the host
+# tools (`host::edit`/`write`/`read`/`bash`/mcp stdio, the exec tools'
+# piping); `net` the MCP transport tests' stub servers. The `tokio`
+# dev-dependency adds only `test-util`.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util"] }
 anyhow = { workspace = true }
-clap = { workspace = true, optional = true }
-rpassword = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, optional = true }
-# TUI dependencies (behind the `tui` feature — ADR-0025)
-ratatui = { workspace = true, optional = true }
-crossterm = { workspace = true, optional = true }
-# WebSocket `serve` head (behind the `serve` feature — ADR-0025/ADR-0048)
-axum = { workspace = true, optional = true }
-# `futures` backs SSE streaming for `serve` (WS) and the `provider` feature's
-# one-shot aux-LLM drain. The HTTP MCP transport no longer needs it here — that
-# code moved to `entanglement-provider` (ADR-0153), which owns `reqwest` too, so
-# the runtime names neither directly any more.
+# The `provider` feature's one-shot aux-LLM drain.
 futures = { workspace = true, optional = true }
-pulldown-cmark = { workspace = true, optional = true }
-syntect = { workspace = true, optional = true }
-diffy = { workspace = true, optional = true }
-unicode-width = { workspace = true, optional = true }
 dirs = { workspace = true }
 # Host tool dependencies
 glob = { workspace = true }
@@ -156,6 +120,6 @@ tempfile = "3"
 # deadline's races deterministically (ADR-0247).
 tokio = { workspace = true, features = ["test-util"] }
 async-trait = { workspace = true }
-# WS client for the `serve` head integration tests (drives a real socket).
-tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
+# Stub streamable-HTTP MCP servers in the `mcp-http` integration tests.
+axum = { workspace = true }

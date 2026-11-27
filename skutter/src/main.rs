@@ -9,17 +9,13 @@
 //! - `pipe` is a bidirectional NDJSON relay: `InMsg` lines on stdin,
 //!   `OutEvent` lines on stdout. For scripting / editor integration.
 
-// Only the bin-specific modules stay `mod` here: the heads (`run`/`pipe`/
-// `tui`, dispatched by `heads`), the clap surface (`args`), and the startup
-// wiring (`providers`/`factories` → `engine_setup` → `boot` → `services`).
-// The reusable library modules live in `lib.rs`; importing them (rather
-// than re-declaring `mod`) stops the library source being compiled a second
-// time and removes the hand-sync that let a bin-only `mod` slip past
-// `check-lean` (issue #208). The crate-root
-// `use` below makes each library module reachable as `crate::<name>` from the
-// bin submodules too, matching the existing `use entanglement_provider::…`.
+// The heads (`run`/`pipe`/`tui`, dispatched by `heads`), the clap surface
+// (`args`), and the startup wiring (`providers`/`factories` → `engine_setup`
+// → `boot` → `services`). The crate-root `use`s below make each runtime
+// module, and the `skutter` library's own, reachable as `crate::<name>`.
 mod args;
 mod boot;
+mod config_keys;
 mod engine_setup;
 mod factories;
 mod heads;
@@ -32,11 +28,12 @@ mod tui;
 
 use entanglement_runtime::{
     agents, arg_validate, aux_llm, capability, config, discover, exec, extra_roots, file_backup,
-    history, host, inspect, jobs, layers, logging, mcp, mode, narrate, path_grading, persistence,
-    plan_files, plan_watch, policy, retained_output, script_ops, session_store, session_title,
-    skills, slash_commands, subagent, system_prompt, system_prompt_mode, throttle,
-    tool_advertising, tool_names, tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
+    history, host, jobs, layers, mcp, mode, narrate, path_grading, persistence, plan_files,
+    plan_watch, policy, retained_output, script_ops, session_store, session_title, skills,
+    subagent, system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names,
+    tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
 };
+use skutter::{inspect, logging, serve, slash_commands};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -152,7 +149,7 @@ async fn main() -> Result<()> {
     if let Some(Cmd::Config { cmd }) = &cli.cmd {
         return match cmd {
             ConfigCmd::SetKey { provider, key } => {
-                config::keys::set_key(&catalog, provider, key.clone())
+                config_keys::set_key(&catalog, provider, key.clone())
             }
         };
     }

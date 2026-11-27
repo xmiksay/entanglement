@@ -24,7 +24,7 @@ pub(crate) struct Head {
     pub(crate) model_info: ModelInfo,
     pub(crate) provider_name: String,
     pub(crate) live_profiles: Arc<RwLock<AgentCatalog>>,
-    /// User slash commands (#733), live-reloaded by the definitions watcher.
+    /// User slash commands (#733); the TUI reloads them on a `reload_rx` notice.
     pub(crate) live_commands: crate::slash_commands::LiveCommands,
     pub(crate) live_agent_models: Arc<Mutex<config::agent_models::AgentModelStore>>,
     pub(crate) live_agent_generation: Arc<Mutex<config::agent_generation::AgentGenerationStore>>,
@@ -238,14 +238,15 @@ pub(crate) fn start(
     // to the TUI (a status line); every other head lets its messages drop.
     // User slash commands (#733): head-side prompt templates, loaded here
     // rather than in `boot` because the engine never sees them — a malformed
-    // native command file is as loud at startup as a malformed skill.
+    // native command file is as loud at startup as a malformed skill. The
+    // runtime watcher fingerprints their dirs; the TUI reloads them itself
+    // on each notice (`slash_commands::reload_on`).
     let live_commands: crate::slash_commands::LiveCommands = Arc::new(RwLock::new(Arc::new(
         crate::slash_commands::load_registry(cwd).context("loading slash commands")?,
     )));
     let live = watch::LiveDefinitions::new(
         live_profiles.clone(),
         live_skills.clone(),
-        live_commands.clone(),
         live_agent_models.clone(),
         grants,
         mcp_capabilities.clone(),

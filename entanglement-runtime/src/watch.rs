@@ -318,7 +318,9 @@ fn watch_paths_from(
     for (kind, env_var) in [
         ("agents", "ENTANGLEMENT_AGENTS_DIR"),
         ("skills", "ENTANGLEMENT_SKILLS_DIR"),
-        ("commands", crate::slash_commands::COMMANDS_DIR_ENV),
+        // A head's user slash commands (skutter) reload on this watcher's
+        // notice, so their layered dirs are fingerprinted here too.
+        ("commands", "ENTANGLEMENT_COMMANDS_DIR"),
     ] {
         let env_override = env(env_var).map(PathBuf::from);
         for (_, dir, _) in

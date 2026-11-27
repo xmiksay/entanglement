@@ -1,0 +1,58 @@
+[package]
+name = "skutter"
+description = "Coding-agent CLI over the entanglement engine: stdio `run`/`pipe`, the terminal UI, the local WebSocket `serve` head, slash commands and `inspect`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Not on crates.io: the release publishes the three library crates only
+# (docs/releasing.md); install the binary from a checkout (`make install`).
+publish = false
+
+[lib]
+name = "skutter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "skutter"
+path = "src/main.rs"
+
+[dependencies]
+entanglement-core = { workspace = true }
+entanglement-provider = { workspace = true }
+entanglement-runtime = { path = "../entanglement-runtime" }
+# `rt`+`rt-multi-thread`+`macros` back `#[tokio::main]`; `net` the `serve`
+# listener; `io-util`/`io-std` `pipe`'s stdin relay; `signal` `ctrl_c()` in
+# `serve`/`tui`; `process` the TUI's clipboard and statusline children.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "io-std", "signal"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+base64 = { workspace = true }
+libc = { workspace = true }
+futures = { workspace = true }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Hidden terminal prompt for `skutter config set-key` (#304).
+rpassword = { workspace = true }
+axum = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+pulldown-cmark = { workspace = true }
+syntect = { workspace = true }
+diffy = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+async-trait = { workspace = true }
+# WS client for the `serve` head integration tests (drives a real socket).
+tokio-tungstenite = { workspace = true }

@@ -131,12 +131,6 @@ pub use mcp_persist::save_mcp;
 pub use mcp_tokens::McpTokenStore;
 pub use tui::TuiConfig;
 
-/// The CLI `skutter config set-key` handler (rpassword prompt + catalog lookup).
-/// Behind `cli`+`provider`: it prompts (rpassword, a `cli`-feature dep) and looks
-/// the provider's key env up in the catalog (`provider` feature).
-#[cfg(all(feature = "cli", feature = "provider"))]
-pub mod keys;
-
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

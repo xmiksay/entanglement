@@ -156,7 +156,7 @@ fn load(registry: &SkillRegistry, skill_name: &str) -> Result<String> {
 /// `available_refs` listing.
 /// Shared by the model-facing [`load`] and the agent-definition **preload**
 /// (#117), so a preloaded skill reads identically to one the model loads itself.
-pub(crate) fn render_skill(skill: &super::SkillMeta) -> String {
+pub fn render_skill(skill: &super::SkillMeta) -> String {
     render_skill_with(skill, None)
 }
 

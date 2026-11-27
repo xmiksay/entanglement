@@ -1339,7 +1339,7 @@ mod tests {
     /// as typed.
     #[tokio::test]
     async fn submitting_a_user_command_sends_the_expanded_prompt() {
-        use entanglement_runtime::slash_commands::{CommandRegistry, UserCommand};
+        use crate::slash_commands::{CommandRegistry, UserCommand};
         let sid = SessionId::new("s1");
         let mut app = App::new_for_test(sid.clone());
         let registry: CommandRegistry = [UserCommand {

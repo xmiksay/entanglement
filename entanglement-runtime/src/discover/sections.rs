@@ -9,9 +9,8 @@ use crate::tools::ToolRegistry;
 
 use super::runtime_owned_specs;
 
-/// One index row. `pub`, not `pub(crate)`: the TUI lives in the **binary**
-/// crate (`main.rs`'s `mod tui`), a separate compilation unit from this
-/// library crate.
+/// One index row. `pub`, not `pub(crate)`: the TUI lives in the `skutter`
+/// crate.
 pub struct IndexRow {
     pub name: String,
     pub description: String,
