@@ -25,6 +25,7 @@ mod providers;
 mod run;
 mod services;
 mod tui;
+mod user_dirs;
 
 use entanglement_runtime::{
     agents, arg_validate, aux_llm, capability, config, discover, exec, extra_roots, file_backup,

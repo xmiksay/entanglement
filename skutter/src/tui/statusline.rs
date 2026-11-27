@@ -64,7 +64,7 @@ pub(crate) fn spawn_probe(
     let wake = Arc::new(Notify::new());
     let notified = wake.clone();
     tokio::spawn(async move {
-        let home = dirs::home_dir();
+        let home = crate::user_dirs::home_dir();
         let mut last: Option<GitInfo> = None;
         loop {
             let (r, h) = (root.clone(), home.clone());

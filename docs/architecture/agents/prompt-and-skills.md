@@ -214,7 +214,8 @@
   a load warning in every head. The runtime's definitions watcher fingerprints
   the command dirs and the TUI reloads the registry on each of its notices
   (`slash_commands::reload_on`; a malformed command file keeps the previous
-  registry and turns the notice into a failure); `skutter inspect commands [name]` lists name, layer, source and
+  registry and shows its own warning, while the agents and skills that did
+  reload still refresh the roster); `skutter inspect commands [name]` lists name, layer, source and
   description (or one command's provenance and raw template).
 - **Where dispatch runs (✅ #59):** the `Agent` *shape* stays a core
   protocol type, but the `Allow|Ask|Deny` decision + the approval wait are a

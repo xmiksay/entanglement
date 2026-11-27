@@ -230,10 +230,10 @@ pub async fn tui(
             // the definitions reload failed (#785).
             msg = reload_rx.recv() => {
                 if let Some(notice) = msg {
-                    let notice = crate::slash_commands::reload_on(&user_commands, notice, || {
+                    let reloaded = crate::slash_commands::reload_on(&user_commands, notice, || {
                         crate::slash_commands::load_registry(&config_root)
                     });
-                    if editor::apply_reload(&mut terminal, &mut attention, &mut app, &config_root, notice) {
+                    if editor::apply_reload(&mut terminal, &mut attention, &mut app, &config_root, reloaded) {
                         let fresh = entry_profiles_from(&agents.read().unwrap());
                         app.refresh_profiles(fresh);
                     }

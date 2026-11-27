@@ -19,3 +19,4 @@ pub mod serve;
 // User-defined slash commands — layered prompt templates (#733): pure
 // discovery + text expansion, consumed by the TUI and the `run` head.
 pub mod slash_commands;
+mod user_dirs;

@@ -189,11 +189,11 @@ without an explicit sweep they pile up under the state directory forever.
 is both **idle** (`.state` mtime older than `max_idle`) and **empty** (no live
 lease, no pending cool-down, no request in the trailing RPM window) — an
 endpoint still in real use always fails the "empty" check regardless of file
-age, so a live budget can never be swept out from under it. The runtime calls
-this twice: a best-effort startup sweep (`max_idle = 1h`, `main.rs`, mirroring
+age, so a live budget can never be swept out from under it. skutter calls
+this twice: a best-effort startup sweep (`max_idle = 1h`, skutter's `main.rs`, mirroring
 `SessionStore::prune`'s role for session logs) and a short-`max_idle` (5s)
 sweep fired from the TUI's `/key` submit handler
-(`entanglement-runtime::tui::app::key`, `tokio::task::spawn_blocking` — the
+(`skutter::tui::app::key`, `tokio::task::spawn_blocking` — the
 sweep locks and `fsync`s files, kept off the keypress path) so a rotated-away
 key's file doesn't wait a full hour once every session bound to it has moved
 off. This does **not** force an already-bound session to rebind — that stays

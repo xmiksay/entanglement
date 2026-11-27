@@ -218,14 +218,16 @@ pub(crate) fn apply_tui_config(
 /// surface the outcome as **one** notice (#813). A config that no longer
 /// parses keeps the previous settings — a mid-save edit must not break a
 /// running TUI. The status-line templates go to the `App`, which owns the row
-/// they render. Returns whether the definitions reloaded, i.e. whether the
-/// caller should refresh its agent roster.
+/// they render. `reloaded` is `slash_commands::reload_on`'s result: the
+/// notice plus a slash-command failure, which never undoes the definitions'
+/// own outcome. Returns whether the definitions
+/// reloaded, i.e. whether the caller should refresh its agent roster.
 pub(crate) fn apply_reload(
     term: &mut Term,
     attention: &mut Attention,
     app: &mut App,
     root: &Path,
-    notice: crate::watch::ReloadNotice,
+    (notice, commands_err): (crate::watch::ReloadNotice, Option<String>),
 ) -> bool {
     let config_err = match crate::config::Config::load(root) {
         Ok(c) => {
@@ -239,7 +241,7 @@ pub(crate) fn apply_reload(
             Some(format!("{e:#}"))
         }
     };
-    let outcome = reload_outcome(notice, config_err);
+    let outcome = reload_outcome(notice, config_err, commands_err);
     if let Some(toast) = outcome.toast {
         app.record_reload_status(toast);
     }
@@ -261,8 +263,13 @@ struct ReloadOutcome {
 
 /// `config_err` is the raw `config.yml` load error. When the definitions
 /// error already quotes it (the same malformed file broke both), it is named
-/// once, not twice.
-fn reload_outcome(notice: crate::watch::ReloadNotice, config_err: Option<String>) -> ReloadOutcome {
+/// once, not twice. A `commands_err` keeps the definitions' summary in the
+/// warning, since that half of the reload did land.
+fn reload_outcome(
+    notice: crate::watch::ReloadNotice,
+    config_err: Option<String>,
+    commands_err: Option<String>,
+) -> ReloadOutcome {
     use crate::watch::ReloadNotice;
     let (refresh, toast, definitions_err) = match notice {
         ReloadNotice::Reloaded(summary) => (true, Some(summary), None),
@@ -278,6 +285,14 @@ fn reload_outcome(notice: crate::watch::ReloadNotice, config_err: Option<String>
         (Some(c), Some(d)) => Some(format!("{}; {d}", config_warning(&c))),
         (Some(c), None) => Some(config_warning(&c)),
         (None, d) => d,
+    };
+    let commands_warning = commands_err.map(|e| match &toast {
+        Some(summary) => format!("{summary}; {e}"),
+        None => e,
+    });
+    let warning = match (warning, commands_warning) {
+        (Some(w), Some(c)) => Some(format!("{w}; {c}")),
+        (w, c) => w.or(c),
     };
     ReloadOutcome {
         refresh,
@@ -308,7 +323,7 @@ mod tests {
         let ok = || ReloadNotice::Reloaded("reloaded".into());
         let bad = || ReloadNotice::Failed("defs bad".into());
         assert_eq!(
-            reload_outcome(ok(), None),
+            reload_outcome(ok(), None, None),
             ReloadOutcome {
                 refresh: true,
                 toast: Some("reloaded".into()),
@@ -317,7 +332,7 @@ mod tests {
         );
         let cfg_warning = "config not reloaded, keeping previous TUI settings: cfg bad";
         assert_eq!(
-            reload_outcome(ok(), Some("cfg bad".into())),
+            reload_outcome(ok(), Some("cfg bad".into()), None),
             ReloadOutcome {
                 refresh: true,
                 toast: None,
@@ -325,7 +340,7 @@ mod tests {
             }
         );
         assert_eq!(
-            reload_outcome(bad(), None),
+            reload_outcome(bad(), None, None),
             ReloadOutcome {
                 refresh: false,
                 toast: None,
@@ -333,15 +348,38 @@ mod tests {
             }
         );
         assert_eq!(
-            reload_outcome(bad(), Some("cfg bad".into())).warning,
+            reload_outcome(bad(), Some("cfg bad".into()), None).warning,
             Some(format!("{cfg_warning}; defs bad"))
         );
         // The same parse error in both is shown once.
         let same = ReloadNotice::Failed("definitions reload failed: x.yml: cfg bad".into());
-        let warning = reload_outcome(same, Some("cfg bad".into()))
+        let warning = reload_outcome(same, Some("cfg bad".into()), None)
             .warning
             .unwrap();
         assert_eq!(warning.matches("cfg bad").count(), 1, "{warning}");
+    }
+
+    /// A broken command file next to a clean definitions reload still
+    /// refreshes the roster, and the warning keeps the definitions summary.
+    #[test]
+    fn a_command_failure_does_not_undo_the_definitions_reload() {
+        let ok = || ReloadNotice::Reloaded("reloaded 3 agents".into());
+        let outcome = reload_outcome(ok(), None, Some("commands bad".into()));
+        assert_eq!(
+            outcome,
+            ReloadOutcome {
+                refresh: true,
+                toast: None,
+                warning: Some("reloaded 3 agents; commands bad".into())
+            }
+        );
+        let both = reload_outcome(ok(), Some("cfg bad".into()), Some("commands bad".into()));
+        assert!(both.refresh);
+        let warning = both.warning.unwrap();
+        assert!(
+            warning.contains("cfg bad") && warning.contains("commands bad"),
+            "{warning}"
+        );
     }
 
     /// One test owns the process-global flag, so its transitions are

@@ -29,7 +29,9 @@ names anything below. What changes:
   knows about user slash commands. The watcher still fingerprints the
   layered `commands` dirs, so a head that keeps its own commands reloads
   them on the watcher's `ReloadNotice` (what `skutter`'s TUI does). The
-  reload summary no longer counts commands.
+  reload summary no longer counts commands. The env var that relocates
+  the user commands layer is `watch::COMMANDS_DIR_ENV`, so a head loads
+  the same dirs the watcher fingerprints.
 - **Now public** (needed by `skutter`'s `inspect`): `mcp::transport_label`,
   `mode::PRECEDENCE`, `mode::Rules::iter`, `layers::walk_files`,
   `skills::load_skill::render_skill`.

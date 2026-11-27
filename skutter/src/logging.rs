@@ -69,7 +69,7 @@ pub fn init(verbose: bool, tui: bool) -> Result<()> {
 /// The TUI log file: `<data_dir>/entanglement/logs/skutter.log`, creating the
 /// directory if it doesn't exist.
 fn log_file_path() -> Result<PathBuf> {
-    let data_dir = dirs::data_dir().context("Failed to determine data directory")?;
+    let data_dir = crate::user_dirs::data_dir().context("Failed to determine data directory")?;
     let dir = data_dir.join("entanglement").join("logs");
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating log directory {}", dir.display()))?;

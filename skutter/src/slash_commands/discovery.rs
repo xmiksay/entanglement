@@ -12,7 +12,8 @@ use crate::layers::{Layer, Strictness, UserLayer};
 
 /// Env var replacing the whole user commands layer (tests, non-XDG setups, and
 /// the cross-vendor opt-out — same contract as `ENTANGLEMENT_SKILLS_DIR`).
-pub const COMMANDS_DIR_ENV: &str = "ENTANGLEMENT_COMMANDS_DIR";
+/// Owned by the runtime watcher, which fingerprints the same dirs.
+pub use entanglement_runtime::watch::COMMANDS_DIR_ENV;
 
 /// A discovered command file *before* parsing.
 #[derive(Debug)]

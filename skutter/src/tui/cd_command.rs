@@ -19,7 +19,7 @@ use crate::tui::app::App;
 
 /// Parse and send `/cd`; a usage error renders as a status line.
 pub(crate) async fn send_cd(app: &mut App, holly: &Holly, text: &str) {
-    let home = dirs::home_dir();
+    let home = crate::user_dirs::home_dir();
     match parse_cd_args(text, app.root(), home.as_deref()) {
         Ok((dir, approve)) => {
             let _ = holly

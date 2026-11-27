@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Enforces AGENTS.md's "files must not exceed 400 lines" rule (issue #451).
 #
-# Scans every `*/src/**/*.rs` file (the three crates' library/binary code —
+# Scans every `*/src/**/*.rs` file (every workspace crate's library/binary code —
 # `*/tests/**` integration suites and any file literally named `tests.rs`
 # are dedicated test modules by this repo's convention: `#[cfg(test)] mod
 # tests;` in the parent declares the gate, not the child file itself, so

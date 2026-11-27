@@ -160,28 +160,24 @@ fn a_watcher_notice_reloads_the_live_handle() {
     let notice = reload_on(&live, ReloadNotice::Reloaded("agents".into()), load);
     assert_eq!(
         notice,
-        ReloadNotice::Reloaded("agents; 1 command(s)".into())
+        (ReloadNotice::Reloaded("agents; 1 command(s)".into()), None)
     );
     assert_eq!(expand_or_literal(&live, "/hi bob".into()), "Hello bob!");
 
     // A failed definitions reload is passed through without loading.
     let failed = ReloadNotice::Failed("bad skill".into());
     let notice = reload_on(&live, failed.clone(), || unreachable!("not reloaded"));
-    assert_eq!(notice, failed);
+    assert_eq!(notice, (failed, None));
 
-    // A broken command file keeps the previous registry.
-    let notice = reload_on(&live, ReloadNotice::Reloaded("x".into()), || {
+    // A broken command file keeps the previous registry, and the agents and
+    // skills the runtime already swapped stay `Reloaded` so the TUI still
+    // refreshes its roster; the failure comes back as its own warning.
+    let (notice, warning) = reload_on(&live, ReloadNotice::Reloaded("x".into()), || {
         Err(anyhow::anyhow!("malformed"))
     });
-    assert!(matches!(notice, ReloadNotice::Failed(m) if m.contains("malformed")));
+    assert_eq!(notice, ReloadNotice::Reloaded("x".into()));
+    assert!(warning.is_some_and(|m| m.contains("malformed")));
     assert_eq!(expand_or_literal(&live, "/hi bob".into()), "Hello bob!");
-}
-
-/// The runtime's definitions watcher names this env var by value; the two
-/// must agree or a relocated commands dir would go unwatched.
-#[test]
-fn the_watcher_watches_the_commands_dir_env() {
-    assert_eq!(COMMANDS_DIR_ENV, "ENTANGLEMENT_COMMANDS_DIR");
 }
 
 /// #798: `skutter run /review "a b"` keeps `"a b"` as one positional arg; a

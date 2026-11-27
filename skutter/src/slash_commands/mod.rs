@@ -267,26 +267,31 @@ pub fn load_registry(root: &Path) -> Result<CommandRegistry> {
 /// Follow a definitions-watcher `notice` (its watch set covers the command
 /// dirs) by swapping `load`'s registry into `live` (`load` is
 /// [`load_registry`] outside tests). A clean reload adds the count to the
-/// summary; a malformed command file keeps the previous registry and turns
-/// the notice into a failure. A failed notice is passed through untouched.
+/// summary. A malformed command file keeps the previous registry and comes
+/// back as a separate warning: the runtime has already swapped the agents
+/// and skills, so the notice still says `Reloaded` and the head still
+/// refreshes its roster. A failed notice is passed through without loading.
 pub fn reload_on(
     live: &LiveCommands,
     notice: ReloadNotice,
     load: impl FnOnce() -> Result<CommandRegistry>,
-) -> ReloadNotice {
+) -> (ReloadNotice, Option<String>) {
     let ReloadNotice::Reloaded(summary) = notice else {
-        return notice;
+        return (notice, None);
     };
     match load() {
         Ok(fresh) => {
             let count = fresh.len();
             *live.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(fresh);
-            ReloadNotice::Reloaded(format!("{summary}; {count} command(s)"))
+            (
+                ReloadNotice::Reloaded(format!("{summary}; {count} command(s)")),
+                None,
+            )
         }
         Err(e) => {
             let msg = format!("slash commands reload failed, keeping previous ones: {e:#}");
             tracing::warn!("{msg}");
-            ReloadNotice::Failed(msg)
+            (ReloadNotice::Reloaded(summary), Some(msg))
         }
     }
 }

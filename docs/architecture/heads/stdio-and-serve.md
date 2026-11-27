@@ -103,7 +103,7 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   per-target directives and `trace` are reachable — e.g.
   `RUST_LOG=entanglement_core::host=trace`); absent it, `--verbose` (a **global**
   flag, so it may follow the subcommand) selects `debug`, otherwise `warn`
-  (issue #187, `runtime::logging`). Cold-start attribution (#703):
+  (issue #187, `skutter::logging`). Cold-start attribution (#703):
   `RUST_LOG=skutter::startup=debug` logs the wall-clock since process start at
   each phase boundary (`config+prune+logging`, `skills+agents`,
   `tools`, `engine+responders ready`, `tui first frame`); the TUI's
@@ -129,8 +129,8 @@ split, pluggable persistence/policy, approval-across-restart) is covered in
   resolved agent/model/name — session state with no managed file of its
   own, so it is read straight from the `.jsonl` log rather than re-run
   load-time discovery.
-- **WebSocket** (`skutter serve`, ✅ #153, `runtime::serve` behind the `serve`
-  cargo feature): an axum HTTP server exposing `GET /ws` (plus a `GET /healthz`
+- **WebSocket** (`skutter serve`, ✅ #153, `skutter::serve`, no cargo
+  feature — axum is a plain `skutter` dependency): an axum HTTP server exposing `GET /ws` (plus a `GET /healthz`
   liveness probe), one `subscribe()` fan-out per socket relayed out as JSON text
   frames (every event, so a client sees `ApprovalResolved` for a card another
   socket or the TUI answered, [ADR-0240](../../adr/archive/0240-approval-resolved-event.md)), each inbound text frame parsed into an `InMsg` and routed through the

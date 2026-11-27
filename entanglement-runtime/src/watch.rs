@@ -38,6 +38,12 @@ pub use live::{LiveDefinitions, ReloadNotice};
 /// writes, or several files touched by one `git checkout`) into one reload.
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Env var replacing the whole user slash-commands layer. Commands are a
+/// head concept (skutter's), but this watcher fingerprints their dirs so a
+/// head can reload them on its notice; the head reads the same constant, so
+/// the dir it loads and the dir watched here cannot drift apart.
+pub const COMMANDS_DIR_ENV: &str = "ENTANGLEMENT_COMMANDS_DIR";
+
 /// Env vars whose file, if overridden, needs its parent dir watched too (the
 /// default `${config_dir}/entanglement/` catch-all below already covers the
 /// un-overridden case — this list only matters when one is relocated outside
@@ -320,7 +326,7 @@ fn watch_paths_from(
         ("skills", "ENTANGLEMENT_SKILLS_DIR"),
         // A head's user slash commands (skutter) reload on this watcher's
         // notice, so their layered dirs are fingerprinted here too.
-        ("commands", "ENTANGLEMENT_COMMANDS_DIR"),
+        ("commands", COMMANDS_DIR_ENV),
     ] {
         let env_override = env(env_var).map(PathBuf::from);
         for (_, dir, _) in

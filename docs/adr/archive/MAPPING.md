@@ -37,7 +37,7 @@ the code, never as a description of current behaviour — that is
 | [0003](0003-agent-and-permission-profiles.md) | Agent + permission profiles (opencode-style) | superseded by 0207 | — |
 | [0004](0004-structured-plan-and-task-events.md) | Structured Plan & TaskList events (profiles + events, both) | current; partly superseded by 0039, 0049 | — |
 | [0005](0005-ndjson-stdio-head.md) | NDJSON stdio head (`run` + `pipe`) | current | — |
-| [0006](0006-core-dependency-hygiene-gate.md) | Layering: core / provider / runtime, and the core hygiene gate | current; partly superseded by 0053; amended by 0176 | — |
+| [0006](0006-core-dependency-hygiene-gate.md) | Layering: core / provider / runtime, and the core hygiene gate | current; partly superseded by 0053; amended by 0176; changed by #931 | — |
 | [0007](0007-streaming-llm-and-provider-crate.md) | `entanglement-provider`: streaming `Llm` trait, pooling, retry, rate-limit, reasoning | current; partly superseded by 0053 | — |
 | [0008](0008-host-tools-workdir-and-bounded-output.md) | Host tools: working-directory root + bounded output | current; partly superseded by 0054, 0091, 0170; amended by 0161 | — |
 | [0009](0009-edit-and-bash-host-tools.md) | Host tools: `edit` (search/replace) and `bash` (subprocess + timeout) | current; partly superseded by 0054 | — |
@@ -104,7 +104,7 @@ the code, never as a description of current behaviour — that is
 | [0070](0070-authoritative-tool-exec-profile-and-fail-closed-fallback.md) | Authoritative `ToolExec` profile, fail-closed permission/mask fallback, lag-proof decision delivery | current | — |
 | [0071](0071-parked-turn-reoffer-timer.md) | In-process parked-turn re-offer timer + executor request_id dedupe | current | — |
 | [0072](0072-protocol-warts-settled-before-serve.md) | Protocol warts settled before `serve` freezes the wire | current; amended by 0139 | — |
-| [0073](0073-managed-env-file-writer-and-key-surfaces.md) | One shared writer for the managed env file, with a CLI and TUI surface | current | — |
+| [0073](0073-managed-env-file-writer-and-key-surfaces.md) | One shared writer for the managed env file, with a CLI and TUI surface | current; changed by #931 | — |
 | [0074](0074-cross-vendor-skill-and-agent-discovery.md) | Cross-vendor skill & agent discovery (`~/.claude`, `.claude/`, `.agents/`) | current; partly superseded by 0229 | — |
 | [0075](0075-provider-side-web-search-mvp.md) | Provider-side web search MVP — opt-in config, results on the reasoning channel | current; amended by 0131, 0171; removed by #919 | — |
 | [0076](0076-per-session-dynamic-tool-specs.md) | Per-session dynamic tool specs (`EngineConfig.tool_spec_resolver`) | current; amended by 0190, 0204 | — |
@@ -166,7 +166,7 @@ the code, never as a description of current behaviour — that is
 | [0132](0132-glob-grep-escape-root-search-via-durable-grant.md) | `glob`/`grep` reach outside the project root by riding an existing durable `read` grant | current | — |
 | [0133](0133-live-bash-enablement-graded-by-permission.md) | Live bash enablement, graded by the permission model | superseded by 0163 | — |
 | [0134](0134-per-profile-sandbox-scoping-and-spawn-chain-clamp.md) | Per-profile sandbox scoping for `bash`/`call`, with a spawn-chain confinement clamp | superseded by 0207 | — |
-| [0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md) | Deferred build-speed trims: per-crate tokio features, optional `rhai`, trimmed `syntect` | current; amended by 0180 | — |
+| [0135](0135-deferred-build-speed-trims-tokio-rhai-syntect.md) | Deferred build-speed trims: per-crate tokio features, optional `rhai`, trimmed `syntect` | current; amended by 0180; changed by #931 | — |
 | [0136](0136-tui-attention-panel-signpost-and-jump.md) | TUI attention panel: a signpost + jump, not a second approval keymap | current | — |
 | [0137](0137-explore-ask-grade-shell-access.md) | `explore` gains `Ask`-grade shell access (`call`/`bash`/`rhai`) | superseded by 0207 (the `explore` agent is retired; previously unmarked) | — |
 | [0138](0138-sponsored-build-child-and-propose-plan-cycle.md) | Sponsored build child — plan acceptance spawns a clamp-exempt child | superseded by 0207 | — |
@@ -252,7 +252,7 @@ the code, never as a description of current behaviour — that is
 | [0218](0218-agent-default-mode-is-a-starting-hint.md) | An agent's `default_mode` is a starting hint, not authority | current; amended by 0246 | — |
 | [0219](0219-tui-themes-and-keybindings.md) | TUI themes and keybindings are named slots and validated action maps | current | — |
 | [0220](0220-web-fetch-ssrf-guard-and-clipboard-image-paste.md) | `web_fetch` is an Exec-graded, SSRF-guarded host tool; the TUI pastes clipboard images for vision models | current; amended by 0225 | — |
-| [0221](0221-user-slash-commands-are-head-side-prompt-templates.md) | User slash commands are head-side prompt templates | current | — |
+| [0221](0221-user-slash-commands-are-head-side-prompt-templates.md) | User slash commands are head-side prompt templates | current; changed by #931 | — |
 | [0222](0222-no-silent-echo-first-run-onboarding-and-init.md) | No silent echo: first-run onboarding and `/init` | current; changed by #917 | — |
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current; changed by #923 | — |
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
