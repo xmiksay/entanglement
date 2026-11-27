@@ -130,9 +130,8 @@ type FileStamp = (Option<SystemTime>, u64, String);
 struct Fingerprint(BTreeMap<PathBuf, FileStamp>);
 
 /// Whether a path is a definition/config file worth hashing. Agent/skill
-/// sources are `*.md`; of the `*.rhai` files only a skill's `lib.rhai` and a
-/// module under a `rhai/modules/` dir (ADR-0248) — a scratch or trusted
-/// script feeds no loader; the managed catalog/config/grants files are
+/// sources are `*.md`; of the `*.rhai` files only a skill's `lib.rhai` — a
+/// scratch or trusted script feeds no loader; the managed catalog/config/grants files are
 /// `*.yml` (`.yaml` tolerated); the managed key file is `.env` (no extension).
 fn is_definition_file(path: &Path) -> bool {
     // The last-seen MCP tool cache feeds no loader and is rewritten on every
@@ -142,17 +141,9 @@ fn is_definition_file(path: &Path) -> bool {
     }
     match path.extension().and_then(|e| e.to_str()) {
         Some("md") | Some("yml") | Some("yaml") => true,
-        Some("rhai") => is_rhai_definition(path),
+        Some("rhai") => path.file_name().is_some_and(|n| n == "lib.rhai"),
         _ => path.file_name().and_then(|n| n.to_str()) == Some(".env"),
     }
-}
-
-fn is_rhai_definition(path: &Path) -> bool {
-    let names: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
-    path.file_name().is_some_and(|n| n == "lib.rhai")
-        || names
-            .windows(2)
-            .any(|w| w[0] == "rhai" && w[1] == "modules")
 }
 
 /// Build the fingerprint, reusing `prev`'s cached hash for any file whose
@@ -425,27 +416,10 @@ mod tests {
         );
     }
 
-    /// ADR-0248: a new or changed rhai module under the project's module
-    /// dir is a change, so the reload re-runs module discovery.
+    /// Only a `lib.rhai` is a definition; a scratch script or a
+    /// trusted-folder script under a watched tree is not.
     #[test]
-    fn a_new_or_changed_rhai_module_is_a_change() {
-        let cwd = tempfile::tempdir().unwrap();
-        let dir = cwd.path().join(".entanglement/rhai/modules");
-        std::fs::create_dir_all(&dir).unwrap();
-        let fp1 = fingerprint(&project_paths(cwd.path()), &Fingerprint::default());
-        std::fs::write(dir.join("m.rhai"), "fn f() { 1 }").unwrap();
-        let fp2 = fingerprint(&project_paths(cwd.path()), &fp1);
-        assert!(definitions_changed(&fp1, &fp2), "a new module");
-        std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(dir.join("m.rhai"), "fn f() { 22 }").unwrap();
-        let fp3 = fingerprint(&project_paths(cwd.path()), &fp2);
-        assert!(definitions_changed(&fp2, &fp3), "a changed module");
-    }
-
-    /// Only a `lib.rhai` and a module are definitions; a scratch script or
-    /// a trusted-folder script under a watched tree is not.
-    #[test]
-    fn only_lib_rhai_and_modules_count_among_rhai_files() {
+    fn only_lib_rhai_counts_among_rhai_files() {
         let cwd = tempfile::tempdir().unwrap();
         let ent = cwd.path().join(".entanglement");
         for dir in ["tmp", "skills/git/scripts"] {
@@ -462,7 +436,7 @@ mod tests {
         std::fs::write(ent.join("skills/git/lib.rhai"), "fn f() { 1 }").unwrap();
         let fp3 = fingerprint(&project_paths(cwd.path()), &fp2);
         assert!(definitions_changed(&fp2, &fp3), "a skill lib is");
-        assert!(is_definition_file(Path::new(
+        assert!(!is_definition_file(Path::new(
             "/c/entanglement/rhai/modules/a/b.rhai"
         )));
         assert!(!is_definition_file(Path::new("/p/rhai/x.rhai")));

@@ -36,7 +36,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -53,12 +52,9 @@ pub mod load_skill;
 mod session;
 // `SKILL.md` frontmatter parsing, strict and lenient (ADR-0074/0228).
 mod parse;
-// Importable `import "<name>"` script modules (ADR-0248).
-pub mod rhai_modules;
 
 pub use discovery::skill_dirs;
 pub use load_skill::LoadSkillTool;
-pub use rhai_modules::{module_dirs, RhaiModules};
 pub use session::{SessionSkills, SkillResolver};
 
 use parse::parse_raw;
@@ -87,10 +83,6 @@ pub struct SkillMeta {
 #[derive(Debug, Clone, Default)]
 pub struct SkillRegistry {
     skills: HashMap<String, SkillMeta>,
-    /// The importable script modules (ADR-0248): they ride here so the
-    /// skill reload swaps them, and `load_skill rhai` and every script run
-    /// read the same snapshot.
-    pub modules: Arc<RhaiModules>,
 }
 
 impl SkillRegistry {
@@ -198,7 +190,6 @@ pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> 
         }
         reg.insert(skill);
     }
-    reg.modules = Arc::new(rhai_modules::load(root, user));
     Ok(reg)
 }
 

@@ -122,7 +122,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         http_gate,
         rhai_trusted,
         skill_dirs,
-        module_dirs,
         attendance,
         host_namespaces,
     } = b;
@@ -281,11 +280,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             catalog,
             workdirs,
             http_gate,
-            trust: Arc::new(crate::rhai_trust::Trust::new(
-                rhai_trusted,
-                &skill_dirs,
-                &module_dirs,
-            )),
+            trust: Arc::new(crate::rhai_trust::Trust::new(rhai_trusted, &skill_dirs)),
             host_namespaces,
         };
         background::spawn_file_change_listener(&mut background, &ctx);

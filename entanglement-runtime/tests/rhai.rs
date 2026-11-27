@@ -112,10 +112,6 @@ mod card_reason;
 // closing summary, never persisted (#821).
 #[path = "rhai/nested_calls.rs"]
 mod nested_calls;
-// ADR-0248: importable modules run in the caller's posture, are listed by
-// `load_skill rhai`, and their dirs join the write floor.
-#[path = "rhai/modules.rs"]
-mod modules;
 // ADR-0249: per-session skills (SkillResolver, SessionSkills, SkillMeta).
 #[path = "rhai/session_skills.rs"]
 mod session_skills;

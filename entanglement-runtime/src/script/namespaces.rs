@@ -405,8 +405,7 @@ mod tests {
         assert_eq!(listed, 2, "one winner per colliding pair");
     }
 
-    /// A skill lib never imports, so it is built by `eval_ast_as_new` and
-    /// keeps typed methods (ADR-0248 refuses them in modules only).
+    /// A skill lib keeps its typed methods: `int.dbl()` is callable on a value.
     #[test]
     fn a_skill_lib_typed_method_is_callable() {
         let mut skills = SkillRegistry::default();
