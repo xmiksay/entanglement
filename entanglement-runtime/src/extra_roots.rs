@@ -132,7 +132,7 @@ impl ExtraRootStore {
     pub fn with_always_roots(mut self, persisted: Arc<dyn AlwaysRoots>) -> Self {
         self.inner
             .get_mut()
-            .expect("extra-roots mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .always
             .extend(persisted.load());
         self.persisted = Some(persisted);
