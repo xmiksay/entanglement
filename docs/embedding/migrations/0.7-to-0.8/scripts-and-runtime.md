@@ -57,8 +57,9 @@ nor nexial installed a generator; both mint roots with
 - **Removed API:** the `IdGen` trait, `DefaultIdGen`, the
   `EngineConfig::id_gen` field, `IdContext` (`child_of`, `successor_of`,
   `with_user`, `inherited_prefix`), `Holly::next_id` and
-  `Holly::next_id_in`, and the `entanglement_core::id_gen` module (now
-  `ids`). An `EngineConfig` struct update drops the field.
+  `Holly::next_id_in`, and the `entanglement_core::id_gen` module
+  (`mint_id` and `IdKind` live at the crate root). An `EngineConfig` struct
+  update drops the field.
 - **Behaviour kept:** sub-agent children, compaction successors and forks of
   a `{tenant}:` id keep its prefix, so a `tenant_of` filter still holds for
   the whole lineage.

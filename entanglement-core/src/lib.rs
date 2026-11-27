@@ -10,7 +10,7 @@
 
 pub mod context;
 pub mod holly;
-pub mod ids;
+mod ids;
 pub mod protocol;
 pub mod session;
 

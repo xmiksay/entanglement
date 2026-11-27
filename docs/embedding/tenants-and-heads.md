@@ -33,8 +33,8 @@ compaction forks one (`predecessor: Some(source)`,
 [ADR-0205](../adr/archive/0205-every-compaction-forks-a-successor-session.md)), a root
 when its source was one and a child of the source's parent when the source was
 a sub-agent ([ADR-0234](../adr/archive/0234-live-sub-agents-survive-compaction.md)). Both are
-minted by `mint_id` with their parent — else their source — as the lineage,
-and it copies that id's prefix up to and including the first `:` ([ADR-0211](../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)):
+minted by `mint_id`: a child with its parent as the lineage, a compaction
+successor or fork with its source. It copies that id's prefix up to and including the first `:` ([ADR-0211](../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)):
 the child or successor of `acme:s-6a70…` is `acme:s-6a71…`. So `tenant_of`
 holds for the whole lineage **by construction**; id generation is not
 pluggable, so nothing can break it. A root with no `:` mints unprefixed

@@ -108,12 +108,16 @@ async fn a_compaction_successor_keeps_the_prefix_predecessor_and_user() {
 }
 
 #[tokio::test]
-async fn unprefixed_roots_mint_unprefixed_children() {
-    let holly = Holly::spawn(EngineConfig::default());
+async fn an_unprefixed_root_compacts_into_an_unprefixed_successor() {
+    let holly = prune_only_engine();
     let root = SessionId::new("plain-root");
     spawn_root(&holly, &root, None).await;
-    let child = mint_id(IdKind::Session, Some(&root));
-    assert!(child.starts_with("s-") && child.len() == 15, "{child}");
+
+    let (_, successor, _sub) = prune_fork(&holly, &root).await;
+    assert!(
+        successor.0.starts_with("s-") && successor.0.len() == 15,
+        "successor id {successor}"
+    );
 }
 
 #[tokio::test]
