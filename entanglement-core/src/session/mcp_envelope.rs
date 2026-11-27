@@ -1,5 +1,5 @@
 //! ADR-0226's `mcp` envelope, core half. When a round advertised the
-//! `mcp {server, tool, args}` kernel spec, an `mcp` call is unwrapped into
+//! `mcp {server, tool, args}` advertised spec, an `mcp` call is unwrapped into
 //! its inner `mcp__<server>__<tool>` call before any event is emitted, so
 //! dispatch, gates, hooks and heads see an ordinary tool call. Only the
 //! *events* change: `Context` keeps the call exactly as the model emitted

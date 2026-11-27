@@ -111,7 +111,7 @@ impl Tool for AlwaysFails {
 
 /// Run `calls` (one `ToolCall` per scripted LLM turn) against a registry
 /// carrying `Greet` + `AlwaysFails` under the `build` profile (default-allow,
-/// #560's kernel tools all run this way) — returns every `ToolOutput` in call
+/// #560's advertised tools all run this way) — returns every `ToolOutput` in call
 /// order.
 async fn run_calls(calls: Vec<(&str, &str, &str)>) -> Vec<(String, bool)> {
     let responses: Vec<LlmResponse> = calls

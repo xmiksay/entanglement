@@ -182,7 +182,11 @@ seam implementations over it. Per seam:
   hub, and implement `Tool::call_grading(input)` to return the target name and
   capabilities per call: the dispatch ladder grades each call as its target
   (mode rules, grants, approval cards all see the
-  target name, not the envelope tool's).
+  target name, not the envelope tool's). To put the tool on the one
+  advertised surface, override `fn advertised(&self) -> bool { true }`
+  (#965); an unflagged tool stays registered and dispatchable but the
+  model is never shown its schema
+  ([one surface](../architecture/gates/one-surface.md)).
 - **Host script namespaces** — `ToolExecutorBuilder::host_namespace(ns)` with
   `HostNamespace { name, tool, resolver }`: a Rhai `<ns>::<fn>(#{...})`
   surface backed by your registered tool, with `HostFnResolver` listing the

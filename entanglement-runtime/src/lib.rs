@@ -154,9 +154,9 @@ pub mod system_prompt_mode;
 #[cfg(feature = "provider")]
 pub mod throttle;
 pub mod tool_names;
-// The one advertised surface (ADR-0226): the kernel resolver, the per-session
-// surface snapshots and delivered-schema set. Ungated — pure state over core
-// types, needed by the lean build too.
+// The one advertised surface (ADR-0226): the one-surface resolver, the
+// per-session surface snapshots and delivered-schema set. Ungated — pure state
+// over core types, needed by the lean build too.
 pub mod tool_advertising;
 pub mod tool_runner;
 // The three-state (`allowed`/`asks`/`declines`) per-tool posture the profile

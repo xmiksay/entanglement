@@ -65,7 +65,8 @@ Chain calls in ONE script — pass one call's result to the next instead of spen
 Every binding is also callable as a method: read_raw(p).parse_json().
 Result: the value of the last expression, serialized, with any print(x) output returned above it (a background run streams prints to `poll` as they happen)."#;
 
-/// The `rhai` tool schema advertised to the model (a kernel tool, ADR-0226).
+/// The `rhai` tool schema advertised to the model (an executor route, always
+/// advertised, ADR-0226).
 pub fn rhai_spec() -> ToolSpec {
     ToolSpec::with_schema(
         RHAI_TOOL,
