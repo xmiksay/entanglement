@@ -139,7 +139,8 @@ below. What changes:
   `Arc<dyn McpToolCache>` and `with_token_store` `Arc<dyn TokenStore>`;
   `tool_cache()` returns `&Arc<dyn McpToolCache>`. `mcp::oauth_ops::run`
   takes the `Arc<dyn TokenStore>` to save, check and revoke in, and
-  `mcp::live::mcp_reconnect` the one to connect with.
+  `mcp::live::mcp_reconnect` and `mcp::live::mcp_add` the one to connect
+  with (an `oauth:` server's bearer; 0.7's `mcp_add` read the managed file).
   `watch::LiveDefinitions::new` drops its `grants` argument and
   `LiveDefinitions` its `grants` field; a reload no longer re-reads grants.
 - **Changed behaviour (library):** an `AvailableMcp` built without
@@ -150,13 +151,13 @@ below. What changes:
   `ServerConfigs`; a config write failure can no longer fail an add or
   remove.
 - **Changed behaviour (`skutter`):** `skutter::state::FileGrantStore`
-  re-reads `grants.yml` on every check, so a grant another instance recorded,
-  or a line deleted by hand, counts at once instead of at the next watcher
-  reload; a failed write keeps the grant in memory for the process.
-  `skutter::state::spawn_mcp_config_writer` writes `config.yml`'s `mcp:`
-  section on each successful `OutEvent::McpChanged`; a write failure is a
-  logged warning, where 0.7 reported it as the `McpChanged` error (with the
-  server already connected).
+  re-reads `grants.yml` whenever the file changed, so a grant another
+  instance recorded, or a line deleted by hand, counts at once instead of at
+  the next watcher reload; the definitions watcher no longer reloads on a
+  `grants.yml` write. `skutter::state::spawn_mcp_config_writer` writes
+  `config.yml`'s `mcp:` section when a successful `OutEvent::McpChanged`
+  changed the server set; a write failure still reaches the heads as an
+  `McpChanged` error (now a second event, after the success).
 - **Instead:** a head that wants grants, MCP credentials or last-seen tool
   names to outlive the process implements `GrantStore`, `TokenStore` or
   `McpToolCache` over its own storage and passes it to

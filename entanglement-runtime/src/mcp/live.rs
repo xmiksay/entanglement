@@ -61,7 +61,8 @@ pub type ServerConfigs = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 /// The connect/list-tools awaits run *before* any lock is taken (#372: never
 /// hold a lock across `.await`); only the synchronous registration is done
 /// under the registry's write lock. `http` (#559) is the shared endpoint pool
-/// the connect rides.
+/// the connect rides; `tokens` is where an `oauth:` server's bearer comes
+/// from (the roster's store, as for [`mcp_reconnect`]).
 #[allow(clippy::too_many_arguments)]
 pub async fn mcp_add(
     name: String,
@@ -71,6 +72,7 @@ pub async fn mcp_add(
     configs: &ServerConfigs,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
+    tokens: Arc<dyn TokenStore>,
 ) -> Result<Vec<String>> {
     if cfg.disabled {
         bail!("cannot live-add a disabled MCP server `{name}` — omit `disabled` or set it false");
@@ -83,9 +85,7 @@ pub async fn mcp_add(
     {
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
-    // A live-added spec never carries an `oauth:` block (`From<McpServerSpec>`),
-    // so there is no bearer to look up.
-    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None).await?;
+    let (client, defs) = connect_client(&name, &cfg, secret_env, http, Some(tokens)).await?;
     let tools = install_server(registry, active, &name, client, defs, &cfg);
     configs
         .lock()
@@ -328,6 +328,10 @@ mod tests {
         );
     }
 
+    fn no_tokens() -> Arc<dyn TokenStore> {
+        Arc::new(crate::mcp::InMemoryTokenStore::default())
+    }
+
     #[tokio::test]
     async fn mcp_add_refuses_a_disabled_server() {
         let registry = shared_registry();
@@ -337,9 +341,18 @@ mod tests {
         cfg.disabled = true;
 
         let http = crate::test_http_client();
-        let err = mcp_add("srv".into(), cfg, &registry, &active, &configs, &[], &http)
-            .await
-            .unwrap_err();
+        let err = mcp_add(
+            "srv".into(),
+            cfg,
+            &registry,
+            &active,
+            &configs,
+            &[],
+            &http,
+            no_tokens(),
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("disabled"));
         assert!(active.lock().unwrap().is_empty());
         assert!(configs.lock().unwrap().is_empty());
@@ -360,6 +373,7 @@ mod tests {
             &configs,
             &[],
             &http,
+            no_tokens(),
         )
         .await;
         assert!(result.is_err());

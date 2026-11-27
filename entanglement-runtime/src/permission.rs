@@ -135,7 +135,7 @@ pub fn resolve_model(
 /// `bash(rm *): deny` or `bash{/etc/*}: deny` resolves against the actual call.
 /// The embedded default is allow-all, so an untouched config is a no-op. This is
 /// a pure ceiling (it only tightens); the orthogonal "always allow" grants (#174,
-/// [`crate::grants`]) that *raise* an `Ask` are applied by the executor *after*
+/// [`crate::policy::GrantStore`]) that *raise* an `Ask` are applied by the executor *after*
 /// this clamp, so a `Deny` here can never be re-opened by a stale grant.
 ///
 /// `base` keeps its historical [`PermissionProfile`] type — the type every

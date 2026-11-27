@@ -246,7 +246,7 @@ impl ExtraRootStore {
     }
 
     /// Merge the new `Always` grant into the managed file under an exclusive
-    /// cross-process lock (#329, mirroring `grants::persist`): a concurrent
+    /// cross-process lock (#329) — read-current-then-merge: a concurrent
     /// skutter instance's own `Always` grant, written between this store's
     /// `load()` and now, must survive rather than being clobbered by a rewrite
     /// from stale in-memory state. Best-effort: a failure is logged, never
@@ -543,8 +543,7 @@ mod tests {
 
     /// Two "processes" (threads, each with its own `ExtraRootStore::load()`)
     /// race to record *different* `Always` grants against the same on-disk
-    /// file. Without the lock's read-current-then-merge (mirroring
-    /// `grants::persist`), the second writer's rewrite of its own stale
+    /// file. Without the lock's read-current-then-merge, the second writer's rewrite of its own stale
     /// in-memory `always` set would clobber the first writer's grant — a lost
     /// update. A freshly loaded third store must see both.
     #[test]

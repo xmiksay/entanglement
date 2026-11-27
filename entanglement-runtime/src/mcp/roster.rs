@@ -27,8 +27,9 @@ pub struct ServerRow {
 /// server live-added by another path), name-sorted. `disabled` servers are
 /// absent.
 pub fn roster(avail: &AvailableMcp, active: &ActiveServers) -> Vec<ServerRow> {
-    // Snapshot and release: the rows below read the OAuth token file, which
-    // must not happen under a lock every dispatch also takes.
+    // Snapshot and release: the rows below read the token store (possibly
+    // file-backed), which must not happen under a lock every dispatch also
+    // takes.
     let active: std::collections::HashMap<String, (String, Vec<String>)> = active
         .lock()
         .expect("MCP active-server mutex poisoned")

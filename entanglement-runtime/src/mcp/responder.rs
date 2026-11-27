@@ -91,6 +91,7 @@ pub fn spawn_mcp_responder(
                                 &configs,
                                 &secret_env,
                                 &http,
+                                avail.token_store(),
                             )
                             .await
                             {
