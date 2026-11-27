@@ -20,9 +20,12 @@ pub trait SessionLoader: Send + Sync {
     /// (a spawned child's records fold into its root's, ADR-0020), paired
     /// `(inbound, outbound)` the way the runtime's `pair_records` does.
     ///
-    /// `Ok(None)` means "no such session": the message is refused exactly as
-    /// under [`UnknownSession::Refuse`]. `Err` surfaces as an
-    /// [`OutEvent::Error`] and spawns nothing.
+    /// `Ok(None)` means "no such session": spawn nothing, answer each queued
+    /// message with an [`OutEvent::Error`] naming the session and drop it. Its
+    /// seq is `0` (ADR-0072's lifecycle bypass) only for an id that never
+    /// started or whose unpinned retired entry was evicted (ADR-0244); a
+    /// retired id's error continues its sequence (ADR-0239). `Err` surfaces as
+    /// an [`OutEvent::Error`] and spawns nothing.
     ///
     /// Return `Err` for a compacted-away session, one a later root's
     /// `SessionStarted.predecessor` names (ADR-0243): core refuses it only
@@ -39,19 +42,14 @@ pub trait SessionLoader: Send + Sync {
 /// What a routable message (`Prompt`, `ToolResult`, `Stop`, `SetMode`, …)
 /// addressed to a session id with no live task does. `Spawn` and `Resume`
 /// always create explicitly and are unaffected; see ADR-0210 for the full
-/// coverage table.
+/// coverage table. Refusing ids it does not know is the embedder's job before
+/// it sends — or a [`SessionLoader`] answering `Ok(None)`.
 #[derive(Clone, Default)]
 pub enum UnknownSession {
     /// Lazily create a blank root session under the default agent — the
     /// single-user convenience every in-tree head relies on.
     #[default]
     SpawnBlank,
-    /// Spawn nothing; answer with an [`OutEvent::Error`] naming the session
-    /// and drop the message. Its seq is `0` (ADR-0072's lifecycle bypass) only
-    /// for an id that never started or whose unpinned retired entry was
-    /// evicted (ADR-0244); a retired id's error continues its sequence
-    /// (ADR-0239).
-    Refuse,
     /// Rebuild the session (and its still-live spawn sub-tree, ADR-0112) from
     /// the embedder's log, then deliver the message. Concurrent messages for
     /// the same id queue behind one in-flight load and deliver in arrival
@@ -63,7 +61,6 @@ impl fmt::Debug for UnknownSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::SpawnBlank => "SpawnBlank",
-            Self::Refuse => "Refuse",
             Self::Resume(_) => "Resume(..)",
         })
     }
@@ -97,6 +94,6 @@ mod tests {
     fn debug_never_needs_the_loader_to_be_debug() {
         let policy = UnknownSession::Resume(Arc::new(Nothing));
         assert_eq!(format!("{policy:?}"), "Resume(..)");
-        assert_eq!(format!("{:?}", UnknownSession::Refuse), "Refuse");
+        assert_eq!(format!("{:?}", UnknownSession::SpawnBlank), "SpawnBlank");
     }
 }

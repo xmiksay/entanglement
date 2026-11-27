@@ -1,7 +1,7 @@
 //! The unknown-session policy ([ADR-0210](../../../../docs/adr/archive/0210-unknown-session-policy.md)):
-//! a routable message for an id with no live task spawns a blank root, is
-//! refused, or waits on the embedder's [`SessionLoader`] and is delivered once
-//! the session is resumed.
+//! a routable message for an id with no live task spawns a blank root, or
+//! waits on the embedder's [`SessionLoader`] and is delivered once the session
+//! is resumed (refused if the loader finds no such session).
 //!
 //! Concurrency: the supervisor is one loop, so the load runs on its own task
 //! and reports back over `load_tx`. While it is in flight, `pending_loads`
@@ -61,10 +61,6 @@ impl Supervisor {
         // Cloned (an `Arc` at most) so the arms below can borrow `self` mutably.
         match self.cfg.unknown_session.clone() {
             UnknownSession::SpawnBlank => self.spawn_lazy_root(session_id).then_some(msg),
-            UnknownSession::Refuse => {
-                self.refuse_unknown(session_id, 1);
-                None
-            }
             UnknownSession::Resume(loader) => {
                 self.start_load(session_id, loader);
                 let load = PendingLoad {

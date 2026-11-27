@@ -241,8 +241,8 @@ pub struct EngineConfig {
     pub id_gen: Arc<dyn IdGen>,
     /// What a routable message addressed to a session with no live task does
     /// ([ADR-0210](../../docs/adr/archive/0210-unknown-session-policy.md)): spawn a
-    /// blank root (the default — every in-tree single-user head), refuse with
-    /// an `Error`, or resume it through the embedder's [`SessionLoader`][super::SessionLoader].
+    /// blank root (the default — every in-tree single-user head), or resume it
+    /// through the embedder's [`SessionLoader`][super::SessionLoader].
     pub unknown_session: UnknownSession,
     /// The mode names ordered narrowest → widest (#763, ADR-0218): clamps an
     /// [`Agent::default_mode`] hint to `DEFAULT_MODE` for a root and to the

@@ -1,5 +1,5 @@
 //! The unknown-session policy (#721, ADR-0210): what a routable message for an
-//! id with no live task does under `SpawnBlank` (default), `Refuse` and
+//! id with no live task does under `SpawnBlank` (default) and
 //! `Resume(loader)`, plus `Holly::is_live`. Drives `Holly` end-to-end; the
 //! "store" is an in-memory map, never the real data dir.
 
@@ -165,21 +165,6 @@ async fn spawn_blank_default_lazily_creates_a_session() {
 }
 
 #[tokio::test]
-async fn refuse_emits_an_error_and_spawns_nothing() {
-    let (holly, _) = engine(UnknownSession::Refuse);
-    let mut sub = holly.subscribe();
-    let sid = SessionId::new("ghost");
-    holly.send(InMsg::prompt(sid.clone(), "hi")).await.unwrap();
-    let ev = recv_until(&mut sub, |e| matches!(e, OutEvent::Error { .. })).await;
-    assert_eq!(ev.session(), Some(&sid));
-    assert!(
-        error_text(ev).contains("ghost"),
-        "the error names the session"
-    );
-    assert_nothing_spawned(&holly, &mut sub, &sid).await;
-}
-
-#[tokio::test]
 async fn resume_loader_rebuilds_history_then_delivers_the_prompt() {
     let sid = SessionId::new("stored");
     let loader = Arc::new(MapLoader::default());
@@ -202,7 +187,7 @@ async fn resume_loader_rebuilds_history_then_delivers_the_prompt() {
 }
 
 #[tokio::test]
-async fn loader_none_behaves_as_refuse() {
+async fn loader_none_errors_naming_the_session_and_spawns_nothing() {
     let loader = Arc::new(MapLoader::default());
     let (holly, _) = engine(UnknownSession::Resume(loader.clone()));
     let mut sub = holly.subscribe();
