@@ -42,7 +42,11 @@ pub fn index_rows(
     skills: &SkillRegistry,
 ) -> Vec<IndexRow> {
     let mut rows = Vec::new();
-    for spec in registry.specs().into_iter().chain(runtime_owned_specs()) {
+    for spec in registry
+        .specs()
+        .into_iter()
+        .chain(runtime_owned_specs(registry))
+    {
         if spec.name.starts_with("mcp__") {
             continue; // listed per server below
         }

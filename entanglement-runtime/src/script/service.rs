@@ -90,9 +90,9 @@ pub(super) async fn service_bindings(
 }
 
 /// Whether a failed run of `tool` throws in the script rather than returning
-/// its error text. The file/exec bindings keep returning text (a script
-/// reads a failed `read` like the model does); `http()` and an MCP tool
-/// throw, so `try`/`catch` is the one way to handle a remote failure.
+/// its error text. A tool's own binding keeps returning text (a script reads
+/// a failed file read like the model does); `http()` and an MCP tool throw,
+/// so `try`/`catch` is the one way to handle a remote failure.
 fn throws_on_error(tool: &str) -> bool {
     tool == HTTP_TOOL || tool.starts_with("mcp__")
 }

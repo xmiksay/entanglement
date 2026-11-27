@@ -188,6 +188,9 @@ impl Tool for GlobJsonTool {
         crate::host::glob::join_workdir(args, base)
     }
 
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(super::script_bindings::GLOB_JSON)
+    }
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("glob_json")
     }

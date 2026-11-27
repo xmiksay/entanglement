@@ -80,6 +80,9 @@ impl Tool for EditTool {
         PermissionScope::arg(ArgKind::Path)
     }
 
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(super::script_bindings::EDIT)
+    }
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("edit")
     }

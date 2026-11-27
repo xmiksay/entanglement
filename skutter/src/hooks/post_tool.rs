@@ -132,6 +132,9 @@ impl Tool for PostHooked {
     fn advertised(&self) -> bool {
         self.inner.advertised()
     }
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        self.inner.script_binding()
+    }
 }
 
 #[cfg(test)]
@@ -170,6 +173,8 @@ mod tests {
             read.escape_target(r#"{"path":"a.txt"}"#).as_deref(),
             Some("a.txt")
         );
+        // A script's `read(...)` still reaches the wrapped tool (#933).
+        assert!(read.script_binding().is_some());
         read.run_with_meta(&SessionId::new("s"), "r1", r#"{"path":"a.txt"}"#)
             .await
             .unwrap();

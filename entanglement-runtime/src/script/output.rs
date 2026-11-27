@@ -4,6 +4,7 @@
 use rhai::{Dynamic, EvalAltResult};
 
 use crate::output::truncate_head_tail;
+use crate::tools::ToolRegistry;
 
 use super::spec;
 
@@ -15,6 +16,7 @@ use super::spec;
 pub(super) fn format_output(
     prints: String,
     eval_result: Result<Result<Dynamic, Box<EvalAltResult>>, tokio::task::JoinError>,
+    tools: &ToolRegistry,
 ) -> (String, bool) {
     let mut out = String::new();
     if !prints.is_empty() {
@@ -23,7 +25,7 @@ pub(super) fn format_output(
             out.push('\n');
         }
     }
-    let (line, is_error) = result_line(eval_result);
+    let (line, is_error) = result_line(eval_result, tools);
     out.push_str(&line);
     (truncate_head_tail(out), is_error)
 }
@@ -33,17 +35,18 @@ pub(super) fn format_output(
 /// streams prints as they happen and appends only this line at finish.
 ///
 /// A script that named a function/variable the engine does not bind gets the
-/// binding reference appended ([`spec::binding_hint`]): that is the "guessed
+/// binding reference for `tools` appended ([`spec::binding_hint`]): that is the "guessed
 /// the wrong binding" failure, and the catalogue in the result lets the model
 /// self-correct on its next call instead of guessing again. It rides the tail
 /// of the output, which survives `truncate_head_tail`.
 pub(super) fn result_line(
     eval_result: Result<Result<Dynamic, Box<EvalAltResult>>, tokio::task::JoinError>,
+    tools: &ToolRegistry,
 ) -> (String, bool) {
     match eval_result {
         Ok(Ok(value)) => (format!("=> {}", serialize_return(&value)), false),
         Ok(Err(e)) => {
-            let hint = spec::binding_hint(&e).unwrap_or_default();
+            let hint = spec::binding_hint(&e, tools).unwrap_or_default();
             (format!("rhai error: {e}{hint}"), true)
         }
         Err(join) => (format!("rhai error: script task failed: {join}"), true),

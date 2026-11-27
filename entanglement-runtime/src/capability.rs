@@ -34,8 +34,9 @@ pub enum Capability {
 /// Capabilities for the runtime-owned pseudo-tools `tool_runner::Intercept::classify`
 /// routes before they ever reach the [`ToolRegistry`] — they have no `impl Tool`
 /// to ask, so this is the only place their capability can live. `rhai` is the
-/// one multi-capability member: a sandboxed script binds file and exec
-/// tools (`tool_names::BINDING_TOOLS`), so it can do all three; `propose_plan` is `Plan`, not `Control`, because plan authorship is
+/// one multi-capability member: a script may call any tool the host binds
+/// into it (#933), so it can do all three; `propose_plan` is `Plan`, not
+/// `Control`, because plan authorship is
 /// itself the thing a mode grants or refuses (ADR-0207 §7) — everything else
 /// here is pure session/tool orchestration that reads, writes or executes
 /// nothing on its own. `request_mode` is genuinely `Control` (ADR-0207 §10):

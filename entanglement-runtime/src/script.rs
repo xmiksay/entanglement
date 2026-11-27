@@ -1,6 +1,6 @@
 //! `rhai` — embedded, capability-sandboxed script engine (ADR-0046, amended by
-//! ADR-0115 (exec bindings), ADR-0130 (`workdir`), ADR-0227 (one binding
-//! path, namespaces, `http()`, skill libraries) and ADR-0228 (`path`/`args`)).
+//! ADR-0227 (one binding path, namespaces, `http()`, skill libraries),
+//! ADR-0228 (`path`/`args`) and #933 (no file or process binding of its own)).
 //!
 //! A runtime-owned tool that runs a [Rhai](https://rhai.rs) script in one
 //! call — inline `script` source, or a predefined script file named by
@@ -9,9 +9,10 @@
 //! / Reject card — [`gate`]) — with an optional `args` object bound as the
 //! constant map `args`. A fresh engine has **no** filesystem, network, process or env
 //! access: every capability is a function registered here, so the sandbox is
-//! deny-by-default. The bindings are the host file tools, process exec
-//! (`bash`), `http()`, per-run generated `mcp::<server>::<tool>`
-//! namespaces and each skill's `lib.rhai` as `skill::<skill>` — and every
+//! deny-by-default. The bindings are `http()`, per-run generated
+//! `mcp::<server>::<tool>` and host `<ns>::<fn>` namespaces, each skill's
+//! `lib.rhai` as `skill::<skill>`, and each registered tool that declares a
+//! [`crate::host_ns::ScriptBinding`] (a head's file and shell tools) — and every
 //! binding call climbs the **same dispatch seam** as a model-issued call
 //! ([`crate::tool_runner`]'s `Dispatcher`): mode grade, ceiling,
 //! grants, argument validation, lazy MCP connect,
@@ -79,7 +80,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 5;
 /// Upper bound on a caller-supplied `timeout` (seconds).
 const MAX_TIMEOUT_SECS: u64 = 30;
 /// Default/max budget for a `background: true` script (#637, ADR-0185) —
-/// the background `bash` regime (#617).
+/// the background-job regime (#617).
 const BG_DEFAULT_TIMEOUT_SECS: u64 = 120;
 const BG_MAX_TIMEOUT_SECS: u64 = 600;
 
@@ -228,7 +229,7 @@ pub(crate) async fn run_rhai(
         return;
     }
     let prints = prints.lock().map(|p| p.clone()).unwrap_or_default();
-    let (output, is_error) = format_output(prints, eval_result);
+    let (output, is_error) = format_output(prints, eval_result, &dispatcher.tools);
     seam::reply(&holly, session, request_id, output, is_error).await;
 }
 

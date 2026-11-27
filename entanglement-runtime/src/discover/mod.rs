@@ -121,8 +121,9 @@ pub fn mcp_spec() -> ToolSpec {
 /// [`crate::tool_runner`]'s interception ladder rather than living in the
 /// [`crate::tools::ToolRegistry`] — so their schema exists only as one of
 /// these pure functions. The single place that builds this list (ADR-0190's
-/// original `poll`-omission bug was exactly this kind of drift).
-pub fn runtime_owned_specs() -> Vec<ToolSpec> {
+/// original `poll`-omission bug was exactly this kind of drift). `tools` is
+/// the registry whose script bindings the `rhai` spec lists (#933).
+pub fn runtime_owned_specs(tools: &crate::tools::ToolRegistry) -> Vec<ToolSpec> {
     vec![
         crate::plan_tasks::update_tasks_spec(),
         crate::ask_user::ask_user_spec(),
@@ -135,7 +136,7 @@ pub fn runtime_owned_specs() -> Vec<ToolSpec> {
         list_mcp_spec(),
         mcp_tools_spec(),
         mcp_spec(),
-        crate::script::rhai_spec(),
+        crate::script::rhai_spec(tools),
     ]
 }
 
@@ -172,7 +173,10 @@ mod tests {
 
     #[test]
     fn runtime_owned_specs_names_the_expected_roster() {
-        let names: Vec<String> = runtime_owned_specs().into_iter().map(|s| s.name).collect();
+        let names: Vec<String> = runtime_owned_specs(&crate::tools::ToolRegistry::new())
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
         for expected in [
             "update_tasks",
             "ask_user",

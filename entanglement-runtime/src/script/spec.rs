@@ -3,15 +3,16 @@
 //! Split out of the (grandfathered over-cap) `script.rs` along a natural seam:
 //! everything here is *what the model is told*, nothing here runs a script.
 //!
-//! The spec description carries the **full signature list** ([`BINDING_REFERENCE`]).
+//! The spec description carries the **full signature list** ([`reference`]).
 //! It used to be a deliberate stub pointing at the embedded `rhai` skill (#619),
 //! on the grounds that a per-request re-send of the catalogue was waste — but the
 //! tool surface is now advertised universally and cache-stably, so spec *content*
 //! is cached, costs nothing per turn, and is the model's primary guidance. The
 //! stub's observed failure mode was models skipping (or half-remembering) the
-//! `load_skill` step and writing scripts against guessed binding names. The skill
-//! (`skills/rhai.md`) keeps the long-form prose and the worked examples; the spec
-//! keeps the signatures.
+//! `load_skill` step and writing scripts against guessed binding names. The
+//! signatures of the host's bindings come from the registered tools
+//! themselves ([`ScriptBinding::doc`], #933), so the list names exactly what
+//! a run binds.
 //!
 //! The same reference is appended to an *unknown name* script error
 //! ([`binding_hint`]), so a model that still guesses wrong self-corrects from the
@@ -20,32 +21,23 @@
 use entanglement_core::ToolSpec;
 use rhai::EvalAltResult;
 
+use crate::host_ns::ScriptBinding;
 use crate::tool_names::RHAI_TOOL;
+use crate::tools::ToolRegistry;
 
-/// Every function a `rhai` script can call, signature-per-line. Ground truth is
-/// the registration code — [`super::register_bindings`] for the host bindings
-/// and [`super::data::register_data_functions`] for the converters — not the
-/// skill text; `spec_description_lists_every_registered_binding` pins the two
-/// together.
-const BINDING_REFERENCE: &str = r#"Rhai is Rust-like (fn, let) but is NOT Rust: no use/crates/std; its own stdlib (strings, arrays, maps, math, loops) is built in; import/eval are disabled. Only the functions below exist; anything else throws.
+/// The reference's opening: what Rhai is and how every binding is checked.
+const INTRO: &str = "Rhai is Rust-like (fn, let) but is NOT Rust: no use/crates/std; its own stdlib (strings, arrays, maps, math, loops) is built in; import/eval are disabled. Only the functions below exist; anything else throws.
 
-Every binding call passes the same checks as the equivalent direct tool call (permission mode, approval, escape-root gate for a path outside the project root); a refusal throws, catchable with try/catch.
+Every binding call passes the same checks as the equivalent direct tool call (permission mode, approval, and any check the host adds); a refusal throws, catchable with try/catch.
 
-Host bindings:
-  read(path) / read(path, offset, limit) -> "{lineno}: {line}" text, NOT parseable as JSON/YAML
-  read_raw(path) -> exact file content, no line prefix; use before parse_json/parse_yaml (graded as `read`)
-  glob(pattern) -> newline-joined text of matching paths
-  grep(pattern) / grep(pattern, path) -> newline-joined text of matching lines
-  glob_json(pattern) / glob_json(pattern, exclude) -> #{files: path-string array, notices: string array}; same walk as glob, structured (empty files + a notice is the zero-match shape)
-  grep_json(pattern) / grep_json(pattern, path) -> #{matches: {path, lineno, line} record array, notices: string array}; same scan as grep, structured
-  edit(path, old, new) / edit(path, old, new, replace_all)
-  write(path, content)
-  bash(command) / bash(command, workdir) -> sh -c; bound only when the host `bash` tool is enabled, else an unknown-function error
-  http(method, url) / http(method, url, #{headers: #{...}, body: text-or-map}) -> response body text; a non-2xx status throws; graded as `http(METHOD url)`; credentials for a host come from the user's config, never from the script (an Authorization/Cookie/Host header or user@ in the URL is refused); a map/array body is sent as JSON
-  workdir is what a workdir-scoped permission rule matches; nested calls are clamped to the script's remaining budget (a cut call throws: its outcome is unknown); write/edit are never cut.
-  glob_json/grep_json grade as glob/grep — prefer them over hand-splitting glob/grep's newline text.
+Host bindings:";
 
-Generated namespaces:
+/// The library's own `http()` line and the budget rule for every nested call.
+const HTTP_AND_BUDGET: &str = r#"  http(method, url) / http(method, url, #{headers: #{...}, body: text-or-map}) -> response body text; a non-2xx status throws; graded as `http(METHOD url)`; credentials for a host come from the user's config, never from the script (an Authorization/Cookie/Host header or user@ in the URL is refused); a map/array body is sent as JSON
+  nested calls are clamped to the script's remaining budget (a cut call throws: its outcome is unknown); a call that bounds itself or must not be cut runs to its end."#;
+
+/// Everything after the host bindings: namespaces, input, converters.
+const NAMESPACES_AND_REST: &str = r#"Generated namespaces:
   mcp::<server>::<tool>(#{arg: value, ...}) / mcp::<server>::<tool>() -> the MCP tool's text result (parse_json it if JSON); a failure throws. Names map to identifiers: other characters become _, a name not starting with a letter gets a t_ prefix (2fa -> t_2fa), a reserved word a _ suffix — mcp_tools shows each tool's rhai name.
   <host>::<fn>(#{arg: value, ...}) / <host>::<fn>() -> a host-registered namespace; each call dispatches to the backing tool with {"tool": "<fn>", "args": {...}} and is graded as the target function. Available functions depend on the session.
   skill::<skill>::<fn>(...) -> a function from a skill's lib.rhai; load_skill lists them.
@@ -62,18 +54,48 @@ Chain calls in ONE script — pass one call's result to the next instead of spen
   let page = mcp::docs::read(#{id: hits[0].id});
   page
 
-Every binding is also callable as a method: read_raw(p).parse_json().
+Every function is also callable as a method: parse_json(text) is text.parse_json().
 Result: the value of the last expression, serialized, with any print(x) output returned above it (a background run streams prints to `poll` as they happen)."#;
 
+/// Every registered tool that binds itself into scripts, name-sorted: what a
+/// run registers and what the reference lists.
+pub(crate) fn tool_bindings(tools: &ToolRegistry) -> Vec<(String, ScriptBinding)> {
+    let mut out: Vec<_> = tools
+        .names()
+        .into_iter()
+        .filter_map(|name| {
+            let binding = tools.get(&name)?.script_binding()?;
+            Some((name, binding))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Every function a `rhai` script run over `tools` can call,
+/// signature-per-line. Ground truth is the registration code —
+/// [`super::register_bindings`] binds exactly [`tool_bindings`] plus `http`,
+/// [`super::data::register_data_functions`] the converters.
+pub(crate) fn reference(tools: &ToolRegistry) -> String {
+    let mut out = INTRO.to_string();
+    for (_, binding) in tool_bindings(tools) {
+        for line in binding.doc.lines() {
+            out.push_str("\n  ");
+            out.push_str(line);
+        }
+    }
+    format!("{out}\n{HTTP_AND_BUDGET}\n\n{NAMESPACES_AND_REST}")
+}
+
 /// The `rhai` tool schema advertised to the model (an executor route, always
-/// advertised, ADR-0226).
-pub fn rhai_spec() -> ToolSpec {
+/// advertised, ADR-0226), listing the bindings `tools` adds.
+pub fn rhai_spec(tools: &ToolRegistry) -> ToolSpec {
     ToolSpec::with_schema(
         RHAI_TOOL,
         format!(
             "Run a Rhai script (https://rhai.rs) in a capability-sandboxed \
              engine — multi-step logic (loops, branching, JSON/YAML parsing) \
-             in one call instead of several read/edit calls or shelling \
+             in one call instead of several separate tool calls or shelling \
              out to python/node. Prefer it whenever a task needs more than one \
              conditional or a transform over structured data; prefer a direct \
              tool call for a single simple operation.\n\n\
@@ -84,8 +106,9 @@ pub fn rhai_spec() -> ToolSpec {
              asks, the user runs it whole, has each command asked, or rejects \
              it. `args` is bound in the script as the constant map `args`, for \
              either kind: {{\"path\": \"scripts/report.rhai\", \"args\": \
-             {{\"days\": 7}}}}.\n\n{BINDING_REFERENCE}\n\n\
-             Load the `rhai` skill for worked examples and detail."
+             {{\"days\": 7}}}}.\n\n{}\n\n\
+             Load the `rhai` skill for worked examples and detail.",
+            reference(tools)
         ),
         serde_json::json!({
             "type": "object",
@@ -116,7 +139,7 @@ pub fn rhai_spec() -> ToolSpec {
                         instead of the result — join with `poll`, which drains \
                         print output incrementally and reports the final value. \
                         kill via poll is cooperative: the script stops at its \
-                        next operation, after any in-flight bash binding \
+                        next operation, after any in-flight binding call \
                         finishes. Default false."
                 }
             },
@@ -133,8 +156,8 @@ pub fn rhai_spec() -> ToolSpec {
 /// unknown variable. Every other failure (a thrown value, a denial, a timeout,
 /// an operation-cap trip) already says what went wrong, and repeating the
 /// catalogue there would be noise on the model's next read.
-pub(super) fn binding_hint(err: &EvalAltResult) -> Option<String> {
-    unknown_name(err).then(|| format!("\n\nAvailable script functions:\n{BINDING_REFERENCE}"))
+pub(super) fn binding_hint(err: &EvalAltResult, tools: &ToolRegistry) -> Option<String> {
+    unknown_name(err).then(|| format!("\n\nAvailable script functions:\n{}", reference(tools)))
 }
 
 fn unknown_name(err: &EvalAltResult) -> bool {
@@ -148,62 +171,68 @@ fn unknown_name(err: &EvalAltResult) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::time::{Duration, Instant};
 
     use rhai::{Dynamic, Engine};
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::host_ns::ScriptArg;
     use crate::script::data::DATA_FUNCTIONS;
     use crate::script::{register_bindings, result_line, BindingCall};
-    use crate::tool_names::BINDING_TOOLS;
+    use crate::tools::Tool;
 
-    /// Every script-facing name the engine registers, derived from the same
-    /// tables the registration code reads: the graded host bindings
-    /// ([`BINDING_TOOLS`]), the never-advertised `read_raw` alias of `read`, `http`,
-    /// and the pure converters.
-    fn registered_names() -> Vec<&'static str> {
-        let mut names: Vec<&'static str> = BINDING_TOOLS.to_vec();
-        names.push("read_raw");
-        names.extend(["glob_json", "grep_json", "http"]);
+    /// A stub tool binding itself as `<name>(path)`.
+    struct Bound(&'static str, &'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for Bound {
+        fn name(&self) -> Cow<'static, str> {
+            self.0.into()
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+        fn script_binding(&self) -> Option<ScriptBinding> {
+            Some(ScriptBinding {
+                overloads: &[&[("path", ScriptArg::Str)]],
+                json: false,
+                budget_key: None,
+                doc: self.1,
+            })
+        }
+    }
+
+    /// The library's own functions: `http` and the pure converters.
+    fn library_names() -> Vec<&'static str> {
+        let mut names = vec!["http"];
         names.extend(DATA_FUNCTIONS);
         names
     }
 
-    /// A minimal well-typed call for one binding — the probe that proves the
-    /// documented name is really registered. A new binding lands here in the
-    /// same change that adds it to [`BINDING_TOOLS`].
+    /// A minimal well-typed call for one library function — the probe that
+    /// proves the documented name is really registered.
     fn probe(name: &str) -> &'static str {
         match name {
-            "read" => r#"read("f")"#,
-            "read_raw" => r#"read_raw("f")"#,
-            "glob" => r#"glob("*")"#,
-            "grep" => r#"grep("x")"#,
-            "glob_json" => r#"glob_json("*")"#,
-            "grep_json" => r#"grep_json("x")"#,
-            "edit" => r#"edit("f", "a", "b")"#,
-            "write" => r#"write("f", "c")"#,
-            "bash" => r#"bash("echo")"#,
             "http" => r#"http("GET", "https://a.io")"#,
             "parse_json" => r#"parse_json("{}")"#,
             "to_json" => r#"to_json("x")"#,
             "parse_yaml" => r#"parse_yaml("a: 1")"#,
             "to_yaml" => r#"to_yaml("x")"#,
-            other => panic!(
-                "no probe for binding `{other}` — add one here and a line in BINDING_REFERENCE"
-            ),
+            other => panic!("no probe for `{other}` — add one here and a line in the reference"),
         }
     }
 
     /// The spec description is the model's only always-present binding
     /// reference, so it must name every function the engine registers.
     #[test]
-    fn spec_description_lists_every_registered_binding() {
-        let desc = rhai_spec().description;
-        for name in registered_names() {
+    fn spec_description_lists_every_library_function() {
+        let desc = rhai_spec(&ToolRegistry::new()).description;
+        for name in library_names() {
             assert!(
                 desc.contains(&format!("{name}(")),
-                "spec description never mentions binding `{name}`"
+                "spec description never mentions `{name}`"
             );
         }
         // Return-value semantics + print streaming, the two things a model
@@ -236,23 +265,40 @@ mod tests {
             desc.contains("trusts runs without asking") && desc.contains("graded like any tool"),
             "trusted folders undocumented"
         );
-        let schema = rhai_spec().schema;
+        let schema = rhai_spec(&ToolRegistry::new()).schema;
         for key in ["script", "path", "args", "timeout", "background"] {
             assert!(schema["properties"][key].is_object(), "{key} missing");
         }
         assert_eq!(schema["required"], serde_json::json!([]));
     }
 
-    /// The other direction: nothing in the reference is invented — each name
-    /// resolves against a real engine built by the registration code.
+    /// #933: a registered tool's binding joins the host bindings, name-sorted;
+    /// a tool without one adds nothing.
     #[test]
-    fn every_documented_binding_is_actually_registered() {
+    fn registered_bindings_join_the_reference_sorted() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Bound("zz_put", "zz_put(path) -> stores it"));
+        tools.register(Bound("aa_get", "aa_get(path) -> its text\nsecond line"));
+        let desc = rhai_spec(&tools).description;
+        let (a, z) = (
+            desc.find("  aa_get(path)").unwrap(),
+            desc.find("  zz_put(path)").unwrap(),
+        );
+        assert!(a < z && z < desc.find("  http(").unwrap(), "{desc}");
+        assert!(desc.contains("\n  second line\n"), "{desc}");
+    }
+
+    /// The other direction: nothing in the reference is invented — each
+    /// library name resolves against a real engine built by the registration
+    /// code.
+    #[test]
+    fn every_documented_library_function_is_actually_registered() {
         let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
         let mut engine = Engine::new_raw();
         register_bindings(
             &mut engine,
             tx,
-            true,
+            &[],
             true,
             Instant::now(),
             Duration::from_secs(5),
@@ -265,11 +311,11 @@ mod tests {
             }
         });
 
-        for name in registered_names() {
+        for name in library_names() {
             if let Err(e) = engine.eval::<Dynamic>(probe(name)) {
                 assert!(
                     !matches!(*e, EvalAltResult::ErrorFunctionNotFound(..)),
-                    "documented binding `{name}` is not registered: {e}"
+                    "documented function `{name}` is not registered: {e}"
                 );
             }
         }
@@ -283,15 +329,17 @@ mod tests {
     /// so the next call can be right without another lookup turn.
     #[test]
     fn an_unknown_function_error_carries_the_binding_reference() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Bound("fetch_doc", "fetch_doc(path) -> its text"));
         let engine = Engine::new_raw();
         let err = engine
             .eval::<Dynamic>(r#"read_file("Cargo.toml")"#)
             .unwrap_err();
-        let (line, is_error) = result_line(Ok(Err(err)));
+        let (line, is_error) = result_line(Ok(Err(err)), &tools);
         assert!(is_error);
         assert!(line.contains("Function not found"), "{line}");
         assert!(line.contains("Available script functions"), "{line}");
-        assert!(line.contains("read_raw(path)"), "{line}");
+        assert!(line.contains("fetch_doc(path)"), "{line}");
         assert!(line.contains("parse_json(text)"), "{line}");
     }
 
@@ -299,7 +347,7 @@ mod tests {
     fn an_unknown_variable_error_carries_the_binding_reference() {
         let engine = Engine::new_raw();
         let err = engine.eval::<Dynamic>("no_such_binding").unwrap_err();
-        let (line, _) = result_line(Ok(Err(err)));
+        let (line, _) = result_line(Ok(Err(err)), &ToolRegistry::new());
         assert!(line.contains("Available script functions"), "{line}");
     }
 
@@ -311,7 +359,7 @@ mod tests {
         let err = engine
             .eval::<Dynamic>(r#"fn helper() { read_file("x") } helper()"#)
             .unwrap_err();
-        let (line, _) = result_line(Ok(Err(err)));
+        let (line, _) = result_line(Ok(Err(err)), &ToolRegistry::new());
         assert!(line.contains("Available script functions"), "{line}");
     }
 
@@ -321,7 +369,7 @@ mod tests {
     fn an_ordinary_script_error_stays_bare() {
         let engine = Engine::new_raw();
         let err = engine.eval::<Dynamic>(r#"throw "boom""#).unwrap_err();
-        let (line, is_error) = result_line(Ok(Err(err)));
+        let (line, is_error) = result_line(Ok(Err(err)), &ToolRegistry::new());
         assert!(is_error);
         assert!(
             !line.contains("Available script functions"),

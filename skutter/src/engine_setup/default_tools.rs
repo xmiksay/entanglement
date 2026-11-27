@@ -141,7 +141,7 @@ mod tests {
         let mut former: Vec<_> = registry
             .specs()
             .into_iter()
-            .chain(crate::discover::runtime_owned_specs())
+            .chain(crate::discover::runtime_owned_specs(&registry))
             .chain(crate::subagent::agent_specs())
             .filter(|s| FORMER_KERNEL.contains(&s.name.as_str()))
             .collect();
@@ -170,6 +170,47 @@ mod tests {
         // The sextet is still there alongside them.
         for expected in ["read", "glob", "grep", "edit", "write", "apply_patch"] {
             assert!(names.contains(&expected.to_string()), "{names:?}");
+        }
+    }
+
+    /// #933: the host tools bind exactly the script functions the library
+    /// bound before 0.8, and the `rhai` spec lists each one.
+    #[test]
+    fn the_host_tools_bind_the_former_script_functions() {
+        let registry = startup_registry();
+        let mut bound: Vec<String> = registry
+            .names()
+            .into_iter()
+            .filter(|n| {
+                registry
+                    .get(n)
+                    .is_some_and(|t| t.script_binding().is_some())
+            })
+            .collect();
+        bound.sort_unstable();
+        assert_eq!(
+            bound,
+            [
+                "bash",
+                "edit",
+                "glob",
+                "glob_json",
+                "grep",
+                "grep_json",
+                "read",
+                "read_raw",
+                "write"
+            ]
+        );
+        let rhai = crate::discover::runtime_owned_specs(&registry)
+            .into_iter()
+            .find(|s| s.name == "rhai")
+            .unwrap();
+        for name in &bound {
+            assert!(
+                rhai.description.contains(&format!("  {name}(")),
+                "the rhai spec never lists `{name}`"
+            );
         }
     }
 }

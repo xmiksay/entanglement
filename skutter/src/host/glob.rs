@@ -86,6 +86,9 @@ impl Tool for GlobTool {
         Some(joined_pattern(base, pattern))
     }
 
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(super::script_bindings::GLOB)
+    }
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("glob")
     }

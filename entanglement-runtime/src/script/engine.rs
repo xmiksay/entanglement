@@ -53,7 +53,7 @@ pub(super) async fn run_engine(
     let (tx, rx) = mpsc::unbounded_channel::<BindingCall>();
     let start = Instant::now();
     // Plain values for the blocking closure: the registry stays here.
-    let bash_enabled = dispatcher.tools.contains("bash");
+    let tool_bindings = super::spec::tool_bindings(&dispatcher.tools);
     let http_enabled = dispatcher.tools.contains(HTTP_TOOL);
     let mcp = namespaces::mcp_entries(&*dispatcher);
     let skills = launch.skills.clone();
@@ -74,7 +74,7 @@ pub(super) async fn run_engine(
         register_bindings(
             &mut engine,
             tx.clone(),
-            bash_enabled,
+            &tool_bindings,
             http_enabled,
             start,
             timeout,

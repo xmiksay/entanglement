@@ -9,8 +9,8 @@
 //! A session `Stop` does not reach a background script (the executor skips the
 //! canceller registration — [`super::is_background`]); the only kill is the
 //! cooperative stop flag a `poll` `kill: true` trips, with the documented
-//! ADR-0161 §5 limit that an in-flight `bash` binding call finishes its
-//! own budget-clamped timeout first. Mid-run binding `Ask`s stay enabled: the
+//! ADR-0161 §5 limit that an in-flight binding call finishes its own
+//! budget-clamped timeout first. Mid-run binding `Ask`s stay enabled: the
 //! `ToolRequest` → `Approve`/`Reject` round-trip works detached, parking the
 //! script (whose deadline keeps counting) until the head answers.
 
@@ -61,7 +61,7 @@ pub(super) async fn run_background(
              Poll with `poll` (handle=\"{id}\") for incremental print output; \
              the final poll carries the script's `=> result` (or error) line. \
              Pass kill=true to request a cooperative stop — the script ends at \
-             its next operation, after any in-flight bash binding \
+             its next operation, after any in-flight binding call \
              finishes. Stopped automatically after {secs}s if still running."
         ),
         false,
@@ -81,7 +81,7 @@ pub(super) async fn run_background(
     if timed_out.load(Ordering::Relaxed) {
         op.mark_timed_out();
     }
-    let (line, is_error) = result_line(eval_result);
+    let (line, is_error) = result_line(eval_result, &dispatcher.tools);
     op.finish(&line, is_error);
 }
 

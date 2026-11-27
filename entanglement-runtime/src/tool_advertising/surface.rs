@@ -64,7 +64,7 @@ pub fn build_surface(registry: &ToolRegistry, agent_specs: Vec<ToolSpec>) -> Vec
         .specs()
         .into_iter()
         .filter(|s| registry.get(&s.name).is_some_and(|t| t.advertised()))
-        .chain(discover::runtime_owned_specs())
+        .chain(discover::runtime_owned_specs(registry))
         .chain(agent_specs)
         .collect();
     specs.sort_by(|a, b| a.name.cmp(&b.name));

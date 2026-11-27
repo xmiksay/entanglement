@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 
 use super::output::{format_output, serialize_return};
 use super::{configure_engine, data, register_bindings, BindingCall};
+use crate::host_ns::{ScriptArg, ScriptBinding};
+use crate::tools::ToolRegistry;
 
 /// Build a sandboxed engine with no bindings (the bridge senders are dropped
 /// immediately, so any binding call errors) — enough to exercise the sandbox
@@ -177,7 +179,7 @@ fn format_output_oversized_keeps_head_and_tail() {
     let prints = format!("HEAD_MARKER{}", "x".repeat(MAX_OUTPUT_BYTES * 2));
     let engine = sandbox_engine(Duration::from_secs(5));
     let v = engine.eval::<Dynamic>(r#""TAIL_MARKER""#).unwrap();
-    let (out, is_error) = format_output(prints, Ok(Ok(v)));
+    let (out, is_error) = format_output(prints, Ok(Ok(v)), &ToolRegistry::new());
     assert!(out.starts_with("HEAD_MARKER"), "head lost: {out}");
     assert!(out.contains("TAIL_MARKER"), "tail lost: {out}");
     assert!(out.contains("omitted from the middle"), "got: {out}");
@@ -188,7 +190,11 @@ fn format_output_oversized_keeps_head_and_tail() {
 fn format_output_combines_prints_and_return() {
     let engine = sandbox_engine(Duration::from_secs(5));
     let v = engine.eval::<Dynamic>("40 + 2").unwrap();
-    let (out, is_error) = format_output("printed line\n".to_string(), Ok(Ok(v)));
+    let (out, is_error) = format_output(
+        "printed line\n".to_string(),
+        Ok(Ok(v)),
+        &ToolRegistry::new(),
+    );
     assert_eq!(out, "printed line\n=> 42");
     assert!(!is_error);
 }
@@ -197,62 +203,131 @@ fn format_output_combines_prints_and_return() {
 fn format_output_flags_a_script_error() {
     let engine = sandbox_engine(Duration::from_secs(5));
     let err = engine.eval::<Dynamic>("throw \"boom\"").unwrap_err();
-    let (out, is_error) = format_output(String::new(), Ok(Err(err)));
+    let (out, is_error) = format_output(String::new(), Ok(Err(err)), &ToolRegistry::new());
     assert!(out.contains("rhai error"), "{out}");
     assert!(is_error);
 }
 
-/// #480: `bash`'s two-arg overload marshals `workdir` into the dispatched
-/// tool's own JSON input; the workdir-less overload leaves the field out
-/// entirely (not `null`), matching a direct tool call's shape.
-#[test]
-fn bash_binding_marshals_workdir_when_given() {
+/// A stub binding with every parameter type, a budget key and two
+/// overloads — the shape a head's command or search tool declares (#933).
+const RUN: ScriptBinding = ScriptBinding {
+    overloads: &[
+        &[("command", ScriptArg::Str)],
+        &[
+            ("command", ScriptArg::Str),
+            ("workdir", ScriptArg::Str),
+            ("n", ScriptArg::Int),
+            ("quiet", ScriptArg::Bool),
+            ("exclude", ScriptArg::StrList),
+        ],
+    ],
+    json: false,
+    budget_key: Some("timeout"),
+    doc: "run(command)",
+};
+
+/// Run `script` over `bindings`, answering each bridge call with `reply`;
+/// the eval result and every call as `(tool, input)`.
+fn eval_bound(
+    bindings: &[(String, ScriptBinding)],
+    reply: &'static str,
+    script: &str,
+) -> (Result<Dynamic, String>, Vec<(String, serde_json::Value)>) {
     let (tx, mut rx) = mpsc::unbounded_channel::<BindingCall>();
     let mut engine = Engine::new_raw();
     register_bindings(
         &mut engine,
         tx,
-        true,
-        true,
+        bindings,
+        false,
         Instant::now(),
         Duration::from_secs(5),
     );
-
-    let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-    let captured2 = captured.clone();
     let responder = std::thread::spawn(move || {
+        let mut seen = Vec::new();
         while let Some(call) = rx.blocking_recv() {
-            captured2
-                .lock()
-                .unwrap()
-                .push((call.tool, call.input.clone()));
-            let _ = call.reply.send(Ok(String::new()));
+            seen.push((call.tool, serde_json::from_str(&call.input).unwrap()));
+            let _ = call.reply.send(Ok(reply.to_string()));
         }
+        seen
     });
-
-    let _ = engine
-        .eval::<Dynamic>(
-            r#"
-            bash("echo hi");
-            bash("echo hi", "/tmp/y");
-            "#,
-        )
-        .unwrap();
+    let out = engine.eval::<Dynamic>(script).map_err(|e| e.to_string());
     // Dropping the engine drops every closure's `tx` clone, closing the
     // channel so the responder thread's loop ends.
     drop(engine);
-    responder.join().unwrap();
+    (out, responder.join().unwrap())
+}
 
-    let calls = captured.lock().unwrap();
-    assert_eq!(calls.len(), 2);
-    assert!(calls.iter().all(|(tool, _)| tool == "bash"));
-
-    let parse = |i: usize| -> serde_json::Value { serde_json::from_str(&calls[i].1).unwrap() };
-    assert!(
-        parse(0).get("workdir").is_none(),
-        "bash(cmd) carries no workdir field"
+/// #933 (#480's shape): each overload marshals its positional args under
+/// their keys — a shorter overload leaves the others out entirely (not
+/// `null`), matching a direct tool call — and the budget key carries the
+/// run's remaining whole seconds.
+#[test]
+fn a_tool_binding_marshals_positional_args_by_key() {
+    let (out, calls) = eval_bound(
+        &[("run".to_string(), RUN)],
+        "ok",
+        r#"run("echo hi") + run("echo hi", "/tmp/y", 3, true, ["a", 1])"#,
     );
-    assert_eq!(parse(1)["workdir"], "/tmp/y");
+    assert_eq!(out.unwrap().into_string().unwrap(), "okok");
+    assert_eq!(calls.len(), 2);
+    let mut inputs = Vec::new();
+    for (tool, mut input) in calls {
+        assert_eq!(tool, "run");
+        let secs = input["timeout"].as_u64().unwrap();
+        assert!((1..=5).contains(&secs), "{secs}");
+        input.as_object_mut().unwrap().remove("timeout");
+        inputs.push(input);
+    }
+    assert_eq!(inputs[0], serde_json::json!({"command": "echo hi"}));
+    assert_eq!(
+        inputs[1],
+        serde_json::json!({
+            "command": "echo hi", "workdir": "/tmp/y", "n": 3, "quiet": true,
+            "exclude": ["a", "1"]
+        })
+    );
+}
+
+/// A `json` binding returns the parsed reply; a reply that is not JSON
+/// throws, catchably.
+#[test]
+fn a_json_binding_parses_its_reply() {
+    let find = ScriptBinding {
+        json: true,
+        budget_key: None,
+        ..RUN
+    };
+    let bindings = [("find".to_string(), find)];
+    let (out, _) = eval_bound(&bindings, r#"{"files":["a"]}"#, r#"find("x").files[0]"#);
+    assert_eq!(out.unwrap().into_string().unwrap(), "a");
+    let (out, _) = eval_bound(
+        &bindings,
+        "not json",
+        r#"let r = "parsed"; try { find("x"); } catch (e) { r = "threw"; } r"#,
+    );
+    assert_eq!(out.unwrap().into_string().unwrap(), "threw");
+}
+
+/// #933: the library's engine binds no file or process function of its own
+/// — with no tool declaring a binding, each is an unknown function and the
+/// bridge never sees a call.
+#[test]
+fn the_library_engine_binds_no_file_or_process_function() {
+    for script in [
+        r#"read("Cargo.toml")"#,
+        r#"read_raw("Cargo.toml")"#,
+        r#"write("x", "y")"#,
+        r#"edit("x", "a", "b")"#,
+        r#"glob("*")"#,
+        r#"grep("x")"#,
+        r#"bash("echo hi")"#,
+    ] {
+        let (out, calls) = eval_bound(&[], "", script);
+        let err = out.unwrap_err();
+        assert!(err.contains("Function not found"), "{script}: {err}");
+        assert!(calls.is_empty(), "{script}");
+    }
 }
 
 #[test]
@@ -358,7 +433,7 @@ fn http_binding_marshals_method_url_and_options() {
     register_bindings(
         &mut engine,
         tx,
-        false,
+        &[],
         true,
         Instant::now(),
         Duration::from_secs(5),
@@ -403,7 +478,7 @@ fn http_binding_keeps_a_script_content_type() {
     register_bindings(
         &mut engine,
         tx,
-        false,
+        &[],
         true,
         Instant::now(),
         Duration::from_secs(5),

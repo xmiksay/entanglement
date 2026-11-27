@@ -1,9 +1,19 @@
-//! Host script namespaces (ADR-0249): an embedder registers a namespace
-//! (e.g. `infra`) bound to one of its tools (e.g. `invoke`), plus a
-//! per-session resolver listing the callable function names for that session.
-//! Each `rhai` run generates `<ns>::<fn>(#{...})` from the resolver, and a
-//! call dispatches to the bound tool with `{"tool": "<fn>", "args": {...}}`,
-//! graded per the tool's [`call_grading`][crate::tools::Tool::call_grading].
+//! What an embedder adds to a `rhai` script — the library's own engine binds
+//! no file or process function (#933).
+//!
+//! - Host script namespaces (ADR-0249): an embedder registers a namespace
+//!   (e.g. `infra`) bound to one of its tools (e.g. `invoke`), plus a
+//!   per-session resolver listing the callable function names for that
+//!   session. Each `rhai` run generates `<ns>::<fn>(#{...})` from the
+//!   resolver, and a call dispatches to the bound tool with
+//!   `{"tool": "<fn>", "args": {...}}`, graded per the tool's
+//!   [`call_grading`][crate::tools::Tool::call_grading].
+//! - Script bindings (#933): a registered tool that returns a
+//!   [`ScriptBinding`] from [`Tool::script_binding`][crate::tools::Tool::script_binding]
+//!   is callable as a plain function under its own name (`read(path)`), its
+//!   positional arguments marshalled into the tool's JSON input.
+//!
+//! Either way a call climbs the same dispatch seam as a model-issued one.
 
 use std::sync::Arc;
 
@@ -47,4 +57,34 @@ impl std::fmt::Debug for HostNamespace {
             .field("tool", &self.tool)
             .finish()
     }
+}
+
+/// A registered tool's positional script function (#933): `name(a, b)` runs
+/// the tool with `{"<key a>": a, "<key b>": b}`, through the same dispatch
+/// seam as a model-issued call. Bound under the tool's name, which must be a
+/// Rhai identifier.
+#[derive(Debug, Clone, Copy)]
+pub struct ScriptBinding {
+    /// One parameter list per overload: each parameter's input key and type.
+    pub overloads: &'static [&'static [(&'static str, ScriptArg)]],
+    /// Parse the tool's reply as JSON into a Rhai value instead of returning
+    /// its text; a reply that is not JSON throws.
+    pub json: bool,
+    /// An input key set to the run's remaining wall-clock budget in whole
+    /// seconds (at least 1), so a tool that bounds itself cannot outlive the
+    /// script — the engine's own interrupt cannot reach a call in flight.
+    pub budget_key: Option<&'static str>,
+    /// The `rhai` spec's reference line(s) for this function: its
+    /// signatures and what it returns.
+    pub doc: &'static str,
+}
+
+/// A script binding parameter's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptArg {
+    Str,
+    Int,
+    Bool,
+    /// An array, sent as an array of strings.
+    StrList,
 }

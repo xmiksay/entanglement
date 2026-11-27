@@ -28,6 +28,9 @@ impl entanglement_runtime::Tool for SlowGrep {
     fn name(&self) -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Borrowed("grep")
     }
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(skutter::host::script_bindings::GREP)
+    }
     async fn run(&self, _input: &str) -> anyhow::Result<String> {
         self.entered.notify_one();
         tokio::time::sleep(Duration::from_secs(30)).await;

@@ -60,6 +60,9 @@ impl Tool for GrepJsonTool {
         crate::path_grading::join_or_default(args, "path", base)
     }
 
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(crate::host::script_bindings::GREP_JSON)
+    }
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("grep_json")
     }

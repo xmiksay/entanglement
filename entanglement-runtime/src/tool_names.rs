@@ -15,16 +15,10 @@ pub const ASK_USER_TOOL: &str = "ask_user";
 /// no aliases.
 pub const POLL_TOOL: &str = "poll";
 
-/// Tool name the model calls to run a sandboxed script (ADR-0046, exec
-/// bindings added by ADR-0115).
+/// Tool name the model calls to run a sandboxed script (ADR-0046). The
+/// library binds no file or process function into it; a registered tool
+/// declares its own (`Tool::script_binding`, #933).
 pub const RHAI_TOOL: &str = "rhai";
-
-/// The host tools bound into every `rhai` script under their own names —
-/// every call through the dispatch seam, graded like a direct call
-/// (ADR-0227). `bash` is *reachable* only when the host `bash` tool is
-/// registered. The script-only `http` binding and the generated `mcp::`/
-/// `skill::` namespaces are not in this list.
-pub const BINDING_TOOLS: [&str; 6] = ["read", "glob", "grep", "edit", "write", "bash"];
 
 /// The rhai `http(method, url, #{headers, body})` binding's tool (ADR-0227):
 /// registered but never advertised — reachable from a script only, graded as

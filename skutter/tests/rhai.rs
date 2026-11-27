@@ -759,7 +759,9 @@ async fn an_unknown_binding_name_returns_the_binding_reference() {
         "the failed script must carry the binding reference: {out}"
     );
     assert!(out.contains("read_raw(path)"), "{out}");
-    assert!(out.contains("bash(command)"), "{out}");
+    assert!(out.contains("glob_json(pattern)"), "{out}");
+    // #933: the reference names what this run binds — no `bash` registered.
+    assert!(!out.contains("bash(command)"), "{out}");
 }
 
 #[tokio::test]

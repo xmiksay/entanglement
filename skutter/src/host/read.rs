@@ -87,6 +87,9 @@ impl Tool for ReadTool {
         PermissionScope::arg(ArgKind::Path)
     }
 
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(super::script_bindings::READ)
+    }
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read")
     }
@@ -217,6 +220,9 @@ impl Tool for ReadRawTool {
         crate::path_grading::join(args, "path", base)
     }
 
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(super::script_bindings::READ_RAW)
+    }
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read_raw")
     }

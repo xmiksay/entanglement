@@ -11,7 +11,7 @@
 //! SIGKILL, no exit code, and no stdout/stderr pipes to drain. "Kill" here is
 //! the **cooperative** stop flag the engine's progress callback polls (#167):
 //! a `poll` with `kill: true` trips it and the script terminates at its next
-//! engine operation — which means an in-flight `bash` binding call
+//! engine operation — which means an in-flight binding call (a command, say)
 //! runs to its own budget-clamped timeout first (the documented ADR-0161 §5
 //! limit this design accepts).
 //!

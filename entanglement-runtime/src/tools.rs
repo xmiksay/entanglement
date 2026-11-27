@@ -2,8 +2,8 @@
 //! implements and the [`ToolRegistry`] that owns them. Both live in the
 //! **runtime** — core holds no executable tools, only advertises tool *schemas*
 //! and round-trips each call back here (#58/#59, #206, ADR-0006/0010/0053). The
-//! concrete tools (`read`/`glob`/`grep`/`edit`/`write`/`bash`/`rhai`, …)
-//! live in [`crate::host`] and [`crate::script`]; [`crate::tool_runner`] resolves
+//! library ships no host tool (an embedder registers its own — `skutter`
+//! brings the file, shell and fetch tools); [`crate::tool_runner`] resolves
 //! permission and executes the cleared call against a registry.
 //!
 //! [`ToolSpec`]/[`ToolCall`] are the LLM ABI DTOs; they ride in
@@ -186,6 +186,13 @@ pub trait Tool: Send + Sync {
     /// callable (by a script, by name), not model-facing.
     fn advertised(&self) -> bool {
         false
+    }
+
+    /// The plain script function a `rhai` run binds this tool to, under its
+    /// name (#933) — the library's own engine binds no file or process
+    /// function, so this is how a head adds them. Default: none.
+    fn script_binding(&self) -> Option<crate::host_ns::ScriptBinding> {
+        None
     }
 }
 

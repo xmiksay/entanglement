@@ -177,6 +177,9 @@ impl Tool for BashTool {
         crate::path_grading::str_arg(input, "command")
     }
 
+    fn script_binding(&self) -> Option<entanglement_runtime::host_ns::ScriptBinding> {
+        Some(super::script_bindings::BASH)
+    }
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("bash")
     }

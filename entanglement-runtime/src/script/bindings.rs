@@ -1,15 +1,17 @@
 //! The sandboxed Rhai engine: resource caps, the progress interrupt, and the
-//! registered file/`bash`/`http` bindings that cross the bridge to
-//! [`super::service`].
+//! registered bindings — `http()` and each registered tool's
+//! [`ScriptBinding`] (#933) — that cross the bridge to [`super::service`].
 
+use std::any::TypeId;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rhai::packages::{Package, StandardPackage};
-use rhai::{Dynamic, Engine, EvalAltResult, Position};
+use rhai::{Dynamic, Engine, EvalAltResult, ImmutableString, Position};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::host_ns::{ScriptArg, ScriptBinding};
 use crate::tool_names::HTTP_TOOL;
 
 use super::{
@@ -59,27 +61,17 @@ pub(super) fn configure_engine(
     engine.on_print(move |text| on_print(text));
 }
 
-/// Bind the host quintet plus permission-gated `bash` as script functions
-/// (ADR-0115, amending ADR-0046). Each closure marshals its args to the tool's
-/// JSON shape and blocks on the bridge for the resolved output.
-/// `bash` additionally stamps a `timeout` derived from this run's own
-/// remaining wall-clock budget (`start`/`timeout`, #419 fix B): rhai's
-/// `on_progress` interrupt can't reach into a binding call blocked on
-/// `blocking_recv`, so the exec tool's own (much longer, up to 600s) timeout
-/// would otherwise stand alone as the only bound on an in-flight child.
-/// `bash` is registered only when the host `bash` tool itself is in the
-/// registry the script delegates through — off, `bash(...)` is an
-/// unknown (catchable) script function rather than a graded-then-failing
-/// binding. It also has a `workdir` overload (#480, ADR-0129:
-/// `bash(command, workdir)`) that marshals the value into the tool's own
-/// `workdir` field — the same field a `tool{pattern}` workdir-scoped rule
-/// (#425) and the escape-root gate (#446) both extract, so a script gets
-/// identical scoping to a direct tool call.
-/// `http` (ADR-0227) is registered only when the `http` tool is.
+/// Bind every registered tool that declares a [`ScriptBinding`] (#933) as a
+/// plain script function under its own name, one overload per parameter
+/// list, plus `http()` (ADR-0227) when the `http` tool is registered. Each
+/// closure marshals its positional args into the tool's JSON input and
+/// blocks on the bridge for the resolved output. A tool not registered binds
+/// nothing, so calling it is an unknown (catchable) function rather than a
+/// graded-then-failing binding.
 pub(super) fn register_bindings(
     engine: &mut Engine,
     tx: UnboundedSender<BindingCall>,
-    bash_enabled: bool,
+    tools: &[(String, ScriptBinding)],
     http_enabled: bool,
     start: Instant,
     timeout: Duration,
@@ -87,129 +79,55 @@ pub(super) fn register_bindings(
     if http_enabled {
         register_http(engine, &tx);
     }
-    let t = tx.clone();
-    engine.register_fn("read", move |path: &str| {
-        call_binding(&t, "read", serde_json::json!({ "path": path }))
-    });
-    let t = tx.clone();
-    engine.register_fn("read", move |path: &str, offset: i64, limit: i64| {
-        call_binding(
-            &t,
-            "read",
-            serde_json::json!({ "path": path, "offset": offset, "limit": limit }),
-        )
-    });
-    let t = tx.clone();
-    // Raw counterpart of `read` with no line-number prefix — source for
-    // parse_json/parse_yaml, since `read`'s "{lineno}: {line}" format isn't
-    // valid JSON/YAML. Graded and masked as an alias of `read`
-    // (the seam's `graded_name`), not a distinct permission surface.
-    engine.register_fn("read_raw", move |path: &str| {
-        call_binding(&t, "read_raw", serde_json::json!({ "path": path }))
-    });
-    let t = tx.clone();
-    engine.register_fn("glob", move |pattern: &str| {
-        call_binding(&t, "glob", serde_json::json!({ "pattern": pattern }))
-    });
-    let t = tx.clone();
-    engine.register_fn("grep", move |pattern: &str| {
-        call_binding(&t, "grep", serde_json::json!({ "pattern": pattern }))
-    });
-    let t = tx.clone();
-    engine.register_fn("grep", move |pattern: &str, path: &str| {
-        call_binding(
-            &t,
-            "grep",
-            serde_json::json!({ "pattern": pattern, "path": path }),
-        )
-    });
-    // Structured search bindings (ADR-0206): same permission grading and
-    // same underlying walk/scan as `glob`/`grep` (dispatched to the
-    // script-facing variant tools), but the result arrives as a parsed Rhai
-    // value — `#{files: […]}` / `#{matches: […], notices: […]}` — not a
-    // newline-joined string. The prose tools' text is model-facing; a script
-    // consuming it had to hand-parse, and Rhai's string indexing (chars, not
-    // lines) turned every mistake into a wrong-but-not-error result.
-    let t = tx.clone();
-    engine.register_fn("glob_json", move |pattern: &str| {
-        call_binding_dynamic(&t, "glob_json", serde_json::json!({ "pattern": pattern }))
-    });
-    let t = tx.clone();
-    engine.register_fn("glob_json", move |pattern: &str, exclude: rhai::Array| {
-        call_binding_dynamic(
-            &t,
-            "glob_json",
-            serde_json::json!({
-                "pattern": pattern,
-                "exclude": exclude.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
-            }),
-        )
-    });
-    let t = tx.clone();
-    engine.register_fn("grep_json", move |pattern: &str| {
-        call_binding_dynamic(&t, "grep_json", serde_json::json!({ "pattern": pattern }))
-    });
-    let t = tx.clone();
-    engine.register_fn("grep_json", move |pattern: &str, path: &str| {
-        call_binding_dynamic(
-            &t,
-            "grep_json",
-            serde_json::json!({ "pattern": pattern, "path": path }),
-        )
-    });
-    let t = tx.clone();
-    engine.register_fn("edit", move |path: &str, old: &str, new: &str| {
-        call_binding(
-            &t,
-            "edit",
-            serde_json::json!({ "path": path, "oldString": old, "newString": new }),
-        )
-    });
-    let t = tx.clone();
-    engine.register_fn(
-        "edit",
-        move |path: &str, old: &str, new: &str, replace_all: bool| {
-            call_binding(
-                &t,
-                "edit",
-                serde_json::json!({
-                    "path": path, "oldString": old, "newString": new, "replaceAll": replace_all
-                }),
-            )
-        },
-    );
-    let t = tx.clone();
-    engine.register_fn("write", move |path: &str, content: &str| {
-        call_binding(
-            &t,
-            "write",
-            serde_json::json!({ "path": path, "content": content }),
-        )
-    });
-    if bash_enabled {
-        let t = tx.clone();
-        engine.register_fn("bash", move |command: &str| {
-            call_binding(
-                &t,
-                "bash",
-                serde_json::json!({
-                    "command": command,
-                    "timeout": remaining_timeout_secs(start, timeout),
-                }),
-            )
-        });
-        let t = tx.clone();
-        engine.register_fn("bash", move |command: &str, workdir: &str| {
-            call_binding(
-                &t,
-                "bash",
-                serde_json::json!({
-                    "command": command,
-                    "workdir": workdir,
-                    "timeout": remaining_timeout_secs(start, timeout),
-                }),
-            )
-        });
+    for (tool, binding) in tools {
+        for params in binding.overloads {
+            let types: Vec<TypeId> = params.iter().map(|(_, arg)| type_of(*arg)).collect();
+            let (t, name, binding) = (tx.clone(), tool.clone(), *binding);
+            engine.register_raw_fn(
+                tool.as_str(),
+                types,
+                move |_ctx, args: &mut [&mut Dynamic]| -> Result<Dynamic, Box<EvalAltResult>> {
+                    let mut input = serde_json::Map::new();
+                    for ((key, arg), value) in params.iter().zip(args.iter()) {
+                        input.insert(key.to_string(), to_json(*arg, value));
+                    }
+                    if let Some(key) = binding.budget_key {
+                        input.insert(key.into(), remaining_timeout_secs(start, timeout).into());
+                    }
+                    let input = serde_json::Value::Object(input);
+                    if binding.json {
+                        call_binding_dynamic(&t, &name, input)
+                    } else {
+                        call_binding(&t, &name, input).map(Dynamic::from)
+                    }
+                },
+            );
+        }
+    }
+}
+
+/// The Rhai type a parameter of `arg`'s kind is registered with.
+fn type_of(arg: ScriptArg) -> TypeId {
+    match arg {
+        ScriptArg::Str => TypeId::of::<ImmutableString>(),
+        ScriptArg::Int => TypeId::of::<rhai::INT>(),
+        ScriptArg::Bool => TypeId::of::<bool>(),
+        ScriptArg::StrList => TypeId::of::<rhai::Array>(),
+    }
+}
+
+/// One argument as JSON. Rhai matched the registered [`type_of`] before the
+/// call, so each cast holds.
+fn to_json(arg: ScriptArg, value: &Dynamic) -> serde_json::Value {
+    match arg {
+        ScriptArg::Str => value.to_string().into(),
+        ScriptArg::Int => value.as_int().unwrap_or_default().into(),
+        ScriptArg::Bool => value.as_bool().unwrap_or_default().into(),
+        ScriptArg::StrList => value
+            .read_lock::<rhai::Array>()
+            .map(|items| items.iter().map(|d| d.to_string()).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into(),
     }
 }
 
@@ -268,11 +186,11 @@ fn register_http(engine: &mut Engine, tx: &UnboundedSender<BindingCall>) {
     });
 }
 
-/// Derive a `bash` binding's `timeout` (whole seconds, minimum 1) from
-/// the script's own remaining wall-clock budget, so an in-flight child cannot
-/// outlive the run — rhai's `on_progress` interrupt cannot reach a binding
-/// call parked in `blocking_recv`, so the bound has to ride along in the
-/// marshalled input instead (#419 fix B).
+/// A binding's [`ScriptBinding::budget_key`] value (whole seconds, minimum
+/// 1): the script's own remaining wall-clock budget, so an in-flight call
+/// cannot outlive the run — rhai's `on_progress` interrupt cannot reach a
+/// binding call parked in `blocking_recv`, so the bound has to ride along in
+/// the marshalled input instead (#419 fix B).
 pub(super) fn remaining_timeout_secs(start: Instant, timeout: Duration) -> u64 {
     timeout.saturating_sub(start.elapsed()).as_secs().max(1)
 }
@@ -292,12 +210,10 @@ pub(super) fn runtime_err(msg: &str) -> Box<EvalAltResult> {
     Box::new(EvalAltResult::ErrorRuntime(msg.into(), Position::NONE))
 }
 
-/// [`call_binding`] for the structured search variants (ADR-0206): the tool
-/// returns a JSON document, so the reply is parsed into a Rhai value here —
-/// `glob_json` yields `#{files: […], notices: […]}`, `grep_json` a
-/// `#{matches: […], notices: […]}` map — instead of passing the raw string
-/// through. Shares the bridge and permission path exactly (`graded_name`
-/// handles the policy identity); only the return shape differs. A reply that
+/// [`call_binding`] for a [`ScriptBinding::json`] binding (ADR-0206): the
+/// tool returns a JSON document, so the reply is parsed into a Rhai value
+/// here instead of passing the raw string through. Shares the bridge and
+/// permission path exactly; only the return shape differs. A reply that
 /// fails to parse is a binding failure (catchable with `try`/`catch`), not a
 /// string the script would have to defensively parse itself.
 pub(super) fn call_binding_dynamic(

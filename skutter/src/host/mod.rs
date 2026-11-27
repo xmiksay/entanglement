@@ -41,6 +41,7 @@ pub mod grep;
 pub mod read;
 mod registry;
 pub mod sandbox;
+pub mod script_bindings;
 pub mod search_json;
 pub mod unified_diff;
 mod walk;

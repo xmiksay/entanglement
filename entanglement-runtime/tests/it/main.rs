@@ -79,6 +79,7 @@ mod reoffer_dedupe;
 mod reparent_subagents;
 mod request_mode;
 mod resumable_prefix;
+mod script_bindings;
 mod spawn_grading;
 mod spawn_grading_park;
 mod spawn_grading_scoped;
