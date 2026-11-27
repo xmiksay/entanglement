@@ -92,8 +92,7 @@ impl Tool for HopProbe {
 /// `web_fetch` and [`HopProbe`] registered, start session `s1` in `mode`,
 /// have the model call `tool` on `url`, and collect events for `window`.
 async fn run_in_mode(mode: &str, tool: &str, url: &str, window: Duration) -> Vec<OutEvent> {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let scripted = script(tool, url);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {

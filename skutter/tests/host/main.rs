@@ -6,8 +6,8 @@
 
 /// An empty user definitions layer under `root`, so a test never reads the
 /// host's real user agents/skills (#773).
-pub fn no_user(root: &std::path::Path) -> entanglement_runtime::layers::UserLayer {
-    entanglement_runtime::layers::UserLayer::Dir(root.join("no-such-user-dir"))
+pub fn no_user(root: &std::path::Path) -> skutter::layers::UserLayer {
+    skutter::layers::UserLayer::Dir(root.join("no-such-user-dir"))
 }
 
 /// Poll `cond` until it holds or 10s pass (#815): a fixed sleep waiting on

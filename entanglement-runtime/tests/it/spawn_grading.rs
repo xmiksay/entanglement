@@ -82,7 +82,7 @@ pub(crate) fn spawn_calls(calls: &[(&'static str, &'static str)], table: Arc<Mod
             provider_meta: None,
         })
         .collect();
-    let agents = entanglement_runtime::agents::built_in_registry().expect("built-ins parse");
+    let agents = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(Scripted {

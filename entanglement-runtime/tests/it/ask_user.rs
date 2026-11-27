@@ -80,9 +80,7 @@ fn spawn_with_ask_user_call(input: &str) -> Holly {
     let holly = Holly::spawn(cfg);
     // `ask_user` is intercepted before the registry, so an empty registry is fine.
     let _executor = ToolExecutor::builder(&holly, ToolRegistry::new().shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -252,9 +250,7 @@ async fn list_questions_returns_nothing_when_none_are_open() {
     // No scripted `ask_user` call at all — nothing should ever be open.
     let holly = Holly::spawn(EngineConfig::default());
     let _executor = ToolExecutor::builder(&holly, ToolRegistry::new().shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))

@@ -133,8 +133,7 @@ async fn run_calls(calls: Vec<(&str, &str, &str)>) -> Vec<(String, bool)> {
         }))
         .collect();
     let scripted = Arc::new(responses);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -259,8 +258,7 @@ async fn user_denial_carries_only_the_reason_no_schema() {
     // call is needed) with `default: Ask` — the mode-based analog of the old
     // `askgreet` `Agent` fixture (ADR-0207 stage 4 grades from the
     // session's mode, not its agent).
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let mode = entanglement_runtime::mode::Mode {
         name: "build".to_string(),
         default: Permission::Ask,

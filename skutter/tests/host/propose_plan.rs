@@ -155,8 +155,7 @@ fn spawn_with_root_and_table(
     llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>,
     table: Arc<ModeTable>,
 ) -> Holly {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory,
         agents: profiles.clone(),
@@ -1344,8 +1343,7 @@ async fn the_approved_mode_survives_a_replay_round_trip() {
 
     // Replay with a *fresh* config carrying no live engine state at all —
     // `session.mode` must come purely from the persisted log.
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         agents: profiles,
         ..EngineConfig::default()

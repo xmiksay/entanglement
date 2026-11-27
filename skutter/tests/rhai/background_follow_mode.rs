@@ -55,8 +55,7 @@ fn table() -> Arc<ModeTable> {
 /// the executor's folded mode map.
 pub(super) fn engine(root: &Path, script: String, backups: Option<FileBackups>) -> (Holly, Modes) {
     let direct = json!({"path": "f.txt", "oldString": "", "newString": "zero\n"});
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(Follow {

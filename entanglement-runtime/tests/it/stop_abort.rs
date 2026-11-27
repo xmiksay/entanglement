@@ -86,8 +86,7 @@ fn spawn_blocking_bash(started: Arc<AtomicBool>, completed: Arc<AtomicBool>) -> 
             ..Default::default()
         },
     ]);
-    let agents: AgentCatalog =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents: AgentCatalog = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>

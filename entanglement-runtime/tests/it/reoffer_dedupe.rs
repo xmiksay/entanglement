@@ -100,9 +100,7 @@ async fn reoffered_tool_exec_runs_only_once() {
     let mut reg = ToolRegistry::new();
     reg.register(SlowCountingBash { runs: runs.clone() });
     let _executor = ToolExecutor::builder(&holly, reg.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
 
@@ -182,9 +180,7 @@ async fn resolved_id_can_be_reused_in_a_later_round() {
     let mut reg = ToolRegistry::new();
     reg.register(FastCountingBash { runs: runs.clone() });
     let _executor = ToolExecutor::builder(&holly, reg.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
 

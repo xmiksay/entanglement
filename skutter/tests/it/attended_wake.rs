@@ -64,7 +64,7 @@ pub(crate) async fn served_with(slow: bool, calls: Vec<entanglement_core::LlmRes
     });
     let tap = spawn_persistence_subscriber(&holly, store.clone());
     let agents = Arc::new(RwLock::new(
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents"),
+        skutter::agents::built_in_registry().expect("built-in agents"),
     ));
     let rejoin = Rejoin::new(store.clone(), agents);
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");

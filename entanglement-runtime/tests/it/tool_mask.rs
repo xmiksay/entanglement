@@ -97,17 +97,14 @@ fn spawn_with_edit_call() -> Holly {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let mut reg = ToolRegistry::new();
     reg.register(EchoEdit);
     let _executor = ToolExecutor::builder(&holly, reg.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
     holly
@@ -255,8 +252,7 @@ async fn an_ancestors_restrictive_mode_clamps_a_childs_more_permissive_default()
     // parent's class-deny on `write` still clamps the child's `edit` call
     // down to a flat decline via this same chain-min, exactly as it would
     // have for any other grade.
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let holly = spawn_calling("edit", profiles);
     let parent = SessionId::new("parent");
     let child = SessionId::new("child");
@@ -306,10 +302,7 @@ async fn an_ancestors_restrictive_mode_clamps_a_childs_more_permissive_default()
 /// mode — nothing intercepts it earlier now that the mask is gone.
 #[tokio::test]
 async fn unregistered_bash_falls_through_to_the_generic_unknown_tool_message() {
-    let holly = spawn_calling(
-        "bash",
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-    );
+    let holly = spawn_calling("bash", crate::agents());
     let sid = SessionId::new("s1");
     let sub = holly.subscribe();
     holly
@@ -339,10 +332,7 @@ async fn unregistered_bash_falls_through_to_the_generic_unknown_tool_message() {
 #[tokio::test]
 async fn mcp_enable_falls_through_to_unknown_tool_under_every_built_in_mode() {
     for mode in ["research", "plan", "build", "auto"] {
-        let holly = spawn_calling(
-            "mcp_enable",
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        );
+        let holly = spawn_calling("mcp_enable", crate::agents());
         let sid = SessionId::new("s1");
         holly
             .send(InMsg::SetMode {
@@ -373,10 +363,7 @@ async fn mcp_enable_falls_through_to_unknown_tool_under_every_built_in_mode() {
 #[tokio::test]
 async fn update_tasks_runs_unprompted_under_every_built_in_mode() {
     for mode in ["research", "plan", "build", "auto"] {
-        let holly = spawn_calling(
-            "update_tasks",
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        );
+        let holly = spawn_calling("update_tasks", crate::agents());
         let sid = SessionId::new("s1");
         holly
             .send(InMsg::SetMode {

@@ -78,8 +78,7 @@ impl Llm for LaunchOnlyLlm {
 fn config() -> EngineConfig {
     EngineConfig {
         llm_factory: Arc::new(|| Box::new(LaunchOnlyLlm) as Box<dyn Llm>),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     }
 }
@@ -88,9 +87,7 @@ fn config() -> EngineConfig {
 async fn list_operations_returns_nothing_when_none_are_outstanding() {
     let holly = Holly::spawn(EngineConfig::default());
     ToolExecutor::builder(&holly, ToolRegistry::new().shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
     let mut sub = holly.subscribe();
@@ -122,9 +119,7 @@ async fn list_operations_returns_nothing_when_none_are_outstanding() {
 async fn list_operations_surfaces_a_launched_but_never_polled_agent() {
     let holly = Holly::spawn(config());
     ToolExecutor::builder(&holly, ToolRegistry::new().shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
     let parent = SessionId::new("parent");

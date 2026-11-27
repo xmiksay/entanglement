@@ -128,8 +128,7 @@ impl GrantStore for NoGrants {
 }
 
 fn spawn_engine(gate: Arc<Semaphore>, retained: RetainedOutputRegistry) -> Holly {
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = crate::agents();
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| Box::new(Script) as Box<dyn Llm>),
         agents: agents.clone(),

@@ -202,7 +202,7 @@ async fn update_tasks_runs_and_acks_unconditionally() {
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [x] a\n- [ ] b"}"#,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        crate::agents(),
     );
     let sid = SessionId::new("s1");
     let events = collect_until_done(&holly, &sid, None).await;
@@ -242,7 +242,7 @@ async fn read_only_research_mode_does_not_gate_update_tasks() {
     let holly = spawn_calling(
         "update_tasks",
         r#"{"content":"- [ ] sneaky"}"#,
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
+        crate::agents(),
     );
     let sid = SessionId::new("s1");
     holly
@@ -276,8 +276,7 @@ async fn permission_deny_closes_task_mutation() {
     // this test used to close as a mode-rule deny is now closed structurally
     // instead: there is no host mutation here to gate at all, only the
     // session's own display task outline.
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let holly = spawn_calling_with_mode_table(
         "update_tasks",
         r#"{"content":"- [ ] x"}"#,

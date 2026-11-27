@@ -28,14 +28,14 @@ mod tui;
 mod user_dirs;
 
 use entanglement_runtime::{
-    agents, arg_validate, capability, discover, exec, jobs, mcp, mode, path_grading, plan_files,
-    plan_watch, policy, retained_output, script_ops, skills, subagent, system_prompt,
-    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, SharedRegistry,
-    ToolRegistry,
+    arg_validate, capability, discover, exec, jobs, mcp, mode, path_grading, plan_files,
+    plan_watch, policy, retained_output, script_ops, subagent, system_prompt_mode, throttle,
+    tool_advertising, tool_names, tool_runner, SharedRegistry, ToolRegistry,
 };
 use skutter::{
-    aux_llm, config, file_backup, history, hooks, host, inspect, logging, narrate, persistence,
-    serve, session_store, session_title, slash_commands, state, watch,
+    agents, aux_llm, config, file_backup, history, hooks, host, inspect, layers, logging, narrate,
+    persistence, serve, session_store, session_title, skills, slash_commands, state, system_prompt,
+    watch,
 };
 
 use anyhow::{Context, Result};

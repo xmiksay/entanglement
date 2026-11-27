@@ -22,7 +22,6 @@
 
 pub mod agent_registry;
 pub mod agent_send;
-pub mod agents;
 // Pre-dispatch argument validation against a tool's advertised `ToolSpec`
 // schema (#560, ADR-0196 §6): the three-way error taxonomy (schema
 // violation / parameter error / command failure) plus the delivered-schema
@@ -49,7 +48,6 @@ pub mod exec;
 // tie a change to its log record (`skutter`'s per-write backups).
 pub mod exec_scope;
 pub mod file_change;
-pub mod frontmatter;
 // Host script namespaces for embedders (ADR-0249).
 pub mod host_ns;
 // The credentialed-`http()` gate (ADR-0227) — shared by the `http` tool and
@@ -61,7 +59,6 @@ pub mod http_auth;
 #[cfg(feature = "rhai")]
 pub mod http_tool;
 pub mod jobs;
-pub mod layers;
 // The identifier mapping for generated rhai namespaces (ADR-0227).
 #[cfg(feature = "rhai")]
 pub mod rhai_ident;
@@ -130,7 +127,6 @@ pub mod session_store;
 pub mod shell_split;
 pub mod skills;
 pub mod subagent;
-pub mod system_prompt;
 // Composes the ADR-0196 §5 `ToolSearch`-mode prompt slimming with the
 // existing env-date freshness patch into the one `SystemPromptResolver`
 // slot `EngineConfig` exposes. Ungated — pure string transforms over core

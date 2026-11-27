@@ -122,8 +122,7 @@ fn ask_mode(name: &str, question_timeout: u64) -> Mode {
 /// default), `research` (so `request_mode` has something to widen from) and
 /// `timed` (unattended, 1s `question_timeout`).
 fn spawn_engine() -> Holly {
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = crate::agents();
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| Box::new(PendingLlm) as Box<dyn Llm>),
         agents: agents.clone(),

@@ -4,7 +4,7 @@
 
 use entanglement_core::{AgentCatalog, Catalog};
 
-use crate::system_prompt::SkillDisclosure;
+use crate::skills::SkillDisclosure;
 
 /// `list_agents`: every registered agent — what a model reads to pick an
 /// `agent`/`agent_send` target, now that the `agent` spec carries no roster

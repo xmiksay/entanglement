@@ -112,8 +112,7 @@ fn harness(write_root: PathBuf, script: Vec<LlmResponse>) -> Harness {
             }) as Box<dyn Llm>
         })
     };
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let advertising = Arc::new(AdvertisingState::new());
     let mut reg = ToolRegistry::new();
     reg.register(WriteTool::new(write_root));

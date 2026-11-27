@@ -51,8 +51,7 @@ impl Llm for SpawnOnce {
 async fn an_agent_tool_child_keeps_the_tenant_prefix_and_owner() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(SpawnOnce) as Box<dyn Llm>),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let profiles = cfg.agents.clone();

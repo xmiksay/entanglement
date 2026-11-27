@@ -47,7 +47,7 @@ async fn resume_modes(kid_agent: &str) -> (Vec<String>, Vec<String>) {
     std::fs::write(&path, log(kid_agent)).unwrap();
     let records = read_path(&path).expect("load");
 
-    let agents = entanglement_runtime::agents::built_in_registry().expect("built-in agents");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents");
     let check = check_for_resume(&records, |n| agents.get(n).is_some()).expect("no gap");
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| Box::new(DoneLlm) as Box<dyn Llm>),
@@ -118,7 +118,7 @@ async fn a_resumed_session_keeps_its_replayed_mode_over_the_agents_default() {
     std::fs::write(&path, log).unwrap();
     let records = read_path(&path).expect("load");
 
-    let agents = entanglement_runtime::agents::built_in_registry().expect("built-in agents");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents");
     assert_eq!(
         agents.get("plan").unwrap().default_mode.as_deref(),
         Some("plan")

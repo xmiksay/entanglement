@@ -116,8 +116,7 @@ impl GrantStore for NoGrants {
 /// An engine whose one mode grades every graded tool `Ask`, so the child's
 /// `bash` parks; `retained` is the registry the executor's `poll` reads.
 fn spawn_engine(retained: RetainedOutputRegistry, jobs: JobRegistry) -> Holly {
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = crate::agents();
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| Box::new(SubtreeLlm) as Box<dyn Llm>),
         agents: agents.clone(),

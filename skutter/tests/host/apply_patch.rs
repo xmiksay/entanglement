@@ -88,15 +88,12 @@ fn build_holly_and_executor(
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))

@@ -78,8 +78,7 @@ fn text_response(text: &str) -> LlmResponse {
 /// A trivial no-op registry is enough — `request_mode` touches no host
 /// resource, so this harness never registers a single `Tool`.
 fn spawn_with_builtin_modes(llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>) -> Holly {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory,
         agents: profiles.clone(),

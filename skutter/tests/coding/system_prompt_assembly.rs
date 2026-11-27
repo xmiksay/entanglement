@@ -23,9 +23,9 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId,
 };
-use entanglement_runtime::agents::load_registry_in;
 use entanglement_runtime::mcp::McpCapabilityIndex;
-use entanglement_runtime::system_prompt::{EnvBlock, PromptContext, TOOL_CONVENTIONS};
+use skutter::agents::load_registry_in;
+use skutter::system_prompt::{EnvBlock, PromptContext, TOOL_CONVENTIONS};
 
 const PREAMBLE: &str = "SHARED-PREAMBLE-RULES";
 const BRIEF: &str = "PROJECT-BRIEF-TEXT";
@@ -208,8 +208,7 @@ async fn modes_preamble_reaches_the_system_prompt_identically_across_sessions() 
                 seen: seen_factory.clone(),
             }) as Box<dyn Llm>
         }),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         modes_preamble: Some(preamble.clone()),
         ..EngineConfig::default()
     };

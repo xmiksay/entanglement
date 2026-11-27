@@ -1,7 +1,7 @@
 //! Pins the `<env>` block's `Date:` line per session (#566, ADR-0202 §5).
 //!
-//! [`system_prompt::EnvBlock`][crate::system_prompt::EnvBlock] is baked once
-//! into every [`Agent::system_prompt`][entanglement_core::Agent]
+//! An embedder's `<env>` block (`skutter`'s `system_prompt::EnvBlock`) is
+//! baked once into every [`Agent::system_prompt`][entanglement_core::Agent]
 //! at load time. The system block is the provider cache's second segment
 //! (`tools → system → messages`), so **any** byte change there re-bills the
 //! whole history at the cache-write rate. Re-stamping today's date every turn
@@ -9,7 +9,7 @@
 //! definitions reload re-baking a new date did it too. Instead each session
 //! keeps the date it first resolved for its whole life: a session spanning
 //! midnight tells the model yesterday's date (a turn that needs the wall
-//! clock has `bash`), a new session gets today's. The pin is forgotten when
+//! clock can ask a tool), a new session gets today's. The pin is forgotten when
 //! the session ends or hibernates (`tool_runner`'s lifecycle arm), so a
 //! resumed session re-pins to its resume day.
 
@@ -46,6 +46,12 @@ impl EnvDatePins {
 /// block (a subagent's prompt omits it) or the date already matches, so the
 /// prompt stays byte-identical. Called from [`crate::system_prompt_mode`],
 /// which owns the single `SystemPromptResolver` slot `EngineConfig` exposes.
+/// Today's UTC date (`YYYY-MM-DD`): the form an `<env>` block's `Date:` line
+/// carries and [`EnvDatePins`] pins.
+pub fn today_utc() -> String {
+    crate::date::today_utc()
+}
+
 pub(crate) fn refresh_env_date(system_prompt: &str, date: &str) -> Option<String> {
     let marker = "\nDate: ";
     let start = system_prompt.find(marker)? + marker.len();

@@ -86,8 +86,7 @@ pub(super) fn engine_with(
     scripts: ScriptRegistry,
     llm_factory: LlmFactory,
 ) -> Holly {
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let holly = Holly::spawn(EngineConfig {
         llm_factory,
         agents: agents.clone(),

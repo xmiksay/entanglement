@@ -14,9 +14,9 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use skutter::host::host_tools;
+use skutter::skills::{load_registry_in, LoadSkillTool};
 
 use crate::no_user;
 
@@ -146,8 +146,7 @@ async fn a_loaded_skill_never_narrows_the_turn_and_posture_event_fires() {
         },
     ]);
 
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>

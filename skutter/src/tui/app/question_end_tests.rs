@@ -50,7 +50,7 @@ fn engine() -> Holly {
         ..EngineConfig::default()
     });
     let _executor = ToolExecutor::builder(&holly, ToolRegistry::new().shared())
-        .agents(entanglement_runtime::agents::built_in_registry().expect("built-in agents"))
+        .agents(crate::agents::built_in_registry().expect("built-in agents"))
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
     holly

@@ -123,20 +123,16 @@ pub fn load_registry_in(
 
 /// Parse *only* the embedded built-in set (`general`/`plan`/`debug`)
 /// into a [`AgentCatalog`], skipping the user/project layers
-/// [`load_registry_in`] consults. The runtime is the single source of the
-/// built-ins (#201): core carries only the `general` fallback
+/// [`load_registry_in`] consults. `skutter` is the single source of the
+/// built-ins (#201, #932): core carries only the `general` fallback
 /// [`AgentCatalog::new`] synthesizes, so callers that need the full set
 /// without touching the filesystem parse the embedded markdown here. Prompts
 /// are composed with an identity [`PromptContext`] (no brief/env/skills),
 /// matching the raw built-in bodies.
 ///
-/// The embedded definitions are exercised by
-/// [`tests::built_ins_parse_with_expected_shape`], but a passing test suite is
-/// not something this function's own callers can rely on at runtime (#585):
-/// embedders call this directly as a public seam, bypassing [`load_registry_in`]
-/// entirely. So a parse failure here is surfaced as a `Result` — same as
-/// every other layer — rather than an unconditional panic baked into a
-/// library function.
+/// A parse failure is surfaced as a `Result` — same as every other layer —
+/// rather than a panic (#585); [`tests::built_ins_parse_with_expected_shape`]
+/// guards the embedded definitions.
 pub fn built_in_registry() -> Result<AgentCatalog> {
     let ctx = PromptContext::default();
     let skills = SkillRegistry::default();

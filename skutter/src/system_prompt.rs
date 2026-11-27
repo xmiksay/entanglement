@@ -33,7 +33,7 @@
 //! ever a leaf" case to compose differently for.
 //!
 //! Composition is a pure function so it is unit-testable with no model in the
-//! loop. The runtime bakes the assembled prompt into each [`Agent`] at
+//! loop. `skutter` bakes the assembled prompt into each [`Agent`] at
 //! load time (see [`crate::agents::load_registry_in`]); core stays a pass-through
 //! that ships `system_prompt` verbatim as `LlmRequest.system`.
 
@@ -56,15 +56,6 @@ verify before you report success.
 - Output: be concise and direct. State what you did, what failed, and what \
 remains — never claim a result you have not verified.";
 
-/// A skill disclosure: the two fields exposed to the model (`name` + one-line
-/// `description`) — what `list_skills` lists. Generated from the skill
-/// registry (every skill, ADR-0229), never authored into an agent body.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillDisclosure {
-    pub name: String,
-    pub description: String,
-}
-
 /// Generated environment facts, rendered into the `<env>` block. Never
 /// model-guessed: the harness fills these in at composition time. `scratch`
 /// (#524, ADR-0142) is the pre-trusted per-project scratch dir — steers the
@@ -85,7 +76,7 @@ impl EnvBlock {
         Self {
             root: root.to_path_buf(),
             platform: std::env::consts::OS.to_string(),
-            date: crate::date::today_utc(),
+            date: crate::env_date::today_utc(),
             scratch,
         }
     }
@@ -108,14 +99,9 @@ impl EnvBlock {
 
 /// The one line naming the call conventions (ADR-0226) — static, so the
 /// cached system block never varies by session.
-#[cfg(feature = "rhai")]
 pub const TOOL_CONVENTIONS: &str = "Tool conventions: call the advertised tools directly; reach \
      every MCP tool by calling the `mcp` tool with {server, tool, args} — list_mcp and mcp_tools \
      show what exists; use rhai for anything else.";
-#[cfg(not(feature = "rhai"))]
-pub const TOOL_CONVENTIONS: &str = "Tool conventions: call the advertised tools directly; reach \
-     every MCP tool by calling the `mcp` tool with {server, tool, args} — list_mcp and mcp_tools \
-     show what exists.";
 
 /// Shared inputs for [`assemble`], loaded once at startup. Each part is optional;
 /// the [`Default`] value is an identity composition (`assemble` returns just the

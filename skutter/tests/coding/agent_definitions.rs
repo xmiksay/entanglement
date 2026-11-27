@@ -14,13 +14,13 @@ use entanglement_core::{
     MessageRole, OutEvent, SessionId, ToolCall,
 };
 
-use entanglement_runtime::agents::load_registry_in;
-use entanglement_runtime::layers::UserLayer;
 use entanglement_runtime::mcp::McpCapabilityIndex;
-use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
+use skutter::agents::load_registry_in;
+use skutter::layers::UserLayer;
 use skutter::session_store::SessionStore;
+use skutter::system_prompt::PromptContext;
 
 // Every loader call injects its user layer (`UserLayer::Dir`), so these tests
 // need no env lock and never read the host's real user agents (#773).
@@ -151,8 +151,8 @@ fn skills_preload_composes_body_into_the_agent_prompt() {
         "---\nname: coder\ndescription: a coder\nskills: [git]\n---\nBe careful.",
     );
 
-    let skills = entanglement_runtime::skills::load_registry_in(root, &crate::no_user(root))
-        .expect("load skills");
+    let skills =
+        skutter::skills::load_registry_in(root, &crate::no_user(root)).expect("load skills");
     let ctx = PromptContext::default();
     let reg = load_registry_in(
         root,
@@ -243,7 +243,7 @@ fn prompt_report_tolerates_broken_foreign_file() {
         "not even frontmatter",
     );
 
-    let report = entanglement_runtime::agents::prompt_report_in(
+    let report = skutter::agents::prompt_report_in(
         root,
         &crate::no_user(root),
         "general",
@@ -480,7 +480,7 @@ async fn spawn_under_a_file_defined_profile() {
 // `inspect prompt` support: prompt_report (#184)
 // ---------------------------------------------------------------------------
 
-use entanglement_runtime::agents::prompt_report_in;
+use skutter::agents::prompt_report_in;
 
 /// Resolve `agent` via `prompt_report` under a temp project root, isolating from
 /// any host user-agents dir like `load_with_dirs`.
@@ -488,7 +488,7 @@ fn report_for(
     project_root: &std::path::Path,
     agent: &str,
     ctx: &PromptContext,
-) -> Option<entanglement_runtime::agents::AgentPromptReport> {
+) -> Option<skutter::agents::AgentPromptReport> {
     prompt_report_in(
         project_root,
         &crate::no_user(project_root),
@@ -590,14 +590,14 @@ fn prompt_report_includes_env_and_skill_index_for_every_agent() {
 // `inspect agents` support: resolve_registry provenance (#185)
 // ---------------------------------------------------------------------------
 
-use entanglement_runtime::agents::{resolve_registry_in, AgentLayer};
+use skutter::agents::{resolve_registry_in, AgentLayer};
 
 /// Resolve the full registry with provenance under temp user + project dirs,
 /// isolating from the host user-agents dir.
 fn resolve_with_dirs(
     user: Option<&std::path::Path>,
     project_root: &std::path::Path,
-) -> Vec<entanglement_runtime::agents::AgentResolution> {
+) -> Vec<skutter::agents::AgentResolution> {
     let user =
         UserLayer::Dir(user.map_or_else(|| project_root.join("no-such-user-dir"), Into::into));
     resolve_registry_in(

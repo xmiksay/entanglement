@@ -155,8 +155,7 @@ fn tempdir() -> tempfile::TempDir {
 /// Spawn a `Holly` + real tool executor rooted at `root` (mirrors
 /// `tests/propose_plan.rs`'s harness of the same name).
 fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>) -> Holly {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory,
         agents: profiles.clone(),

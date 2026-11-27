@@ -403,7 +403,7 @@ mod tests {
         let notices = Arc::new(Mutex::new(Vec::new()));
         let seen = notices.clone();
         let holly = Holly::spawn(EngineConfig {
-            agents: entanglement_runtime::agents::built_in_registry().expect("built-ins"),
+            agents: crate::agents::built_in_registry().expect("built-ins"),
             mode_ladder: entanglement_runtime::mode::BUILTIN_LADDER
                 .map(String::from)
                 .to_vec(),
@@ -477,7 +477,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let seen = calls.clone();
         let holly = Holly::spawn(EngineConfig {
-            agents: entanglement_runtime::agents::built_in_registry().expect("built-ins"),
+            agents: crate::agents::built_in_registry().expect("built-ins"),
             mode_ladder: entanglement_runtime::mode::BUILTIN_LADDER
                 .map(String::from)
                 .to_vec(),

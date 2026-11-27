@@ -161,8 +161,7 @@ async fn run(path: Path, policy: Policy) -> Run {
         sandbox: None,
         sandbox_network: false,
     };
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let tools = host_tools(dir.path.clone()).shared();
     let advertising = Arc::new(AdvertisingState::new());
     let holly = Holly::spawn(EngineConfig {

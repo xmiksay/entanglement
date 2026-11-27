@@ -20,12 +20,12 @@ use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
     GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
-use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use skutter::host::escape::escape_grant;
 use skutter::host::EscapeResolver;
 use skutter::host::{host_tools, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool};
+use skutter::skills::{load_registry_in, LoadSkillTool};
 use skutter::state::ExtraRootStore;
 
 // ADR-0227's unified binding path: FileChange from a script, the generated
@@ -115,6 +115,9 @@ mod session_skills;
 // ADR-0249: per-call tool grading and host script namespaces.
 #[path = "rhai/host_tools.rs"]
 mod host_tools;
+// #838: the shipped `rhai` skill's worked example runs.
+#[path = "rhai/skill_doc.rs"]
+mod skill_doc;
 
 /// `rhai`'s own permission grading resolves through the same session-mode
 /// route as any other tool (ADR-0207 stage 4b), and every binding through the
@@ -126,8 +129,8 @@ mod host_tools;
 /// that isn't specifically about mode grading.
 /// An empty user skills layer under `root`, so the host's real user skills
 /// never leak in (#773).
-fn no_user(root: &std::path::Path) -> entanglement_runtime::layers::UserLayer {
-    entanglement_runtime::layers::UserLayer::Dir(root.join("no-such-user-dir"))
+fn no_user(root: &std::path::Path) -> skutter::layers::UserLayer {
+    skutter::layers::UserLayer::Dir(root.join("no-such-user-dir"))
 }
 
 fn allow_all_table() -> Arc<ModeTable> {
@@ -429,8 +432,7 @@ fn spawn_with_rhai_escape(
 /// the same value to [`mode_table_for`] to build the mode that actually
 /// grades the test.
 fn one_profile(name: &str, _permission: PermissionProfile) -> AgentCatalog {
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let mut profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     profiles.insert(Agent {
         name: name.into(),
         description: String::new(),
@@ -1499,8 +1501,7 @@ async fn a_loaded_skill_never_restricts_a_rhai_binding() {
         },
     ]);
 
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>

@@ -49,7 +49,7 @@ pub fn inspect_skills(cwd: &Path, name: Option<&str>, disclosures: bool) -> Resu
 /// Render the exact roster the model is handed — the same
 /// [`crate::discover::skills_list`] text `list_skills` replies with, so what
 /// the author sees here is byte-for-byte what drives selection.
-pub(super) fn render_disclosures(disclosures: &[crate::system_prompt::SkillDisclosure]) -> String {
+pub(super) fn render_disclosures(disclosures: &[crate::skills::SkillDisclosure]) -> String {
     if disclosures.is_empty() {
         return "(no skills disclosed to the model — none discovered)\n".to_string();
     }

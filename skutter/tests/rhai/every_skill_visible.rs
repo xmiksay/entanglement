@@ -3,7 +3,7 @@
 //! script.
 
 use entanglement_core::Permission;
-use entanglement_runtime::skills::load_registry_in;
+use skutter::skills::load_registry_in;
 
 use super::launch_harness::{fixture, run_calls, table, Launch, Setup};
 use super::no_user;

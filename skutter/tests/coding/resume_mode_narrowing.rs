@@ -71,7 +71,7 @@ async fn resume_and_grade(explicit_mode: bool) -> (String, bool, usize) {
     std::fs::write(&path, LOG).unwrap();
     let records = read_path(&path).expect("load");
 
-    let agents = entanglement_runtime::agents::built_in_registry().expect("built-in agents");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents");
     let check = check_for_resume(&records, |n| agents.get(n).is_some()).expect("no gap");
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(DoneLlm) as Box<dyn Llm>),

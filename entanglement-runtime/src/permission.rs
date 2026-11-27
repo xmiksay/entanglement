@@ -231,9 +231,17 @@ mod tests {
         }
     }
 
+    fn three_agents() -> AgentCatalog {
+        let mut reg = AgentCatalog::default();
+        for name in ["general", "plan", "debug"] {
+            reg.insert(profile(name));
+        }
+        reg
+    }
+
     #[test]
     fn spawn_refusal_only_checks_target_existence() {
-        let reg = crate::agents::built_in_registry().expect("built-in agents must parse");
+        let reg = three_agents();
         // Every registered agent is a valid spawn target now (ADR-0207 §6) —
         // `general`, `plan`, and `debug` alike.
         assert!(spawn_refusal("general", &reg).is_none());
@@ -251,7 +259,7 @@ mod tests {
 
     #[test]
     fn spawn_refusal_permits_a_freshly_registered_agent() {
-        let mut reg = crate::agents::built_in_registry().expect("built-in agents must parse");
+        let mut reg = three_agents();
         reg.insert(profile("worker"));
         assert!(spawn_refusal("worker", &reg).is_none());
     }

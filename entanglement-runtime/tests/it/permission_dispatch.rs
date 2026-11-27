@@ -179,8 +179,7 @@ fn spawn_with_bash_call_using(input: &str, mode_table: Arc<ModeTable>) -> Holly 
             ..Default::default()
         },
     ]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -557,8 +556,7 @@ fn spawn_two_ask_bash_calls(command: &str) -> Holly {
         ..Default::default()
     };
     let scripted = Arc::new(vec![call("t1"), ok(), call("t2"), ok()]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -595,8 +593,7 @@ async fn unknown_tool_is_rejected_before_the_permission_ladder() {
         ..Default::default()
     };
     let scripted = Arc::new(vec![call, ok]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -751,8 +748,7 @@ fn spawn_two_read_calls_rooted(
         ..Default::default()
     };
     let scripted = Arc::new(vec![call("t1", input1), ok(), call("t2", input2), ok()]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -922,8 +918,7 @@ fn spawn_with_exec_tools_using(tool: &str, input: &str, mode_table: Arc<ModeTabl
             ..Default::default()
         },
     ]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1062,8 +1057,7 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
             ..Default::default()
         },
     ]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1233,8 +1227,7 @@ async fn session_grant_does_not_widen_to_a_compound_containing_the_granted_segme
         ..Default::default()
     };
     let scripted = Arc::new(vec![call("t1", "ls"), ok(), call("t2", "ls && pwd"), ok()]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
@@ -1357,8 +1350,7 @@ async fn mcp_enable_and_a_namespaced_mcp_tool_run_under_an_allow_all_mode() {
             ..Default::default()
         },
     ]);
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>

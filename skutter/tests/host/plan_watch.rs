@@ -87,8 +87,7 @@ fn text_response(text: &str) -> LlmResponse {
 /// before the watch can see anything.
 fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send + Sync>) -> Holly {
     std::fs::create_dir_all(root.join(".entanglement/plans")).unwrap();
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let cfg = EngineConfig {
         llm_factory,
         agents: profiles.clone(),

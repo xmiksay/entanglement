@@ -54,8 +54,7 @@ async fn recorded_at(seen: &Arc<Mutex<Vec<Vec<String>>>>, index: usize) -> Vec<S
 
 #[tokio::test]
 async fn advertised_tools_are_byte_identical_across_agents() {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     // Mirrors `main.rs`'s wiring: the constant `agent`/`agent_send` roster
     // joins the plain shared `tool_specs`, exactly like `ask_user`/
     // `update_tasks` — not a per-profile table keyed by the active agent.

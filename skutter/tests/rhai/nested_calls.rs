@@ -232,8 +232,7 @@ async fn a_skill_library_functions_bindings_are_nested_calls() {
     )
     .unwrap();
     let mut setup = Setup::new(table(Permission::Allow, &[], &[], 0), Launch::RunAll);
-    setup.skills =
-        entanglement_runtime::skills::load_registry_in(&root, &super::no_user(&root)).unwrap();
+    setup.skills = skutter::skills::load_registry_in(&root, &super::no_user(&root)).unwrap();
     let seen = run_calls(
         &root,
         &[("rhai", r#"{"script":"skill::peek::peek()"}"#)],

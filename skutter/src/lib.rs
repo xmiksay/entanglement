@@ -10,10 +10,19 @@
 // The moved modules name runtime modules as `crate::<name>`, exactly as they
 // did inside `entanglement-runtime`.
 use entanglement_runtime::{
-    agents, attendance, capability, discover, exec, exec_scope, file_change, frontmatter, jobs,
-    layers, mcp, mode, output, path_grading, permission, policy, rhai_trust, script_ops,
-    secret_env, skills, system_prompt, tool_names, tool_runner, tools,
+    attendance, capability, discover, env_date, exec, exec_scope, file_change, jobs, mcp, mode,
+    output, path_grading, permission, policy, rhai_trust, script_ops, secret_env, tool_names,
+    tool_runner, tools,
 };
+
+// File-based agent and skill definitions (#932): the layered dirs, the
+// built-in agents, the frontmatter parser and the system-prompt assembly
+// that bakes each agent's prompt at load.
+pub mod agents;
+mod frontmatter;
+pub mod layers;
+pub mod skills;
+pub mod system_prompt;
 
 // Per-purpose aux models and the session-title / action-narrator tasks
 // that ride them (#932).

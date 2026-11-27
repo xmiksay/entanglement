@@ -3,10 +3,21 @@
 //! of 33 times. Run one module via `cargo test -p entanglement-runtime --test it <mod>`.
 //! Suites that drive `skutter`'s host tools live in `skutter/tests/` (#968).
 
-/// An empty user definitions layer under `root`, so a test never reads the
-/// host's real user agents/skills (#773).
-pub fn no_user(root: &std::path::Path) -> entanglement_runtime::layers::UserLayer {
-    entanglement_runtime::layers::UserLayer::Dir(root.join("no-such-user-dir"))
+/// The three agents most suites spawn by name (`skutter`'s built-in roster,
+/// #932): `general`, `plan` (starting in the `plan` mode) and `debug`.
+pub fn agents() -> entanglement_core::AgentCatalog {
+    let mut catalog = entanglement_core::AgentCatalog::default();
+    for (name, default_mode) in [("general", None), ("plan", Some("plan")), ("debug", None)] {
+        catalog.insert(entanglement_core::Agent {
+            name: name.into(),
+            description: format!("the {name} agent"),
+            system_prompt: format!("You are the {name} agent."),
+            model: None,
+            provider: None,
+            default_mode: default_mode.map(String::from),
+        });
+    }
+    catalog
 }
 
 /// Poll `cond` until it holds or 10s pass (#815): a fixed sleep waiting on
@@ -76,7 +87,6 @@ mod stop_abort;
 mod stop_abort_inflight_cleanup;
 mod subagent_spawn;
 mod subagent_tenant_prefix;
-mod system_prompt_assembly;
 mod tool_mask;
 mod unattended_mode;
 mod unattended_reason;

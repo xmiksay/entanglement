@@ -131,8 +131,7 @@ pub(crate) fn spawn_wrapped(
     attendance: Attendance,
     wrap: impl FnOnce(Arc<dyn PermissionResolver>) -> Arc<dyn PermissionResolver>,
 ) -> Holly {
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let scripted = Arc::new(scripted);
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || {

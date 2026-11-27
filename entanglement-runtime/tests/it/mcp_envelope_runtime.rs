@@ -64,8 +64,7 @@ async fn run_one_call(name: &str, input: &str, agent: &str) -> Vec<OutEvent> {
         tool_calls: vec![],
         ..Default::default()
     };
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = crate::agents();
     let scripted = Arc::new(vec![ok, call]);
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(move || {

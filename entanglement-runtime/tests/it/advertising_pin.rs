@@ -93,8 +93,7 @@ pub fn harness(provider: &str, model: &str, script: Vec<LlmResponse>) -> Harness
             }) as Box<dyn Llm>
         })
     };
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let mut profiles = crate::agents();
     let mut general = profiles.get("general").cloned().expect("general profile");
     general.provider = Some(provider.into());
     general.model = Some(model.into());

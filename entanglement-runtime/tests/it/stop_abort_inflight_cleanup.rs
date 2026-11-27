@@ -112,9 +112,7 @@ async fn stop_aborted_request_id_is_not_stuck_in_flight_forever() {
     let mut reg = ToolRegistry::new();
     reg.register(SlowCountingBash { runs: runs.clone() });
     let _executor = ToolExecutor::builder(&holly, reg.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(crate::agents())
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
 

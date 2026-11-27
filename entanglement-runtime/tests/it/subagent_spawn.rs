@@ -123,8 +123,7 @@ fn config(make: impl Fn() -> SpawnPollLlm + Send + Sync + 'static) -> EngineConf
         llm_factory: Arc::new(move || Box::new(make()) as Box<dyn Llm>),
         // Core carries only `general` now (#201); spawn tests target `general`/
         // `plan`/`debug`, so the engine needs the full runtime trio.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     }
 }
@@ -278,8 +277,7 @@ async fn two_sub_agents_fan_out_and_both_answers_are_polled() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(FanOutLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let profiles = cfg.agents.clone();
@@ -344,8 +342,7 @@ async fn spawn_depth_is_bounded_and_refusal_is_relayed() {
     // session's mode `max_depth` refuses it. `ToolExecutor::builder`'s default
     // `ModeResolver` puts every session under `DEFAULT_MODE` ("build"),
     // whose built-in `max_depth` is 4.
-    let mut profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let mut profiles = crate::agents();
     profiles.insert(worker_profile());
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(RecursiveLlm) as Box<dyn Llm>),
@@ -497,8 +494,7 @@ impl Llm for ParallelFanOutLlm {
 fn fan_out_config(llm: fn() -> Box<dyn Llm>) -> Holly {
     let cfg = EngineConfig {
         llm_factory: Arc::new(llm),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let profiles = cfg.agents.clone();
@@ -605,8 +601,7 @@ async fn agent_blocks_and_returns_child_answer_in_one_call() {
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(BlockingAgentLlm) as Box<dyn Llm>),
         // Core carries only `build` now (#201); the spawn targets need the trio.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let profiles = cfg.agents.clone();
@@ -719,8 +714,7 @@ async fn agent_stop_while_parked_cancels_and_child_stays_pollable() {
             }) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the spawn target needs the trio.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let profiles = cfg.agents.clone();
@@ -853,8 +847,7 @@ async fn poll_zero_timeout_blocks_until_completion() {
             Box::new(ZeroTimeoutPollLlm { release: r.clone() }) as Box<dyn Llm>
         }),
         // Core carries only `build` now (#201); the spawn target needs the trio.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let profiles = cfg.agents.clone();
@@ -1193,8 +1186,7 @@ async fn plan_re_engages_its_general_child_with_agent_send() {
     // reaches the live child rather than being declined at dispatch.
     let cfg = EngineConfig {
         llm_factory: Arc::new(|| Box::new(SpawnThenSendLlm) as Box<dyn Llm>),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         ..EngineConfig::default()
     };
     let profiles = cfg.agents.clone();

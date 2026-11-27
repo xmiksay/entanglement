@@ -119,17 +119,14 @@ async fn read_tool_runs_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -198,17 +195,14 @@ async fn edit_tool_creates_file_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -305,15 +299,12 @@ async fn write_tool_creates_and_overwrites_through_engine_under_build_profile() 
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -426,15 +417,12 @@ async fn write_tool_denied_under_research_mode() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -515,15 +503,12 @@ async fn write_tool_denied_outside_plans_folder_under_plan_mode() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -595,15 +580,12 @@ async fn write_tool_allowed_in_plans_folder_under_plan_mode() {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -677,17 +659,14 @@ async fn bash_tool_runs_through_engine_under_build_profile() {
         tool_specs: tools.specs(),
         // Core carries only `build` now (#201); the engine needs the full trio to
         // resolve a `SetAgent`/`Spawn` to `plan`/`explore`.
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     // Core relocated execution to the runtime (#58): the executor answers the
     // ToolExec round-trip against the real host-tool registry.
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -757,15 +736,12 @@ async fn bash_non_zero_exit_is_not_is_error_through_engine_under_build_profile()
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn Llm>
         }),
         tool_specs: tools.specs(),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: skutter::agents::built_in_registry().expect("built-in agents must parse"),
         ..EngineConfig::default()
     };
     let holly = Holly::spawn(cfg);
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))

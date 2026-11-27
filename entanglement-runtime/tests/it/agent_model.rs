@@ -93,8 +93,7 @@ fn engine_config(model_arg: &'static str) -> EngineConfig {
         Arc::new(move || Box::new(SpawnModelLlm { model_arg }) as Box<dyn Llm>);
     EngineConfig {
         llm_factory: Arc::new(move || Box::new(SpawnModelLlm { model_arg }) as Box<dyn Llm>),
-        agents: entanglement_runtime::agents::built_in_registry()
-            .expect("built-in agents must parse"),
+        agents: crate::agents(),
         model_resolver: Some(Arc::new(move |_user, provider: &str, model: &str| {
             Ok(ResolvedModel {
                 provider: provider.into(),

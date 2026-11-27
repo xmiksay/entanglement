@@ -263,7 +263,7 @@ mod tests {
             description: "Review a file".into(),
             argument_hint: Some("<file>".into()),
             body: "Review $1".into(),
-            layer: entanglement_runtime::layers::Layer::Project,
+            layer: crate::layers::Layer::Project,
             source: "review.md".into(),
         }]
         .into_iter()

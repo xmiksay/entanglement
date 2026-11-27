@@ -18,9 +18,9 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use skutter::host::host_tools;
+use skutter::skills::{load_registry_in, LoadSkillTool};
 
 use crate::no_user;
 
@@ -174,9 +174,7 @@ async fn load_skill_then_read_a_substituted_ref() {
     };
     let holly = Holly::spawn(cfg);
     let _executor = ToolExecutor::builder(&holly, tools.shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(entanglement_core::PermissionProfile::new(
             entanglement_core::Permission::Allow,
         ))
@@ -280,8 +278,7 @@ async fn load_skill_ignores_a_mode_rule_naming_it() {
     // stage 4b): a Control tool is never graded, so this rule never even
     // runs. Named `"build"` so a fresh session picks it up as
     // `DEFAULT_MODE` with no `SetMode` call.
-    let profiles =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let profiles = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let mode = entanglement_runtime::mode::Mode {
         name: "build".to_string(),
         default: Permission::Allow,

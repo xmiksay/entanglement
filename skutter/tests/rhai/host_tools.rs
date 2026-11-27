@@ -100,7 +100,7 @@ fn spawn_rhai_with_ns(
             ..Default::default()
         },
     ]);
-    let agents = entanglement_runtime::agents::built_in_registry().expect("built-in agents parse");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents parse");
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(move || {
             Box::new(ScriptedLlm::new((*scripted).clone())) as Box<dyn entanglement_core::Llm>

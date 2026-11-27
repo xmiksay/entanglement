@@ -18,10 +18,10 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId, ToolCall,
 };
-use entanglement_runtime::agents::built_in_registry;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::policy::{ModeResolver, PermissionResolver};
 use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::agents::built_in_registry;
 use skutter::hooks::{wrap_host_tools, HookResolver, HookSpec, Hooks};
 use skutter::host::host_tools;
 use tokio::task::JoinHandle;

@@ -14,9 +14,9 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::agents::built_in_registry;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use serde_json::Value;
+use skutter::agents::built_in_registry;
 use skutter::hooks::{wrap_host_tools, HookSpec, Hooks};
 use skutter::host::host_tools;
 use tokio::sync::broadcast::Receiver;

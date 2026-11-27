@@ -8,16 +8,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::SkillLayer;
+use super::{SkillLayer, SKILL_FILE};
 use crate::layers::{Strictness, UserLayer};
 
 /// Embedded stock skills, parsed through the same loader as user/project files.
 /// `(filename, contents)` — the filename only feeds parse-error messages; the
 /// skill's identity is its frontmatter `name`.
 pub(super) const BUILT_INS: &[(&str, &str)] = &[("rhai.md", include_str!("rhai.md"))];
-
-/// The `SKILL.md` marker file that makes a directory a skill.
-pub(super) const SKILL_FILE: &str = "SKILL.md";
 
 /// A discovered `SKILL.md` *before* parsing: which layer it came from (#186), a
 /// display label for its origin (`built-in (rhai.md)` or the file path), the

@@ -68,8 +68,7 @@ fn engine(dir: &TempDir) -> Holly {
     let mut tools = host_tools(dir.path.clone());
     tools.register(LoadSkillTool::with_resolver(live.clone(), resolver.clone()));
     let tools = tools.shared();
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| {
             Box::new(ScriptedLlm::new(scripted())) as Box<dyn entanglement_core::Llm>

@@ -116,8 +116,7 @@ pub(super) async fn start(
         text: "ok".into(),
         ..Default::default()
     });
-    let agents =
-        entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents must parse");
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(move || Box::new(ScriptedLlm::new(scripted.clone())) as Box<dyn Llm>),
         agents: agents.clone(),

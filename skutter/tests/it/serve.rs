@@ -206,9 +206,7 @@ fn spawn_with_ask_user_call(question: &str) -> Holly {
     };
     let holly = Holly::spawn(cfg);
     let _executor = ToolExecutor::builder(&holly, ToolRegistry::new().shared())
-        .agents(
-            entanglement_runtime::agents::built_in_registry().expect("built-in agents must parse"),
-        )
+        .agents(skutter::agents::built_in_registry().expect("built-in agents must parse"))
         .base(PermissionProfile::new(Permission::Allow))
         .spawn();
     holly

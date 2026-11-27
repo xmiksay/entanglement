@@ -64,7 +64,7 @@ pub(crate) fn spawn_with(
     let script = Arc::new(Mutex::new(script));
     let cfg = EngineConfig {
         llm_factory: Arc::new(move || Box::new(Scripted(script.clone())) as Box<dyn Llm>),
-        agents: entanglement_runtime::agents::built_in_registry().unwrap(),
+        agents: skutter::agents::built_in_registry().unwrap(),
         file_reverter: Some(backups.reverter()),
         ..EngineConfig::default()
     };

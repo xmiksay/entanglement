@@ -84,7 +84,7 @@ impl Llm for Script {
 
 fn engine() -> (Holly, Requests) {
     let requests: Requests = Arc::default();
-    let agents = entanglement_runtime::agents::built_in_registry().expect("built-in agents");
+    let agents = skutter::agents::built_in_registry().expect("built-in agents");
     let r = requests.clone();
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(move || Box::new(Script(r.clone())) as Box<dyn Llm>),
