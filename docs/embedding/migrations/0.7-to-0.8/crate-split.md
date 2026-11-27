@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965)
+# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965, #966)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md).
 
@@ -116,3 +116,51 @@ resolver. What changes:
   `advertised`; any other embedder tool can now join the surface.
 - **Instead:** override `fn advertised(&self) -> bool { true }` on each
   tool the model should see directly; pass `&registry` to `build_surface`.
+
+## File-backed storage moves to `skutter` (#966)
+
+The library's policy and MCP modules no longer touch the filesystem or the
+config layer. Their defaults are in memory; `skutter` plugs in the managed
+files (`grants.yml`, `mcp-tokens.yml`, `mcp-tools.yml`, the `mcp:` section of
+`config.yml`) through the existing seams. Site and nexial implement
+`GrantStore`/`PermissionResolver` themselves and name none of the items
+below. What changes:
+
+- **Removed API:** the `entanglement_runtime::grants` module
+  (`FileGrantStore`, `GrantKey`); `policy::DefaultGrantStore`;
+  `config::McpTokenStore` (`config::mcp_tokens`); `config::save_mcp`
+  (`config::mcp_persist`); the `mcp::McpToolCache` struct with
+  `managed()`/`at()`.
+- **New API:** `policy::InMemoryGrantStore` (the executor builder's default,
+  as before); `mcp::McpToolCache` is now a trait (`lookup`, `record`) with
+  `mcp::InMemoryMcpToolCache`; `mcp::InMemoryTokenStore`;
+  `AvailableMcp::token_store`.
+- **Changed API:** `AvailableMcp::with_tool_cache` takes
+  `Arc<dyn McpToolCache>` and `with_token_store` `Arc<dyn TokenStore>`;
+  `tool_cache()` returns `&Arc<dyn McpToolCache>`. `mcp::oauth_ops::run`
+  takes the `Arc<dyn TokenStore>` to save, check and revoke in, and
+  `mcp::live::mcp_reconnect` the one to connect with.
+  `watch::LiveDefinitions::new` drops its `grants` argument and
+  `LiveDefinitions` its `grants` field; a reload no longer re-reads grants.
+- **Changed behaviour (library):** an `AvailableMcp` built without
+  `with_token_store` keeps OAuth credentials in memory — 0.7 read and wrote
+  the managed `mcp-tokens.yml` by default. Without `with_tool_cache` the
+  last-seen tool names last for the process (0.7's default cache was inert).
+  `mcp::live::mcp_add`/`mcp_remove` change only the in-memory
+  `ServerConfigs`; a config write failure can no longer fail an add or
+  remove.
+- **Changed behaviour (`skutter`):** `skutter::state::FileGrantStore`
+  re-reads `grants.yml` on every check, so a grant another instance recorded,
+  or a line deleted by hand, counts at once instead of at the next watcher
+  reload; a failed write keeps the grant in memory for the process.
+  `skutter::state::spawn_mcp_config_writer` writes `config.yml`'s `mcp:`
+  section on each successful `OutEvent::McpChanged`; a write failure is a
+  logged warning, where 0.7 reported it as the `McpChanged` error (with the
+  server already connected).
+- **Instead:** a head that wants grants, MCP credentials or last-seen tool
+  names to outlive the process implements `GrantStore`, `TokenStore` or
+  `McpToolCache` over its own storage and passes it to
+  `ToolExecutor::builder().grants(..)` / `AvailableMcp::with_token_store(..)`
+  / `with_tool_cache(..)`; one that wants a live `/mcp add|remove` to survive
+  a restart persists `ServerConfigs` on `OutEvent::McpChanged`. Drop the
+  `grants` argument from `LiveDefinitions::new`.

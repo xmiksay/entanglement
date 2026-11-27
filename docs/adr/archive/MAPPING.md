@@ -83,7 +83,7 @@ the code, never as a description of current behaviour — that is
 | [0049](0049-plan-task-tools-as-runtime-state-tools.md) | `update_plan`/`update_tasks` as runtime state tools | current; partly superseded by 0145; amended by 0142, 0207 | — |
 | [0050](0050-per-endpoint-connection-pool-retry-rate-limit.md) | Per-endpoint connection pool, rate-limit, and retry | current; amended by 0141, 0156, 0157; changed by #918 | — |
 | [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys (`tool(pattern)`) | current; changed by #916 | — |
-| [0052](0052-approval-scope-and-persisted-grants.md) | Approval scope (`Once \| Session \| Always`) + persisted tool grants | current | — |
+| [0052](0052-approval-scope-and-persisted-grants.md) | Approval scope (`Once \| Session \| Always`) + persisted tool grants | current; changed by #966 | — |
 | [0053](0053-invert-core-provider-seam.md) | Invert the core↔provider seam: provider owns the LLM ABI as a leaf crate | current | — |
 | [0054](0054-canonicalizing-symlink-safe-root-containment.md) | Canonicalizing, symlink-safe host-tool root containment | current | — |
 | [0055](0055-usage-cost-and-stop-reason-surfacing.md) | Usage/cost surfacing + normalized stop reason (`OutEvent::Usage`) | current | — |
@@ -110,12 +110,12 @@ the code, never as a description of current behaviour — that is
 | [0076](0076-per-session-dynamic-tool-specs.md) | Per-session dynamic tool specs (`EngineConfig.tool_spec_resolver`) | current; amended by 0190, 0204 | — |
 | [0077](0077-session-hibernation-evictable-resumable.md) | Session hibernation — evict in-memory state without tombstoning, resumable later | current; amended by 0168, 0208 (itself removed by #921), 0210 | — |
 | [0078](0078-per-turn-dynamic-system-prompt.md) | Per-turn dynamic system prompt (`EngineConfig.system_prompt_resolver`) | current | — |
-| [0079](0079-pluggable-permission-resolver-and-grant-store.md) | Pluggable `PermissionResolver` + `GrantStore` seams in the tool executor | current; changed by #964 | — |
+| [0079](0079-pluggable-permission-resolver-and-grant-store.md) | Pluggable `PermissionResolver` + `GrantStore` seams in the tool executor | current; changed by #964; changed by #966 | — |
 | [0080](0080-mcp-streamable-http-transport.md) | MCP streamable-HTTP transport with per-server headers/auth | current; amended by 0128, 0153 | — |
 | [0081](0081-per-profile-model-pinning-and-rebind-on-set-agent.md) | Per-agent-profile provider/model pinning, and rebind on `SetAgent` | current | — |
 | [0082](0082-single-shot-session-ops-and-persisted-compaction.md) | Single-shot session ops (`InMsg::Oneshot`) and persisted compaction | partly superseded by 0101 (in-place compaction; `InMsg::Oneshot` and `Compacted` stay) | — |
 | [0083](0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md) | In-app tool-allowlist editing materializes a user-layer override | superseded by 0207 (README still marked it amended) | — |
-| [0084](0084-runtime-live-reload-and-managed-file-locking.md) | Runtime-side live reload (inotify) and advisory locking for managed files | current | — |
+| [0084](0084-runtime-live-reload-and-managed-file-locking.md) | Runtime-side live reload (inotify) and advisory locking for managed files | current; changed by #966 | — |
 | [0085](0085-gemini-native-wire-and-opaque-provider-meta.md) | Native Gemini wire + opaque `provider_meta` on `ToolCall` | current | — |
 | [0086](0086-recordsink-pluggable-persistence-append-target.md) | `RecordSink` — pluggable persistence append target | current | — |
 | [0087](0087-two-stage-ctrl-c.md) | Two-stage Ctrl+C: clear inputs first, then quit | current | — |
@@ -128,7 +128,7 @@ the code, never as a description of current behaviour — that is
 | [0094](0094-reasoning-effort-and-per-profile-generation-persistence.md) | `reasoning_effort` model + per-profile generation persistence | current | — |
 | [0095](0095-tui-set-show-generation-persist-on-confirmation.md) | TUI `/set`/`/show` for generation parameters + persist-on-confirmation | current | — |
 | [0096](0096-dynamic-toolregistry-sharedregistry.md) | Dynamic `ToolRegistry`: `SharedRegistry` replaces value-ownership in the executor | current | — |
-| [0097](0097-live-mcp-server-management.md) | Live MCP server management: wire ops, engine-global routing, config persistence | current; amended by 0124 | — |
+| [0097](0097-live-mcp-server-management.md) | Live MCP server management: wire ops, engine-global routing, config persistence | current; amended by 0124; changed by #966 | — |
 | [0098](0098-rhai-json-yaml-loader-and-read-raw.md) | `rhai` JSON/YAML loader (`parse_json`/`to_json`/`parse_yaml`/`to_yaml`) and the `read_raw` binding | current; amended by 0227 | — |
 | [0099](0099-glob-grep-exclude-and-default-git-exclusion.md) | `glob`/`grep`: default `.git` exclusion + caller `exclude` patterns | current | — |
 | [0100](0100-tui-mcp-command.md) | TUI `/mcp` command — list, add, remove | current | — |
@@ -178,13 +178,13 @@ the code, never as a description of current behaviour — that is
 | [0144](0144-file-backed-shared-endpoint-state-across-instances.md) | File-backed shared endpoint state across instances | current; amended by 0156, 0213; changed by #918; changed by #929 | — |
 | [0145](0145-one-plan-tool-file-backed-plans-and-blocking-review-loop.md) | One plan tool: file-backed plans, a staleness guard, and a blocking review loop | current; amended by 0172, 0173, 0207 | — |
 | [0146](0146-ask-user-list-retract-replace.md) | `ask_user` gains list/retract/replace of open questions | current; amended by 0245; changed by #922 | — |
-| [0147](0147-multi-user-mode-embedder-api.md) | Multi-user mode: session-scoped identity + embedder-API per-user seams | current; partly superseded by 0181 | — |
+| [0147](0147-multi-user-mode-embedder-api.md) | Multi-user mode: session-scoped identity + embedder-API per-user seams | current; partly superseded by 0181; changed by #966 | — |
 | [0148](0148-glob-patterns-in-the-agent-tool-mask.md) | Glob patterns in the agent tool mask | superseded by 0207 | — |
 | [0149](0149-per-session-tool-overlay.md) | Per-session tool overlay — live injection past the agent mask | current; amended by 0163, 0177, 0207, 0226; removed by #923 | — |
 | [0150](0150-search-tool-cli-ergonomics.md) | Search-tool CLI ergonomics: directory auto-expansion, brace sets, and no silent empty results | current | — |
 | [0151](0151-settable-session-metadata.md) | Settable session display metadata (name + action) | current; amended by 0154, 0183 | — |
 | [0152](0152-provider-bundled-mcp-servers-three-state-enablement.md) | Provider-bundled MCP servers and the three-state enablement model | current; partly superseded by 0226; removed by #915 | — |
-| [0153](0153-mcp-server-oauth.md) | MCP server OAuth, and moving the MCP client mechanism into the provider crate | current; amended by 0157, 0182, 0184, 0187 | — |
+| [0153](0153-mcp-server-oauth.md) | MCP server OAuth, and moving the MCP client mechanism into the provider crate | current; amended by 0157, 0182, 0184, 0187; changed by #966 | — |
 | [0154](0154-per-purpose-auxiliary-models.md) | Per-purpose auxiliary models for side transformations | current; amended by 0158, 0183 | — |
 | [0155](0155-errored-subagent-turn-parks-for-steering.md) | An errored sub-agent turn parks the parent for steering, not unblocks it | current | — |
 | [0156](0156-normalize-and-stabilize-the-endpoint-pool-key.md) | Normalize and stabilize the endpoint pool key | current | — |
@@ -213,7 +213,7 @@ the code, never as a description of current behaviour — that is
 | [0179](0179-lazily-registered-built-ins-advertise-session-scoped.md) | Lazily-registered built-ins advertise session-scoped, like lazy MCP servers | superseded by 0192 | — |
 | [0180](0180-build-speed-trims-round-2.md) | Build-speed trims round 2: dependency cuts and integration-test consolidation | current | — |
 | [0181](0181-userid-leaves-the-runtime-crate.md) | `UserId` leaves the runtime crate — multi-user seams are embedder-side and session-keyed | current | — |
-| [0182](0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md) | MCP OAuth: device-code flow, and closing the cross-process refresh race | current; amended by 0153, 0187 | — |
+| [0182](0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md) | MCP OAuth: device-code flow, and closing the cross-process refresh race | current; amended by 0153, 0187; changed by #966 | — |
 | [0183](0183-narrate-purpose-and-per-user-aux-pins.md) | A `narrate` aux purpose; per-user aux pins stay embedder-side | current | — |
 | [0184](0184-provider-hosted-multi-user-seams.md) | Provider-hosted multi-user seams: per-user token store + relocated provider context | current; changed by #918; changed by #919 | — |
 | [0185](0185-rhai-joins-background-and-poll.md) | `rhai` joins `background`/`poll` — cooperative kill, own handle kind | current; amended by 0228 | — |
@@ -257,7 +257,7 @@ the code, never as a description of current behaviour — that is
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current; changed by #923 | — |
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923; changed by #964 | — |
-| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923; changed by #965 | — |
+| [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923; changed by #965; changed by #966 | — |
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920; changed by #964 | — |
 | [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 (itself removed by #926); changed by #920; changed by #923 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920; changed by #923 | — |

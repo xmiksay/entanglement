@@ -29,7 +29,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `live_skills(Arc<RwLock<Arc<SkillRegistry>>>)` | empty registry |
 | `base(PermissionProfile)` | allow-all ceiling (no clamp — same as an absent `permissions:`) |
 | `resolver(Arc<dyn PermissionResolver>)` | `ModeResolver` over the builder's final `perm_modes`/`mode_table`/`tools`/`base`, root-relative when `escape_root` is set |
-| `grants(Arc<dyn GrantStore>)` | **in-memory only** — `Always` grants never touch `grants.yml` (#747/#775) |
+| `grants(Arc<dyn GrantStore>)` | `InMemoryGrantStore` — `Always` grants last for the executor's lifetime; the library never writes a grants file (#966) |
 | `mode_table(Arc<ModeTable>)` | `ModeTable::builtin()` |
 | `perm_modes(..)` / `active(..)` | private maps. **A custom `.resolver(..)` (or sandbox resolver) that reads a mode map must get the same `Arc` via `.perm_modes(..)`** — otherwise the executor folds `ModeChanged` into its private map and your resolver silently grades from a map that never changes |
 | `escape_root(EscapeRoot)` | strict containment; plans resolve against the cwd |
@@ -41,11 +41,15 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `discovery(DiscoverySurface)` | `DiscoverySurface::default()` (private advertising state, empty MCP roster) |
 | `attendance(Attendance)` | private — nobody watches, so a mode's `question_timeout` alone decides. Share it with your heads: a head that answers cards registers a `Watcher` (`watch_all()`, or `watcher()` + `attend(&session)`) for as long as it is attached, and that session and its sub-agents then park every `Ask` with no deadline (ADR-0247); pass the same value to `serve::router` |
 
-**Persisted grants are opt-in.** A single-user head that wants `Always`
-approvals written to the managed `grants.yml` must say so —
-`.grants(Arc::new(DefaultGrantStore::load()))`, exactly as `skutter` does in
-`services.rs`. Leaving the setter out keeps grants for the executor's lifetime
-only.
+**Persisted grants are the head's.** The library keeps grants in memory; a
+head that wants `Always` approvals to outlive the process implements
+`GrantStore` over its own storage and passes it — `skutter` passes its
+file-backed `state::FileGrantStore` (the managed `grants.yml`) in
+`services.rs`. The same holds for MCP state: `AvailableMcp` keeps OAuth
+credentials and last-seen tool names in memory unless the head passes
+`.with_token_store(..)` / `.with_tool_cache(..)`, and a live `/mcp
+add|remove` changes only the in-memory `ServerConfigs` — persist it on
+`OutEvent::McpChanged` if you want it to survive a restart.
 
 **Undo/rewind is opt-in too** ([ADR-0212](../adr/archive/0212-undo-rewind-via-per-write-file-backups.md)).
 Build the file tools with backups and hand core the matching reverter, all

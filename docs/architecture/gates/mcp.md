@@ -100,7 +100,10 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     The redirect is caught by a one-request loopback listener hand-rolled on
     `tokio::net` (RFC 8252, bound to `127.0.0.1`, mismatched `state` refused
     outright — never `axum`, which must not reach the leaf crate). Credentials
-    live in the managed `mcp-tokens.yml` (`0600`, atomic + `fd-lock`ed like the
+    reach the transport only through the roster's `TokenStore`
+    (`AvailableMcp::with_token_store`; in memory by default, #966). `skutter`
+    keeps them in the managed `mcp-tokens.yml` (`state::McpTokenStore`;
+    `0600`, atomic + `fd-lock`ed like the
     sibling managed files in the managed-state dir, `ENTANGLEMENT_STATE_DIR`) **together
     with the resolved endpoints and client id**, so a later (lazy) connect skips
     discovery/registration entirely — those run only during an explicit
@@ -132,7 +135,7 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     `McpAuthChanged`'s interim event carries a `user_code` alongside
     `authorize_url` (the plain `verification_uri`) for every head to render. The
     **cross-process refresh race** ADR-0153 accepted for v1 is closed the same
-    ADR: `TokenStore::with_exclusive` lets `McpTokenStore` hold its file lock for
+    ADR: `TokenStore::with_exclusive` lets `skutter`'s `McpTokenStore` hold its file lock for
     the whole load→refresh→save section instead of just the write, so two
     `skutter` instances can no longer both redeem the same rotating refresh
     token — a losing racer picks up the winner's already-refreshed token instead

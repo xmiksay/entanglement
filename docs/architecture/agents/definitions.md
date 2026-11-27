@@ -196,7 +196,7 @@
   and `<root>/.entanglement/` (`notify`, debounced
   500ms so a burst of edits collapses into one reload) and, on change, re-runs the
   skill + agent loaders and swaps the result into **runtime-held mirrors**
-  (`watch::LiveDefinitions { agents, skills, agent_models, grants,
+  (`watch::LiveDefinitions { agents, skills, agent_models,
   mcp_capabilities, file_backups }`, built via `LiveDefinitions::new` +
   `with_file_backups`; the config's `undo:` block is re-applied onto
   `file_backups` on every change, #787) — never
@@ -225,13 +225,13 @@
   picked up once created (known v1 limit). Separately, every managed file —
   `grants.yml`, `agent-models.yml`, `agent-generation.yml`, `aux-models.yml`,
   `mcp-tokens.yml`, `extra-roots.yml`, the provider-key `.env`, and
-  `config.yml` itself for the surgical `mcp:` edits (`config::mcp_persist`) —
-  is advisory-locked across concurrent `skutter` instances via
+  `config.yml` itself for the surgical `mcp:` edits (`skutter`'s
+  `state::save_mcp`) — is advisory-locked across concurrent `skutter` instances via
   `config::lock::with_locked_file` (an `fd-lock` on a sibling `.lock` file): each
   write re-reads the current on-disk state under the lock and merges before
   writing, so a second instance's own concurrent update survives instead of being
-  clobbered by a write from stale in-memory state; `write_grants` moved onto the
-  shared `atomic_write`. A debounced `notify` firing is *not* on its own proof
+  clobbered by a write from stale in-memory state. The grants file needs no
+  reload: `skutter`'s store re-reads it on every check (#966). A debounced `notify` firing is *not* on its own proof
   that anything actually changed — on some filesystems a bare content `read()`
   of a watched file (which `reload()`'s own loaders do on every pass) is
   itself observable to `notify`, which without a guard makes the watcher

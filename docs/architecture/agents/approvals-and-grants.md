@@ -35,15 +35,16 @@
   `InMsg::Approve` carries a `scope: Once | Session | Always` (core enum, default
   `Once`, `skip_serializing_if` so a bare approve is wire-identical to the pre-#174
   shape — older heads omit it). Approval semantics stay runtime-only: a
-  `GrantStore` trait object (#311; the default `DefaultGrantStore` wraps the
-  managed-file `runtime::grants::FileGrantStore`, shared with its per-request
+  `GrantStore` trait object (#311; the library default is
+  `policy::InMemoryGrantStore`, `skutter` plugs in its file-backed
+  `skutter::state::FileGrantStore` (#966); shared with the per-request
   dispatch tasks) records the wider scopes keyed by an exact
   `(tool, argument)` — the same (root-relative, ✅ #485, ADR-0125) argument
   #173 resolves against, computed once in `dispatch` and threaded into the
   post-approval record rather than re-derived, so the pre-prompt lookup and
   the record provably share one key. **Mode-scoped** since
   [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
-  §8: `GrantKey` also carries the mode it was earned in and matches only that
+  §8: a grant also carries the mode it was earned in and matches only that
   mode exactly — a grant earned in `build` is inert in `research`, closing the
   old cross-agent leak where a grant earned under a permissive profile
   silently upgraded `Ask → Allow` under a restrictive one (a legacy
@@ -56,19 +57,20 @@
   `Ask` → `Allow`** — it never
   overrides a `Deny` (the ceiling still clamps first), is matched by exact equality
   (no pattern widening), is dropped on `SessionEnded` for `Session` scope, and is
-  never inherited by a sub-agent. `Session` lives in memory; `Always` persists to a
+  never inherited by a sub-agent. `Session` lives in memory. In the library
+  `Always` does too — the `ToolExecutor::builder` default, so an embedder or
+  a test never touches a file (#747, #966). `skutter` persists it to a
   **managed** file `<state dir>/grants.yml` (the managed-state dir,
   `${config_dir}/entanglement` unless `ENTANGLEMENT_STATE_DIR` relocates all
-  seven managed files, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `tool(arg)` rule keys,
-  loaded at startup and re-written on each new grant (`FileGrantStore::load_from` /
-  `DefaultGrantStore::load_from` take an explicit path, or `None` for an
-  in-memory-only store — the `ToolExecutor::builder` default every test
-  uses, so they never read or write the developer's real file, #747; the
-  real path is unreachable under `cfg(test)`). Like the provider-key env file
-  (#220) it sits *beside* `config.yml`, not inside it: the runtime rewrites it
+  seven managed files, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md)) — a top-level `grants:` list of `{mode, rule}` entries with
+  `tool(arg)` rule keys, merged under the file lock on each new grant and
+  re-read on every check, so another instance's grant (or a deleted line)
+  counts at once (`FileGrantStore::at` takes an explicit path, or `None` for
+  memory only). Like the provider-key env file
+  (#220) it sits *beside* `config.yml`, not inside it: `skutter` rewrites it
   freely, so it never clobbers the hand-edited, commented config. A missing/malformed
-  store loads empty and a write failure is logged — both fail *closed* (ask again),
-  the safe direction. The TUI modal offers `y` once / `s` session / `a` always /
+  file reads empty — fail *closed* (ask again), the safe direction; a write
+  failure is logged and the grant kept in memory for this process. The TUI modal offers `y` once / `s` session / `a` always /
   `n` reject / `e` edit-reason / `Esc` interrupt.
 - **Per-user permission ceiling + grants (#522, [ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md);
   reframed embedder-side by [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)/[ADR-0184](../../adr/archive/0184-provider-hosted-multi-user-seams.md)):**

@@ -81,10 +81,14 @@ both dispatch and model-advertised schemas with no engine restart.
   no restart. The `McpList` snapshot (`mcp::roster`) lists every registered
   server, connected or not, with its OAuth posture (unknown fields from old
   logs are ignored on deserialize).
-- **`config::save_mcp`** (`config/mcp_persist.rs`) persists a live add/remove
-  back to `config.yml`: a **surgical `serde_yaml::Value` edit** of just the
-  top-level `mcp` key (not the typed `Config`, which would drop unknown keys
-  under `deny_unknown_fields`), locked (§ADR-0084) and atomic. Unlike the
+- **Persistence is the head's** (#966): `mcp_add`/`mcp_remove` change only
+  the in-memory `ServerConfigs`. `skutter` writes it back to `config.yml`
+  from a subscriber (`state::spawn_mcp_config_writer`) on every successful
+  `OutEvent::McpChanged` — `state::save_mcp`, a **surgical
+  `serde_yaml::Value` edit** of just the top-level `mcp` key (not the typed
+  `Config`, which would drop unknown keys under `deny_unknown_fields`),
+  locked (§ADR-0084) and atomic. A write failure is logged; the live change
+  stands for the process. Unlike the
   managed sibling files (grants/agent-models/agent-generation/the provider-key
   env file), MCP servers stay part of the primary hand-edited `config.yml` —
   the surgical edit exists precisely to avoid disturbing whatever else
@@ -115,12 +119,14 @@ audits it). A retired `state:` key is an unknown-field parse error (#920);
 posture) with state `connected` / `available` / `auth required` (an OAuth
 server with no stored credential, with the `/mcp connect <name>` hint), and
 tool names — live for a connected server, else the **last-seen cache**
-(`mcp::McpToolCache`, the managed `<state dir>/mcp-tools.yml`, keyed by
-server name **and** transport target (`McpServerConfig::target()`: URL or
-command line) so a repointed name never shows the old endpoint's list).
-Every successful global connect — lazy, `/mcp add`, `/mcp connect` — records
-it (`record_last_seen`); a write failure is logged, never surfaced. The
-definitions watcher ignores that file.
+(the `mcp::McpToolCache` seam, keyed by server name **and** transport target
+(`McpServerConfig::target()`: URL or command line) so a repointed name never
+shows the old endpoint's list). The roster's default is in memory
+(`InMemoryMcpToolCache`, #966); `skutter` plugs in the managed
+`<state dir>/mcp-tools.yml` (`state::FileMcpToolCache`) so the next process
+lists it too. Every successful global connect — lazy, `/mcp add`, `/mcp
+connect` — records it (`record_last_seen`); a write failure is logged, never
+surfaced. The definitions watcher ignores that file.
 
 **`mcp_tools(name)`** is a read of one server's catalog — every tool with its
 JSON schema and a `call as: mcp {"server": …, "tool": …, "args": <minimal

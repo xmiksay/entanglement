@@ -61,9 +61,11 @@ and [ADR-0007](../adr/archive/0007-streaming-llm-and-provider-crate.md)): provid
   web-server crate (`make check-lean` gates both, §7); `reqwest` rides in
   transitively via core → provider.
 - **skutter** — the coding CLI (#931, `publish = false`): every head (`run`/
-  `pipe`/`tui`/`serve`), user slash commands, lifecycle hooks (#964), `inspect`,
+  `pipe`/`tui`/`serve`), user slash commands, lifecycle hooks (#964), the
+  file-backed grants/MCP-credential/MCP-tool-name stores and the `mcp:`
+  write-back behind the runtime's in-memory seams (#966), `inspect`,
   the log setup and `config set-key`, built on the runtime's public API only.
-  Its library (`serve`, `slash_commands`, `hooks`, `inspect`, `logging`) is
+  Its library (`serve`, `slash_commands`, `hooks`, `state`, `inspect`, `logging`) is
   what its integration tests drive; the binary holds the heads (`pipe`/`run`/`tui`, dispatched by
   `heads`), the clap surface (`args`) and the startup wiring (`providers`/
   `factories` → `engine_setup` → `boot` → `services`, #737).

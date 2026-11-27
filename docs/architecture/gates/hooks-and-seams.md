@@ -142,8 +142,9 @@ rhai, and plan/tasks tools.
   `Arc<Mutex<session→mode map>>` the executor folds `OutEvent::ModeChanged`
   into, resolves the tool's declared `Capability` against the mode's rules, and
   clamps the result to the config ceiling internally, so `resolve_effective`'s
-  outer chain-fold needs no separate `clamp_to_base` call. `DefaultGrantStore`
-  wraps the managed file store (`grants::FileGrantStore`). Every `rhai`
+  outer chain-fold needs no separate `clamp_to_base` call. The grant default
+  is `InMemoryGrantStore`; `skutter` passes its file-backed
+  `state::FileGrantStore` (#966). Every `rhai`
   binding call grades through this *same* resolver + ancestor chain — it runs
   the executor's own dispatch seam (ADR-0227).
 
@@ -154,11 +155,10 @@ rhai, and plan/tasks tools.
 `ToolRegistry` — the seam a live MCP add/remove (#4) needs to mutate the
 dispatch table without restarting the engine. An owned registry converts with
 `.shared()` (mirroring `.agents(catalog)` vs `.live_agents(shared)` for the
-agent catalog). The builder's grant store defaults to **in-memory** (#747/#775 —
-never reading or writing the managed `grants.yml`, so test callers can't touch
-the developer's real file); a production caller wanting persisted `Always`
-grants sets `.grants(Arc::new(DefaultGrantStore::load()))`, as `services.rs`
-does.
+agent catalog). The builder's grant store defaults to **in-memory**
+(`InMemoryGrantStore`, #747/#966 — the library never reads or writes a grants
+file); `skutter`'s `services.rs` sets
+`.grants(Arc::new(state::FileGrantStore::load()))` to persist `Always` grants.
 `ToolRegistry` itself gains `unregister`/`unregister_prefix`/`contains`/
 `names` alongside `register`.
 
