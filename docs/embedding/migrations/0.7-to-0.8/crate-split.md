@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965, #966, #962, #967)
+# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965, #966, #962, #967, #968)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md).
 
@@ -17,7 +17,8 @@ names anything below. What changes:
   `skutter`. Install it from a checkout: `make install`
   (`cargo install --path skutter --locked`).
 - **Removed features:** `cli`, `tui` and `serve`. The runtime's default
-  features are now `provider`, `mcp-http`, `rhai` and `web-fetch`, and no
+  features are now `provider`, `mcp-http`, `rhai` and `web-fetch` (#968
+  then drops `web-fetch`), and no
   feature pulls `clap`, `axum`, `crossterm`, `ratatui` or the TUI render
   stack (`make check-lean` gates the default build as well as
   `--no-default-features`).
@@ -78,14 +79,13 @@ changes:
   ancestor. They match the graded tool name (`read_raw` → `read`,
   `glob_json` → `glob`, `grep_json` → `grep`, a `call_grading` target), so a
   `tools: [read_raw]` filter never matches. `post_tool_use` is observe-only
-  telemetry: it fires on the `ToolOutput` of a host-tool call the runtime ran
-  (`ToolExec`, a measured `duration_ms`) — not a refused call, not a
-  script's nested calls, not the executor's own routes (`agent`, `poll`,
-  `ask_user`, … — as in 0.7) — and runs asynchronously after the result
-  folded back instead of before, on its own worker, so a formatter hook
-  races the agent's next call on the same file. Synchronous post hooks run
-  inside `skutter`'s own tools, script calls included, once host tools
-  (#968) and the file/exec bindings (#933) move there. Its `input` is still
+  telemetry. After #964 alone it fired on the `ToolOutput` of a host-tool
+  call the runtime ran, asynchronously; #968 changes that: it now runs
+  synchronously inside `skutter`'s own tools, before their result returns,
+  a script's calls included, and fires from the event stream only for any
+  other tool (an MCP server's) — see the #968 section below. Never for a
+  refused call or the executor's own routes (`agent`, `poll`, `ask_user`,
+  … — as in 0.7). Its `input` is still
   the workdir-rewritten one (`path_grading::rewrite`, now public).
   `user_prompt_submit` runs on the first event a prompt causes. Details:
   [hooks §9](../../../architecture/gates/hooks-and-seams.md).
@@ -248,7 +248,8 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   `config::aux_models::{AuxModelStore, Purpose}` → `aux_llm::…`;
   `config::undo::format_size` → `file_backup::format_size`.
 - **New API:** `extra_roots::AlwaysRoots` (`load`, `add`) and
-  `ExtraRootStore::with_always_roots(Arc<dyn AlwaysRoots>)`;
+  `ExtraRootStore::with_always_roots(Arc<dyn AlwaysRoots>)` (both removed
+  again by #968: the store is `skutter`'s);
   `layers::UserLayer::Empty` (the default) and `UserLayer::Home { home,
   config }`; `layers::candidate_dirs(root, kind, &UserLayer)` is public;
   `watch::spawn_debounced_watcher` is public (the one watch primitive left);
@@ -268,7 +269,8 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   `<data_dir>/entanglement/sessions`).
 - **Changed behaviour (library):** an `ExtraRootStore` without
   `with_always_roots` keeps `Always` escape-root grants for the process —
-  0.7 read and wrote `extra-roots.yml` by default. A loader given
+  0.7 read and wrote `extra-roots.yml` by default (superseded by #968: the
+  library has no `ExtraRootStore` at all). A loader given
   `UserLayer::default()` reads no user layer; 0.7's `FromEnv` read
   `ENTANGLEMENT_AGENTS_DIR`/`ENTANGLEMENT_SKILLS_DIR` or `~/.claude/<kind>`
   and `${config_dir}/entanglement/<kind>`. The library reads none of
@@ -283,8 +285,7 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
 - **Instead:** pass `UserLayer::Dir(path)` or `UserLayer::Home { home,
   config }` to the `*_in` loaders; build `PromptContext::load_with(root,
   &sessions)` and `SessionStore::at(dir)` (or `for_cwd(base, cwd)`); fill an
-  `AuxModelStore::in_memory(pins)` from your own storage; implement
-  `AlwaysRoots` over your storage to keep `Always` escape-root grants; build
+  `AuxModelStore::in_memory(pins)` from your own storage; build
   `BackupLimits`, `HttpAuth` and `TrustedFolders` from your own config; call
   `watch::spawn_debounced_watcher` for your own reloads. The scope warnings
   of the previous section are `skutter::config::Config`'s now.
