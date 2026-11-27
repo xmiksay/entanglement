@@ -37,7 +37,6 @@ mod discovery;
 mod expand;
 mod parse;
 
-pub use discovery::COMMANDS_DIR_ENV;
 pub use expand::{parse_invocation, render, render_with, split_args};
 
 /// Built-in TUI slash commands. A user command can never shadow one; the TUI

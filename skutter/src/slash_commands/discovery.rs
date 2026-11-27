@@ -10,11 +10,6 @@ use anyhow::{Context, Result};
 
 use crate::layers::{Layer, Strictness, UserLayer};
 
-/// Env var replacing the whole user commands layer (tests, non-XDG setups, and
-/// the cross-vendor opt-out — same contract as `ENTANGLEMENT_SKILLS_DIR`).
-/// The definitions watcher fingerprints the same dirs.
-pub use crate::user_dirs::COMMANDS_DIR_ENV;
-
 /// A discovered command file *before* parsing.
 #[derive(Debug)]
 pub(super) struct RawCommand {
