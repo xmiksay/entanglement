@@ -8,7 +8,7 @@ use entanglement_core::{InMsg, OutEvent, SessionId};
 
 use crate::attended_serve::{connect, first, send};
 use crate::support::approve;
-use entanglement_runtime::session_store::LogPayload;
+use skutter::session_store::LogPayload;
 
 use crate::attended_wake::{
     asleep_with_card, drain, errors, hibernate, list, served, served_with, Served,
@@ -305,7 +305,7 @@ async fn a_roots_prompt_behind_a_childs_listing_waits() {
 /// a listing then wakes nothing — no second resume, no `Error`.
 #[tokio::test]
 async fn a_root_resumed_elsewhere_is_not_woken_again() {
-    use entanglement_runtime::session_store::resume_with_mode;
+    use skutter::session_store::resume_with_mode;
     let s = served(false).await;
     let sid = SessionId::new("ws-elsewhere");
     let rid = asleep_with_card(&s, &sid).await;

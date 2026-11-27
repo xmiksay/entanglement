@@ -153,7 +153,7 @@ pub fn agent_detail(
     let build = || -> Result<Option<String>> {
         let skill_registry =
             skills::load_registry_in(cwd, &user.skills).context("loading skill definitions")?;
-        let ctx = PromptContext::load_with(cwd, sessions);
+        let ctx = PromptContext::load_with(cwd, sessions.scratch_dir().ok());
         let resolved = crate::agents::resolve_registry_in(cwd, &user.agents, &ctx, &skill_registry)
             .context("resolving agent registry")?;
         Ok(resolved
@@ -187,7 +187,7 @@ fn tui_prompt(cwd: &Path, user: &UserLayers, sessions: &SessionStore, agent: &st
     let build = || -> Result<String> {
         let skill_registry =
             skills::load_registry_in(cwd, &user.skills).context("loading skill definitions")?;
-        let ctx = PromptContext::load_with(cwd, sessions);
+        let ctx = PromptContext::load_with(cwd, sessions.scratch_dir().ok());
         let report =
             crate::agents::prompt_report_in(cwd, &user.agents, agent, &ctx, &skill_registry)
                 .context("assembling agent prompt")?
@@ -212,7 +212,7 @@ fn tui_agent_views(
     let build = || -> Result<(Vec<InspectItem>, String)> {
         let skill_registry =
             skills::load_registry_in(cwd, &user.skills).context("loading skill definitions")?;
-        let ctx = PromptContext::load_with(cwd, sessions);
+        let ctx = PromptContext::load_with(cwd, sessions.scratch_dir().ok());
         let resolved = crate::agents::resolve_registry_in(cwd, &user.agents, &ctx, &skill_registry)
             .context("resolving agent registry")?;
 

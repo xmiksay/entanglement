@@ -13,10 +13,10 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     MessageRole, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store::{pair_records, LogPayload, LogRecord, SessionStore};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
+use skutter::persistence::spawn_persistence_subscriber;
+use skutter::session_store::{pair_records, LogPayload, LogRecord, SessionStore};
 use tokio::sync::broadcast::Receiver;
 
 const WAIT: Duration = Duration::from_secs(5);

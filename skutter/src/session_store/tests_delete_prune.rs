@@ -3,9 +3,10 @@
 
 use super::*;
 use entanglement_core::OutEvent;
+use entanglement_core::SessionId;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Write a minimal `.jsonl` session file into `store` for `id`.
 fn write_session_file(store: &SessionStore, id: &SessionId) -> PathBuf {

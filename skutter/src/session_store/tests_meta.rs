@@ -3,6 +3,7 @@
 
 use super::*;
 use entanglement_core::OutEvent;
+use entanglement_core::SessionId;
 
 #[test]
 fn list_sessions_takes_the_last_session_meta_name() {

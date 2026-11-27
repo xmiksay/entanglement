@@ -29,7 +29,8 @@ use crate::system_prompt::PromptContext;
 pub fn inspect_agents(cwd: &Path, name: Option<&str>) -> Result<()> {
     let skill_registry = skills::load_registry_in(cwd, &crate::user_dirs::skills_layer())
         .context("loading skill definitions")?;
-    let ctx = PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd));
+    let ctx =
+        PromptContext::load_with(cwd, crate::user_dirs::session_store(cwd).scratch_dir().ok());
 
     let resolved = agents::resolve_registry_in(
         cwd,

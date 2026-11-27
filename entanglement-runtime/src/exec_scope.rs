@@ -1,14 +1,15 @@
 //! The `ToolExec` a running call belongs to (ADR-0212): the executor puts
-//! each dispatched call's seq in a task-local scope, and the per-write
-//! backups read it to name the change's exact log record. A scope rather
-//! than a parameter, so the `Tool` trait carries no bookkeeping argument and
-//! the executor never names the backups.
+//! each dispatched call's seq in a task-local scope, and an embedder's file
+//! tools read it to name the change's exact log record (`skutter`'s
+//! per-write backups, #932). A scope rather than a parameter, so the `Tool`
+//! trait carries no bookkeeping argument and the executor never names the
+//! backups.
 
 use std::future::Future;
 
 /// What the running call task tells a change about the `ToolExec` it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExecScope {
+pub enum ExecScope {
     /// The `ToolExec`'s seq: the change names its exact log record.
     Seq(u64),
     /// A switched background script's call (ADR-0241): the launch's
@@ -36,12 +37,12 @@ pub fn with_exec_seq<F: Future>(seq: u64, fut: F) -> impl Future<Output = F::Out
 /// `ToolExec`. Its seq, or its request id (repeating ids, ADR-0243), could
 /// name an unrelated record there, so the change is marked adopted and
 /// placed by its wall clock.
-#[cfg_attr(not(feature = "rhai"), allow(dead_code))]
-pub(crate) fn without_exec_seq<F: Future>(fut: F) -> impl Future<Output = F::Output> {
+pub fn without_exec_seq<F: Future>(fut: F) -> impl Future<Output = F::Output> {
     EXEC_SCOPE.scope(ExecScope::Adopted, fut)
 }
 
-pub(crate) fn current_exec_scope() -> Option<ExecScope> {
+/// The running call's scope, `None` outside a dispatched call.
+pub fn current_exec_scope() -> Option<ExecScope> {
     EXEC_SCOPE.try_with(|s| *s).ok()
 }
 

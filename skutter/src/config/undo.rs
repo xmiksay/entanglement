@@ -3,7 +3,7 @@
 //! into the library's `BackupLimits`, whose serde form owns the size grammar
 //! (bytes or e.g. `8MiB`); this module re-applies it on a config reload.
 
-use entanglement_runtime::file_backup::FileBackups;
+use crate::file_backup::FileBackups;
 
 use super::Config;
 
@@ -23,7 +23,7 @@ pub fn reapply(backups: &FileBackups, loaded: anyhow::Result<Config>) {
 
 #[cfg(test)]
 mod tests {
-    use entanglement_runtime::file_backup::{BackupLimits, DEFAULT_MAX_ROOT_BYTES};
+    use crate::file_backup::{BackupLimits, DEFAULT_MAX_ROOT_BYTES};
 
     use super::*;
 

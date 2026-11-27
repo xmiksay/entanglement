@@ -1,4 +1,4 @@
-use crate::session_store::{LogPayload, LogRecord, SessionStore};
+use crate::session_store::{LogPayload, LogRecord};
 use entanglement_core::{Holly, InMsg, OutEvent, SessionId};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use gap_writer::GapWriter;
 /// one method and inherits the tap's gap/lag handling instead of forking the
 /// whole subscriber.
 ///
-/// `append` is synchronous: the default [`FileSink`] writes one `writeln!`. A
+/// `append` is synchronous (`skutter`'s file sink writes one `writeln!`). A
 /// sink whose backing store can block (network, DB) must **not** block the tap —
 /// that starves the broadcast receiver and manufactures the very `Gap`
 /// tombstones this trait exists to avoid. Such a sink should put a bounded
@@ -77,30 +77,6 @@ fn public_error_summary(error: &anyhow::Error) -> String {
     cut
 }
 
-/// The default sink: appends to `{root_id}.jsonl` in a [`SessionStore`],
-/// preserving the original file-backed behavior.
-pub struct FileSink {
-    store: SessionStore,
-}
-
-impl FileSink {
-    pub fn new(store: SessionStore) -> Self {
-        Self { store }
-    }
-}
-
-impl RecordSink for FileSink {
-    fn append(&self, root: &SessionId, record: &LogRecord) -> anyhow::Result<()> {
-        self.store.append(root, record)
-    }
-
-    fn touch(&self, root: &SessionId) {
-        if let Err(e) = self.store.touch(root) {
-            tracing::warn!(%root, "could not refresh the session log's retention clock: {e:#}");
-        }
-    }
-}
-
 /// Records a [`LogPayload::Gap`] tombstone into every known root session
 /// (via the [`GapWriter`], so a tombstone the sink refuses stays pending).
 ///
@@ -134,8 +110,9 @@ fn record_gap(
     }
 }
 
-/// Spawns a persistence subscriber that logs both inbound `InMsg` and outbound
-/// `OutEvent` to disk, making each root session a self-contained resumable file.
+/// Spawns the persistence tap: it hands every inbound `InMsg` and outbound
+/// `OutEvent` to `sink`, routed to its root session, so each root's records
+/// form one self-contained resumable log.
 ///
 /// It subscribes to the outbound event stream *and* the inbound message fan-out
 /// (`holly.subscribe_inbound()`), so replay reconstructs user turns from the
@@ -144,7 +121,7 @@ fn record_gap(
 ///
 /// `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat).
 /// `InMsg::Spawn` itself is never appended verbatim — persisting it the moment it
-/// arrives would create a stray single-line child file (`roots` can't resolve the
+/// arrives would start a stray one-record child log (`roots` can't resolve the
 /// child to its parent's root until the child's `SessionStarted` shows up).
 /// Instead its `prompt` is cached (`pending_spawn_prompts`) and, once that
 /// `SessionStarted` is observed and `roots` correctly resolves the child, a
@@ -159,30 +136,19 @@ fn record_gap(
 /// are skipped too (#160).
 ///
 /// A `roots` map, folded from `SessionStarted { root, parent }`, routes every
-/// record (root + spawned children) into the **root's** `{root_id}.jsonl`. Before
+/// record (root + spawned children) to the **root's** log. Before
 /// `SessionStarted` is seen the message's own session id is used as a fallback —
 /// the first prompt arrives before its `SessionStarted`, but for a root session
-/// the id is identical so the record lands in the same file either way.
+/// the id is identical so the record lands in the same log either way.
 ///
 /// A session keeps logging to the root it started under even after core
 /// re-links it under a compaction successor (`OutEvent::ParentChanged`,
 /// ADR-0234): moving its history would mean re-reading the sink. Instead the
-/// adopting root gets a [`LogPayload::Adopted`] pointer, which
-/// [`SessionStore::read_tree`] follows on resume.
-pub fn spawn_persistence_subscriber(
-    holly: &Holly,
-    store: SessionStore,
-) -> tokio::task::JoinHandle<()> {
-    spawn_persistence_subscriber_with_sink(holly, Arc::new(FileSink::new(store)))
-}
-
-/// Same tap as [`spawn_persistence_subscriber`], but appends every record
-/// through a caller-supplied [`RecordSink`] instead of the default file store.
+/// adopting root gets a [`LogPayload::Adopted`] pointer for a resume to
+/// follow.
 ///
-/// All the event-sourcing logic — routing each record to its root session and
-/// tombstoning lost records (broadcast lag *and* a failed `append`) as `Gap`s —
-/// lives here, so every sink inherits it. The
-/// file-backed path is just this function with a [`FileSink`].
+/// Routing and tombstoning lost records (broadcast lag *and* a failed
+/// `append`) as `Gap`s live here, so every sink inherits them.
 pub fn spawn_persistence_subscriber_with_sink(
     holly: &Holly,
     sink: Arc<dyn RecordSink>,

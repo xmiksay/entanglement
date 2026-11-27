@@ -10,9 +10,9 @@
 // The moved modules name runtime modules as `crate::<name>`, exactly as they
 // did inside `entanglement-runtime`.
 use entanglement_runtime::{
-    agents, attendance, capability, discover, exec, file_backup, file_change, frontmatter, jobs,
-    layers, mcp, mode, output, path_grading, permission, policy, rhai_trust, secret_env,
-    session_store, skills, system_prompt, tool_names, tool_runner, tools,
+    agents, attendance, capability, discover, exec, exec_scope, file_change, frontmatter, jobs,
+    layers, mcp, mode, output, path_grading, permission, policy, rhai_trust, script_ops,
+    secret_env, skills, system_prompt, tool_names, tool_runner, tools,
 };
 
 // Per-purpose aux models and the session-title / action-narrator tasks
@@ -20,6 +20,12 @@ use entanglement_runtime::{
 pub mod aux_llm;
 pub mod narrate;
 pub mod session_title;
+// The on-disk session store, its file-backed persistence sink, the
+// `ReplayFrom` answerer over it and the per-write backups beside it (#932).
+pub mod file_backup;
+pub mod history;
+pub mod persistence;
+pub mod session_store;
 // The layered `config.yml`, the managed state files' paths and the key
 // writer (#967): read by `skutter`, never by the library.
 pub mod config;

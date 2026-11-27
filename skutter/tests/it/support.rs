@@ -214,3 +214,38 @@ pub(crate) fn approve(sid: &SessionId, request_id: &str) -> InMsg {
         run_all: false,
     }
 }
+
+/// `sid`'s next event, whatever it is.
+pub(crate) async fn next_of(sub: &mut Receiver<OutEvent>, sid: &SessionId) -> OutEvent {
+    loop {
+        let ev = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .expect("an event arrives")
+            .expect("the engine is up");
+        if ev.session() == Some(sid) {
+            return ev;
+        }
+    }
+}
+
+/// Whether the echoing `bash` ran `input`.
+pub(crate) fn ran(events: &[OutEvent], input: &str) -> bool {
+    events.iter().any(
+        |e| matches!(e, OutEvent::ToolOutput { output, .. } if *output == format!("ran: {input}")),
+    )
+}
+
+/// Collect `sid`'s events until `Done`, bounded by an idle timeout.
+pub(crate) async fn collect(mut sub: Receiver<OutEvent>, sid: &SessionId) -> Vec<OutEvent> {
+    let mut out = Vec::new();
+    while let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_secs(3), sub.recv()).await {
+        if ev.session() == Some(sid) {
+            let done = matches!(ev, OutEvent::Done { .. });
+            out.push(ev);
+            if done {
+                break;
+            }
+        }
+    }
+    out
+}

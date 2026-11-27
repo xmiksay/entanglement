@@ -1,5 +1,6 @@
 use super::listing::FIRST_PROMPT_MAX;
 use super::*;
+use entanglement_core::SessionId;
 use entanglement_core::{InMsg, OutEvent};
 use std::{fs::OpenOptions, io::Write};
 

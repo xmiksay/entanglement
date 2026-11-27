@@ -45,12 +45,11 @@ mod date;
 pub mod discover;
 pub mod env_date;
 pub mod exec;
-// The running call's `ToolExec` seq, read by the per-write backups.
+// The running call's `ToolExec` seq, which an embedder's file tools read to
+// tie a change to its log record (`skutter`'s per-write backups).
 pub mod exec_scope;
-pub mod file_backup;
 pub mod file_change;
 pub mod frontmatter;
-pub mod history;
 // Host script namespaces for embedders (ADR-0249).
 pub mod host_ns;
 // The credentialed-`http()` gate (ADR-0227) — shared by the `http` tool and

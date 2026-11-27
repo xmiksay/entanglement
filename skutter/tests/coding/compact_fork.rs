@@ -16,10 +16,10 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmEvent, LlmRequest, LlmResponse,
     LlmStream, OutEvent, SessionId, StopReason, Usage,
 };
-use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store::SessionStore;
 use futures::stream;
 use futures::StreamExt;
+use skutter::persistence::spawn_persistence_subscriber;
+use skutter::session_store::SessionStore;
 
 /// A scripted reply queue that also records each request's messages, so the
 /// test can assert what the engine sent to the model.

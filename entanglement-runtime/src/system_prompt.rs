@@ -39,8 +39,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::session_store::SessionStore;
-
 /// Env var pointing at an explicit shared-preamble file (overrides discovery).
 const PREAMBLE_FILE_ENV: &str = "ENTANGLEMENT_PREAMBLE_FILE";
 /// Env var pointing at an explicit project-brief file (overrides discovery).
@@ -80,15 +78,15 @@ pub struct EnvBlock {
 }
 
 impl EnvBlock {
-    /// Snapshot the environment for `root` (platform/date always known; the
-    /// scratch dir is `sessions`' own, best-effort — `None` if it can't be
-    /// created, e.g. the data dir is unavailable).
-    pub fn detect(root: &Path, sessions: &SessionStore) -> Self {
+    /// Snapshot the environment for `root` (platform/date always known;
+    /// `scratch` is `None` when the session store has none, e.g. its data dir
+    /// is unavailable).
+    pub fn detect(root: &Path, scratch: Option<PathBuf>) -> Self {
         Self {
             root: root.to_path_buf(),
             platform: std::env::consts::OS.to_string(),
             date: crate::date::today_utc(),
-            scratch: sessions.scratch_dir().ok(),
+            scratch,
         }
     }
 
@@ -157,9 +155,9 @@ pub struct PromptPart {
 impl PromptContext {
     /// Discover the composition inputs for `root`: the shared preamble (built-in
     /// default unless a file overrides it), the project brief (if a brief file
-    /// exists), the generated environment block naming `sessions`' scratch
-    /// dir, and the tool conventions.
-    pub fn load_with(root: &Path, sessions: &SessionStore) -> Self {
+    /// exists), the generated environment block naming the `scratch` dir, and
+    /// the tool conventions.
+    pub fn load_with(root: &Path, scratch: Option<PathBuf>) -> Self {
         let preamble = load_preamble();
         let brief = load_brief(root);
         // Tie each source to actual presence: an override file that read empty
@@ -171,7 +169,7 @@ impl PromptContext {
         Self {
             preamble,
             brief,
-            env: Some(EnvBlock::detect(root, sessions)),
+            env: Some(EnvBlock::detect(root, scratch)),
             tool_conventions: Some(TOOL_CONVENTIONS),
             preamble_source,
             brief_path,

@@ -93,8 +93,10 @@ impl LiveDefinitions {
 pub(super) fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
     let new_skills = crate::skills::load_registry_in(cwd, &crate::user_dirs::skills_layer())?;
     let prompt_ctx = match &live.sessions {
-        Some(sessions) => PromptContext::load_with(cwd, sessions),
-        None => PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd)),
+        Some(sessions) => PromptContext::load_with(cwd, sessions.scratch_dir().ok()),
+        None => {
+            PromptContext::load_with(cwd, crate::user_dirs::session_store(cwd).scratch_dir().ok())
+        }
     };
     let mut new_profiles = crate::agents::load_registry_in(
         cwd,

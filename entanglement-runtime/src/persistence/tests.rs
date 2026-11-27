@@ -1,13 +1,13 @@
 //! Tests for the persistence tap (split out under the 400-line cap).
 
 use super::*;
-use crate::session_store::{integrity_gap, SessionStore};
+use crate::session_store::integrity_gap;
 use entanglement_core::PersistenceSignal;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
 /// A [`RecordSink`] that captures every `(root, record)` it is handed, so a
-/// test can assert an embedder sink sees the exact stream the file sink does.
+/// test can assert what an embedder sink is handed.
 #[derive(Default)]
 struct RecordingSink {
     records: Mutex<Vec<(SessionId, LogRecord)>>,
@@ -35,43 +35,45 @@ fn roots_map(pairs: &[(&str, &str)]) -> HashMap<SessionId, SessionId> {
         .collect()
 }
 
+/// A writer over a fresh [`RecordingSink`], handed back alongside it.
+fn recording_writer() -> (GapWriter, Arc<RecordingSink>) {
+    let sink = Arc::new(RecordingSink::default());
+    let writer = GapWriter::new(sink.clone(), PersistenceSignal::detached());
+    (writer, sink)
+}
+
+/// The records `sink` was handed for `root`.
+fn records_of(sink: &RecordingSink, root: &str) -> Vec<LogRecord> {
+    let records = sink.records.lock().unwrap();
+    records
+        .iter()
+        .filter(|(r, _)| r.0 == root)
+        .map(|(_, record)| record.clone())
+        .collect()
+}
+
 #[test]
 fn record_gap_writes_tombstone_to_each_known_root() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let store = SessionStore::at(temp.path());
-    let root_a = SessionId::new("root-a");
-    let root_b = SessionId::new("root-b");
-    for r in [&root_a, &root_b] {
-        store
-            .append(
-                r,
-                &LogRecord::new(r.clone(), LogPayload::In(InMsg::prompt(r.clone(), "hi"))),
-            )
-            .expect("append");
-    }
-
     // A child routes into root-a; both roots also map to themselves.
     let roots = roots_map(&[
         ("child", "root-a"),
         ("root-a", "root-a"),
         ("root-b", "root-b"),
     ]);
-    record_gap(&mut file_writer(&store), &roots, 7, "outbound");
+    let (mut writer, sink) = recording_writer();
+    record_gap(&mut writer, &roots, 7, "outbound");
 
-    assert_eq!(integrity_gap(&store.read(&root_a).expect("read")), Some(7));
-    assert_eq!(integrity_gap(&store.read(&root_b).expect("read")), Some(7));
+    assert_eq!(integrity_gap(&records_of(&sink, "root-a")), Some(7));
+    assert_eq!(integrity_gap(&records_of(&sink, "root-b")), Some(7));
 }
 
 #[test]
 fn record_gap_dedups_sessions_sharing_a_root() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let store = SessionStore::at(temp.path());
-    let root = SessionId::new("root");
-
     let roots = roots_map(&[("root", "root"), ("child1", "root"), ("child2", "root")]);
-    record_gap(&mut file_writer(&store), &roots, 3, "inbound");
+    let (mut writer, sink) = recording_writer();
+    record_gap(&mut writer, &roots, 3, "inbound");
 
-    let records = store.read(&root).expect("read");
+    let records = records_of(&sink, "root");
     let gaps = records
         .iter()
         .filter(|r| matches!(r.payload, LogPayload::Gap { .. }))
@@ -81,7 +83,7 @@ fn record_gap_dedups_sessions_sharing_a_root() {
 }
 
 #[tokio::test]
-async fn forced_lag_hands_a_custom_sink_the_same_gap_tombstones_as_the_file() {
+async fn forced_lag_hands_the_sink_one_gap_tombstone_per_root() {
     // Force a *real* broadcast lag to derive the dropped count the tap would
     // see, rather than hardcoding it: a capacity-2 channel overflowed by 5
     // sends drops 3 before the first recv.
@@ -99,58 +101,35 @@ async fn forced_lag_hands_a_custom_sink_the_same_gap_tombstones_as_the_file() {
         ("child", "root-a"),
         ("root-b", "root-b"),
     ]);
+    let (mut writer, recording) = recording_writer();
+    record_gap(&mut writer, &roots, dropped, "outbound");
 
-    // The file sink writes the tombstones to disk; the recording sink is the
-    // stand-in embedder target. Both go through the identical lag code path.
-    let temp = tempfile::tempdir().expect("temp dir");
-    let store = SessionStore::at(temp.path());
-    let mut file_sink = file_writer(&store);
-    let recording = Arc::new(RecordingSink::default());
-    let mut recording_writer = GapWriter::new(recording.clone(), PersistenceSignal::detached());
-
-    record_gap(&mut file_sink, &roots, dropped, "outbound");
-    record_gap(&mut recording_writer, &roots, dropped, "outbound");
-
-    // The recording sink saw exactly one Gap per unique root, all carrying the
-    // forced dropped count.
+    // The sink saw exactly one Gap per unique root, all carrying the forced
+    // dropped count.
     let captured = recording.records.lock().unwrap();
     let mut captured_roots: Vec<String> = captured
         .iter()
         .map(|(root, record)| {
             assert!(
                 matches!(record.payload, LogPayload::Gap { dropped: d } if d == dropped),
-                "recording sink got a non-Gap record: {record:?}"
+                "the sink got a non-Gap record: {record:?}"
             );
             root.to_string()
         })
         .collect();
     captured_roots.sort();
     assert_eq!(captured_roots, vec!["root-a", "root-b"]);
-
-    // And what the file sink persisted matches: resume refuses on both roots.
-    for r in [SessionId::new("root-a"), SessionId::new("root-b")] {
-        assert_eq!(integrity_gap(&store.read(&r).expect("read")), Some(dropped));
-    }
 }
 
 #[test]
 fn record_gap_with_no_known_roots_writes_nothing() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let store = SessionStore::at(temp.path());
     let roots: HashMap<SessionId, SessionId> = HashMap::new();
-
-    record_gap(&mut file_writer(&store), &roots, 5, "outbound");
-
-    let dir = store.dir().expect("store dir");
-    let count = std::fs::read_dir(&dir).expect("read_dir").count();
-    assert_eq!(count, 0, "no root known → no file written");
-}
-
-fn file_writer(store: &SessionStore) -> GapWriter {
-    GapWriter::new(
-        Arc::new(FileSink::new(store.clone())),
-        PersistenceSignal::detached(),
-    )
+    let (mut writer, sink) = recording_writer();
+    record_gap(&mut writer, &roots, 5, "outbound");
+    assert!(
+        sink.records.lock().unwrap().is_empty(),
+        "no root known → nothing written"
+    );
 }
 
 /// Fails the append calls whose 0-based index is in `fail`, storing the rest.

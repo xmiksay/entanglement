@@ -17,10 +17,10 @@ use entanglement_core::{
 use entanglement_runtime::agents::load_registry_in;
 use entanglement_runtime::layers::UserLayer;
 use entanglement_runtime::mcp::McpCapabilityIndex;
-use entanglement_runtime::session_store::SessionStore;
 use entanglement_runtime::system_prompt::PromptContext;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
+use skutter::session_store::SessionStore;
 
 // Every loader call injects its user layer (`UserLayer::Dir`), so these tests
 // need no env lock and never read the host's real user agents (#773).
@@ -504,7 +504,9 @@ fn prompt_report_reports_builtin_source_and_prompt() {
     let empty = tempfile::tempdir().unwrap();
     let ctx = PromptContext::load_with(
         empty.path(),
-        &SessionStore::at(empty.path().join(".sessions")),
+        SessionStore::at(empty.path().join(".sessions"))
+            .scratch_dir()
+            .ok(),
     );
     let report = report_for(empty.path(), "general", &ctx).expect("general resolves");
     assert_eq!(report.source, "built-in (general.md)");
@@ -537,7 +539,9 @@ fn prompt_report_unknown_agent_is_none() {
     let empty = tempfile::tempdir().unwrap();
     let ctx = PromptContext::load_with(
         empty.path(),
-        &SessionStore::at(empty.path().join(".sessions")),
+        SessionStore::at(empty.path().join(".sessions"))
+            .scratch_dir()
+            .ok(),
     );
     assert!(report_for(empty.path(), "does-not-exist", &ctx).is_none());
 }
@@ -552,7 +556,9 @@ fn prompt_report_prefers_project_definition() {
     );
     let ctx = PromptContext::load_with(
         project.path(),
-        &SessionStore::at(project.path().join(".sessions")),
+        SessionStore::at(project.path().join(".sessions"))
+            .scratch_dir()
+            .ok(),
     );
     let report = report_for(project.path(), "general", &ctx).expect("general resolves");
     // The project file wins over the embedded built-in (later layer).
@@ -570,7 +576,9 @@ fn prompt_report_includes_env_and_skill_index_for_every_agent() {
     let empty = tempfile::tempdir().unwrap();
     let ctx = PromptContext::load_with(
         empty.path(),
-        &SessionStore::at(empty.path().join(".sessions")),
+        SessionStore::at(empty.path().join(".sessions"))
+            .scratch_dir()
+            .ok(),
     );
     let report = report_for(empty.path(), "debug", &ctx).expect("debug resolves");
     assert!(report.parts.iter().any(|p| p.label == "environment"));

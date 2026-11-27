@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use entanglement_core::{Holly, InMsg, OutEvent, Permission, SessionId};
-use entanglement_runtime::persistence::RecordSink;
-use entanglement_runtime::session_store::{LogPayload, LogRecord};
 use entanglement_runtime::tool_names::RHAI_TOOL;
+use skutter::persistence::RecordSink;
+use skutter::session_store::{LogPayload, LogRecord};
 
 use super::unified_harness::{run, start, Setup};
 use super::TempDir;

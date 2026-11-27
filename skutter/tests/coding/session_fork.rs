@@ -8,8 +8,8 @@ use std::time::Duration;
 use entanglement_core::{
     content_text, session::Session, EngineConfig, Holly, InMsg, OutEvent, SessionId,
 };
-use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store::{pair_records, LogPayload, LogRecord, SessionStore};
+use skutter::persistence::spawn_persistence_subscriber;
+use skutter::session_store::{pair_records, LogPayload, LogRecord, SessionStore};
 use tokio::sync::broadcast::Receiver;
 
 async fn until(sub: &mut Receiver<OutEvent>, pred: impl Fn(&OutEvent) -> bool) -> OutEvent {

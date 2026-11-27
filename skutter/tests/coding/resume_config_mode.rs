@@ -12,7 +12,7 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId,
 };
-use entanglement_runtime::session_store::{check_for_resume, read_path, resume_with_mode};
+use skutter::session_store::{check_for_resume, read_path, resume_with_mode};
 
 struct DoneLlm;
 #[async_trait]

@@ -72,8 +72,10 @@ pub(crate) async fn boot(
     // core's own copy (built into `engine_config` below) has no such seam.
     let live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>> =
         Arc::new(RwLock::new(skill_registry.clone()));
-    let prompt_ctx =
-        system_prompt::PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd));
+    let prompt_ctx = system_prompt::PromptContext::load_with(
+        cwd,
+        crate::user_dirs::session_store(cwd).scratch_dir().ok(),
+    );
     // The MCP capability index (#426): config-side `capabilities:` hints on
     // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission key alongside the
     // fixed built-in set — computed once here (like the ceiling permission

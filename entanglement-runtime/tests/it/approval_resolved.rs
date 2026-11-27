@@ -138,13 +138,22 @@ async fn a_stopped_card_is_resolved_as_stopped() {
 /// so a resumed head's view (rebuilt from the log) drops the card too.
 #[tokio::test]
 async fn the_end_is_logged_after_the_card() {
-    use entanglement_runtime::persistence::spawn_persistence_subscriber;
-    use entanglement_runtime::session_store::{LogPayload, SessionStore};
+    use entanglement_runtime::persistence::{spawn_persistence_subscriber_with_sink, RecordSink};
+    use entanglement_runtime::session_store::{LogPayload, LogRecord};
 
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let store = SessionStore::at(tmp.path());
+    /// Keeps every record the tap hands it, in order.
+    #[derive(Default)]
+    struct Log(std::sync::Mutex<Vec<LogRecord>>);
+    impl RecordSink for Log {
+        fn append(&self, _root: &SessionId, record: &LogRecord) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(record.clone());
+            Ok(())
+        }
+    }
+
+    let log = std::sync::Arc::new(Log::default());
     let holly = engine(Limits::default(), vec![bash_call("t1", "ls"), done_text()]);
-    let _tap = spawn_persistence_subscriber(&holly, store.clone());
+    let _tap = spawn_persistence_subscriber_with_sink(&holly, log.clone());
     let sid = SessionId::new("s1");
     let mut sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
@@ -154,9 +163,8 @@ async fn the_end_is_logged_after_the_card() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let kinds = loop {
-        let kinds: Vec<&'static str> = store
-            .read(&sid)
-            .expect("read log")
+        let records = log.0.lock().unwrap().clone();
+        let kinds: Vec<&'static str> = records
             .into_iter()
             .filter_map(|r| match r.payload {
                 LogPayload::Out(OutEvent::ToolRequest { .. }) => Some("request"),

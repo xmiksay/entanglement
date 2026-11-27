@@ -22,7 +22,7 @@ use entanglement_core::{
     stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmStream, Message, MessageRole, OutEvent, SessionId, DEFAULT_AGENT,
 };
-use entanglement_runtime::session_store::{
+use skutter::session_store::{
     check_for_resume, integrity_gap, pair_records, read_path, LogPayload, LogRecord,
 };
 use tokio::sync::broadcast::Receiver;

@@ -13,12 +13,12 @@ use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
     OutEvent, SessionId, ToolCall,
 };
-use entanglement_runtime::file_backup::FileBackups;
-use entanglement_runtime::persistence::spawn_persistence_subscriber;
 use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
-use entanglement_runtime::session_store::{pair_records, SessionStore};
 use entanglement_runtime::tool_runner::ToolExecutor;
+use skutter::file_backup::FileBackups;
 use skutter::host::{host_tools_with, HostToolOptions};
+use skutter::persistence::spawn_persistence_subscriber;
+use skutter::session_store::{pair_records, SessionStore};
 
 /// Pops scripted responses (shared across sessions), then plain text.
 struct Scripted(Arc<Mutex<Vec<LlmResponse>>>);
@@ -204,15 +204,13 @@ async fn undo_and_rewind_restore_files_and_resume_never_reverts_again() {
     // file the user wrote since stays exactly as it is.
     std::fs::write(&file, "user wrote this").unwrap();
     holly.shutdown().await;
-    let reverts_in = |records: &[entanglement_runtime::session_store::LogRecord]| {
+    let reverts_in = |records: &[skutter::session_store::LogRecord]| {
         records
             .iter()
             .filter(|r| {
                 matches!(
                     r.payload,
-                    entanglement_runtime::session_store::LogPayload::Out(
-                        OutEvent::FilesReverted { .. }
-                    )
+                    skutter::session_store::LogPayload::Out(OutEvent::FilesReverted { .. })
                 )
             })
             .count()

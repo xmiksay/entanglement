@@ -11,6 +11,7 @@ mod skutter_cmd;
 // The managed pin files (#323/#331/Issue 5), moved from the library (#967).
 mod agent_generation;
 mod agent_models;
+mod attended_resume;
 mod attended_serve;
 mod attended_wake;
 mod attended_wake_queue;

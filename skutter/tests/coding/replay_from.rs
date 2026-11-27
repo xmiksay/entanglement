@@ -10,8 +10,8 @@
 use std::time::Duration;
 
 use entanglement_core::{EngineConfig, Holly, InMsg, OutEvent, SessionId};
-use entanglement_runtime::history::spawn_history_responder;
-use entanglement_runtime::session_store::{LogPayload, LogRecord, SessionStore};
+use skutter::history::spawn_history_responder;
+use skutter::session_store::{LogPayload, LogRecord, SessionStore};
 
 fn out(sid: &SessionId, ev: OutEvent) -> LogRecord {
     LogRecord::new(sid.clone(), LogPayload::Out(ev))

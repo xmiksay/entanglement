@@ -10,8 +10,8 @@ use std::time::Duration;
 use entanglement_core::{
     content_text, session::Session, EngineConfig, Holly, InMsg, MessageRole, OutEvent, SessionId,
 };
-use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::session_store::{pair_records, LogPayload, SessionStore};
+use skutter::persistence::spawn_persistence_subscriber;
+use skutter::session_store::{pair_records, LogPayload, SessionStore};
 
 #[tokio::test]
 async fn spawned_child_prompt_is_persisted_and_replayable() {

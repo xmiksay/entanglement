@@ -20,8 +20,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::session_store::SessionStore;
 use entanglement_runtime::layers::UserLayer;
-use entanglement_runtime::session_store::SessionStore;
 
 /// Replaces the whole user agents layer (tests + non-XDG setups; also the
 /// cross-vendor opt-out).

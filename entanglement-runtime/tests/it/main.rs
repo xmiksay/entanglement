@@ -34,7 +34,6 @@ pub async fn eventually(mut cond: impl FnMut() -> bool) -> bool {
 mod mode_support;
 
 mod advertising_pin;
-mod agent_definitions;
 mod agent_invariant_tools;
 mod agent_model;
 mod agent_send;
@@ -43,13 +42,10 @@ mod arg_validate;
 mod ask_user;
 mod attended_mode;
 mod attended_rejoin;
-mod attended_resume;
-mod compact_fork;
 mod discovery_tools;
 mod executor_builder;
 mod list_operations;
 mod list_pending;
-mod log_compat_v060;
 #[cfg(feature = "mcp-http")]
 mod mcp_compat;
 mod mcp_envelope_runtime;
@@ -62,7 +58,6 @@ mod mcp_oauth_device;
 #[cfg(feature = "mcp-http")]
 mod mcp_scoped;
 mod misaimed_decisions;
-mod parked_prompt_persistence;
 mod permission_dispatch;
 mod persistence_signal;
 mod plan_tasks;
@@ -70,19 +65,13 @@ mod policy_seam;
 mod poll_subtree;
 mod record_sink;
 mod reoffer_dedupe;
-mod reparent_persistence;
 mod reparent_subagents;
-mod replay_from;
 mod request_mode;
 mod resumable_prefix;
-mod resume_config_mode;
-mod resume_mode_narrowing;
-mod session_fork;
 #[cfg(feature = "provider")]
 mod spawn_grading;
 mod spawn_grading_park;
 mod spawn_grading_scoped;
-mod spawn_prompt_persistence;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;
 mod subagent_spawn;
