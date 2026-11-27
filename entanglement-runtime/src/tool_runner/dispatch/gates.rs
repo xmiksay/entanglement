@@ -53,9 +53,10 @@ impl Dispatcher {
     }
 
     /// The whole ladder for a model call whose route runs its own handler
-    /// once cleared — `agent`/`agent_send` (ADR-0232): grade, hooks, mode deny, the unattended collapse and the approval park, the
-    /// same rungs as any tool. `Err` is the refusal text the model sees;
-    /// `None` when a `Stop` unwound the park.
+    /// once cleared — `agent`/`agent_send` (ADR-0232): grade, hooks, mode
+    /// deny, the unattended collapse and the approval park, the same rungs as
+    /// any tool. `Err` is the refusal text the model sees; `None` when a
+    /// `Stop` unwound the park.
     pub(crate) async fn gate(&self, call: &Call) -> Option<Result<(), String>> {
         Some(match self.clear(&self.tools, call, Via::Model).await? {
             Cleared::Run(_) => Ok(()),

@@ -2,9 +2,9 @@
 //! session could reach, grouped by kind, filterable by free text plus a
 //! category cycle. A read-only *lookup* surface answering "what exists"; what
 //! a session may call is its permission mode's decision. The row-building
-//! logic it needs (name/description/kind) is *not* reimplemented here — see `App::tools_view_rows` (`app/tools_view.rs`),
-//! which calls into [`crate::discover::index_rows`], the runtime's one live
-//! tool index.
+//! logic it needs (name/description/kind) is *not* reimplemented here — see
+//! `App::tools_view_rows` (`app/tools_view.rs`), which calls into
+//! [`crate::discover::index_rows`], the runtime's one live tool index.
 
 use ratatui::widgets::ListState;
 

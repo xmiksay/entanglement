@@ -176,9 +176,10 @@
   config `modes:` block," but as of this stage that writer does not exist:
   `config.yml` `modes:` tuning is hand-edited only, with no TUI surface that
   materializes a checklist edit into it (`skutter inspect modes` is
-  read-only; the `/set` dialog's tools tab is explicitly left for a later
-  change, ADR-0207 §12). There is no live per-session editing mechanism
-  either: `/mode` is the one live control.
+  read-only). There is no in-app tools editor at all — the `/set` dialog
+  has no Tools tab and the per-session tool overlay is gone (#923) — so
+  mode rules in `config.yml` plus `/mode` are the only controls, and
+  `/mode` is the one live one.
 
 ---
 

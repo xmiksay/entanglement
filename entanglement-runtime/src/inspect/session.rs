@@ -4,11 +4,13 @@
 //! in its own event log — it cannot be reconstructed by re-running load-time
 //! discovery the way `inspect prompt`/`agents`/`skills`/`config` do. This view
 //! instead reads the persisted `.jsonl` log directly and folds the same
-//! "last write wins" events [`crate::session_store::SessionStore::list_sessions`] already
-//! folds for `name` — no engine, no LLM, just the log.
+//! "last write wins" events
+//! [`crate::session_store::SessionStore::list_sessions`] already folds for
+//! `name` — no engine, no LLM, just the log.
 //!
 //! Only a **root** session id resolves: a spawned child's records live inside
-//! its root's log file, not a file of their own ([`crate::session_store::SessionStore::session_path`]).
+//! its root's log file, not a file of their own
+//! ([`crate::session_store::SessionStore::session_path`]).
 
 use std::fmt::Write as _;
 use std::path::Path;

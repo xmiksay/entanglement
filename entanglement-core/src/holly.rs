@@ -240,10 +240,11 @@ impl Holly {
     /// split (#155). A privileged, runtime-authored variant
     /// ([`ToolResult`][InMsg::ToolResult]/[`Spawn`][InMsg::Spawn]/
     /// [`Resume`][InMsg::Resume]) is **refused**, not routed — a forged
-    /// `ToolResult` would resolve a parked turn on `request_id` alone (bypassing
-    /// execution + permission) and a forged `Spawn` would bypass the tool path's
-    /// spawn-refusal gate. Head-authored frames pass through to [`send`][Self::send]. The runtime's
-    /// own executor never calls this; it holds the privileged handle and uses
+    /// `ToolResult` would resolve a parked turn on `request_id` alone
+    /// (bypassing execution + permission) and a forged `Spawn` would bypass
+    /// the tool path's spawn-refusal gate. Head-authored frames pass through
+    /// to [`send`][Self::send]. The runtime's own executor never calls this;
+    /// it holds the privileged handle and uses
     /// [`submit_tool_result`][Self::submit_tool_result].
     pub async fn send_from_wire(&self, msg: InMsg) -> Result<(), WireError> {
         if !msg.wire_allowed() {

@@ -34,6 +34,7 @@ mod reparent;
 mod replay;
 mod replay_equality;
 mod resume_children;
+mod resume_handover;
 mod resume_mode;
 mod resume_mode_edges;
 mod resume_model_announce;

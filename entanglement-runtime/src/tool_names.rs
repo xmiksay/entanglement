@@ -110,14 +110,14 @@ pub const DISCOVERY_TOOLS: &[&str] = &[
 
 /// The names a mode/ceiling rule can spell but never match (#843, #849): the
 /// six discovery tools and the bookkeeping Control tools take a bypass
-/// before any rule is read (ADR-0226
-/// Maskability, ADR-0232), core unwraps the `mcp` envelope to
-/// `mcp__<server>__<tool>` before dispatch, and the script-only read variants
-/// grade as the tool they ride on (`dispatch::grade::graded_name`).
-/// `propose_plan` is graded, but only by its `plan` class — a rule naming it
-/// is skipped by the matcher (`mode::rules`), so the class is the one gate.
-/// A config rule naming one warns ([`non_maskable_reason`]). `agent`/`agent_send` are absent on purpose:
-/// they are graded like any tool (ADR-0232).
+/// before any rule is read (ADR-0226 Maskability, ADR-0232), core unwraps the
+/// `mcp` envelope to `mcp__<server>__<tool>` before dispatch, and the
+/// script-only read variants grade as the tool they ride on
+/// (`dispatch::grade::graded_name`). `propose_plan` is graded, but only by
+/// its `plan` class — a rule naming it is skipped by the matcher
+/// (`mode::rules`), so the class is the one gate. A config rule naming one
+/// warns ([`non_maskable_reason`]). `agent`/`agent_send` are absent on
+/// purpose: they are graded like any tool (ADR-0232).
 pub const NON_MASKABLE_TOOLS: &[&str] = &[
     LIST_AGENTS_TOOL,
     LIST_MODELS_TOOL,

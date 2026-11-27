@@ -225,8 +225,8 @@ pub(crate) async fn session_loop(
                 let _ = immediate::try_apply(cmd, immediate::fields!(s), &session, &events);
             }
             // A deferrable command (`SetModel`/`SetGeneration`/`Oneshot`/
-            // `RevertFiles`/`Fork`/`SetWorkdir`) arriving during a live turn is stashed and replays
-            // once the turn ends (stash replay).
+            // `RevertFiles`/`Fork`/`SetWorkdir`) arriving during a live turn
+            // is stashed and replays once the turn ends (stash replay).
             Some(
                 cmd @ (SessionCmd::SetModel(..)
                 | SessionCmd::SetGeneration(_)

@@ -1,7 +1,6 @@
 //! `rhai`'s own launch (ADR-0228), graded like any other tool call — the
-//! mode's rules (a `path`
-//! script graded on its canonical root-relative path, so
-//! `rhai(scripts/deploy/*)` matches; an inline one only by a bare `rhai`
+//! mode's rules (a `path` script graded on its canonical root-relative path,
+//! so `rhai(scripts/deploy/*)` matches; an inline one only by a bare `rhai`
 //! rule), the ceiling, grants and the `pre_tool_use` veto:
 //!
 //! - **Deny** refuses it, a trusted path included;

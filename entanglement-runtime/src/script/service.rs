@@ -19,8 +19,8 @@ use super::BindingCall;
 /// `NestedCall` (capped, with one closing summary — ADR-0233) — here, since
 /// this loop is the one place every binding of every run passes through.
 /// Before each call a background run follows its session's compaction
-/// (ADR-0241), and every run re-reads its session's mode (ADR-0243). Returns whether a `Stop` unwound a nested
-/// approval.
+/// (ADR-0241), and every run re-reads its session's mode (ADR-0243).
+/// Returns whether a `Stop` unwound a nested approval.
 pub(super) async fn service_bindings(
     mut rx: mpsc::UnboundedReceiver<BindingCall>,
     dispatcher: &mut Dispatcher,

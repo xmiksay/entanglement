@@ -8,8 +8,9 @@
 //! switches (retired by ADR-0207), the `bash_enable`/`bash_disable`/
 //! `bash_changed` toggles (retired by ADR-0163; session-less, so the
 //! reference tap never logs them, but a sink storing every frame does), a
-//! tool-overlay deny and its ack (retired by #923), a tool round-trip, a spawned child, a manual compaction, usage, and a final
-//! turn parked mid-batch (`call-2` answered, `call-3` never).
+//! tool-overlay deny and its ack (retired by #923), a tool round-trip, a
+//! spawned child, a manual compaction, usage, and a final turn parked
+//! mid-batch (`call-2` answered, `call-3` never).
 
 use std::collections::VecDeque;
 use std::path::Path;

@@ -14,13 +14,13 @@ use entanglement_provider::ToolSpec;
 
 /// Tool set advertised to the model = **every** spec the config provides for
 /// this session. Advertisement is decoupled from enforcement: the profile
-/// mask (#116, ADR-0038) and an active skill's `allowed_tools` (#400, ADR-0106) do not filter here — they
-/// are enforced exclusively by the runtime's dispatch gate, exactly as the
-/// `Allow`/`Ask`/`Deny` permission ladder always has been. WHY: every
-/// mid-session change to this array (a skill mask)
-/// invalidated the provider's prompt cache from the tools block onward — i.e.
-/// the whole prompt. A
-/// surface that is stable within a session keeps that cache warm; the only
+/// mask (#116, ADR-0038) and an active skill's `allowed_tools` (#400,
+/// ADR-0106) do not filter here — they are enforced exclusively by the
+/// runtime's dispatch gate, exactly as the `Allow`/`Ask`/`Deny` permission
+/// ladder always has been. WHY: every mid-session change to this array (a
+/// skill mask) invalidated the provider's prompt cache from the tools block
+/// onward — i.e. the whole prompt. A surface that is stable within a session
+/// keeps that cache warm; the only
 /// thing traded away is "the model cannot even attempt the call", and every
 /// attempt is now visibly declined at dispatch instead.
 ///

@@ -1,6 +1,7 @@
 //! Tool/MCP availability popups: the `/mcp list` panel (#373, selectable
-//! since #539) and `/tools` (#560 P9, ADR-0199 part 3). Split from `popups.rs` once it crossed the
-//! 400-line cap. The `/agent` picker's tools-allowlist checklist (#330) this
+//! since #539) and `/tools` (#560 P9, ADR-0199 part 3). Split from
+//! `popups.rs` once it crossed the 400-line cap. The `/agent` picker's
+//! tools-allowlist checklist (#330) this
 //! module also used to draw is retired (ADR-0207: no more per-agent tool
 //! mask to allowlist).
 
