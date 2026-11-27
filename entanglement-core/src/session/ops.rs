@@ -106,7 +106,6 @@ async fn compact_op(
                 session,
                 s,
                 events,
-                cfg,
                 Compaction {
                     seed: &report,
                     kept,

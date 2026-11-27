@@ -59,17 +59,13 @@ impl SessionId {
         Self(id.into())
     }
 
-    /// Mint a fresh session id via the default [`IdGen`][crate::id_gen::IdGen]
+    /// Mint a fresh root session id via [`mint_id`][crate::mint_id]
     /// (ADR-0164: `s-<epoch-seconds hex><salt><counter>`, 15 chars). Kept name
     /// for call-site compatibility even though the scheme is no longer a
     /// UUID — every caller treats the result as an opaque string, and legacy
-    /// UUID-form ids coexist indefinitely (the two shapes cannot collide). A
-    /// `Holly` handle in scope should prefer
-    /// [`Holly::next_id`][crate::Holly::next_id] instead, which goes through
-    /// the engine's *configured* generator rather than always the default.
+    /// UUID-form ids coexist indefinitely (the two shapes cannot collide).
     pub fn new_uuid() -> Self {
-        use crate::id_gen::{DefaultIdGen, IdContext, IdGen, IdKind};
-        Self(DefaultIdGen::new().next(IdKind::Session, &IdContext::default()))
+        Self(crate::ids::mint_id(crate::ids::IdKind::Session, None))
     }
 }
 

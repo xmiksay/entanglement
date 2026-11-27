@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use entanglement_core::{Holly, IdKind, InMsg, McpAuthAction, McpServerSpec};
+use entanglement_core::{mint_id, Holly, IdKind, InMsg, McpAuthAction, McpServerSpec};
 
 use super::app::App;
 use super::command_args::{parse_mcp_via_clap, McpSub};
@@ -195,9 +195,8 @@ pub(super) async fn send_mcp_auth(
 /// (`modal_events::handle_command_palette_event`), which carries no trailing
 /// text and so always runs `list`.
 pub(super) async fn send_mcp_list(app: &mut App, holly: &Holly) {
-    // A correlation id, not a session id (ADR-0164) — minted through the
-    // engine's configured generator via `Holly::next_id`.
-    let correlation_id = holly.next_id(IdKind::Request);
+    // A correlation id, not a session id (ADR-0164).
+    let correlation_id = mint_id(IdKind::Request, None);
     app.record_pending_mcp_list(correlation_id.clone());
     let _ = holly.send(InMsg::McpList { correlation_id }).await;
 }

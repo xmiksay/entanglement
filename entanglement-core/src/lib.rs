@@ -10,7 +10,7 @@
 
 pub mod context;
 pub mod holly;
-pub mod id_gen;
+pub mod ids;
 pub mod protocol;
 pub mod session;
 
@@ -20,7 +20,7 @@ pub use holly::{
     SeqLease, SessionLoader, SessionModel, SystemPromptResolver, ToolSpecResolver, UnknownSession,
     WireError, WorkdirResolver, DEFAULT_AGENT, DEFAULT_MODE,
 };
-pub use id_gen::{DefaultIdGen, IdContext, IdGen, IdKind};
+pub use ids::{mint_id, IdKind};
 // The LLM seam (trait + DTOs + wire `Message`) lives in `entanglement-provider`,
 // the leaf crate; core depends on it and re-exports for its heads (ADR-0053).
 // The `mcp` envelope's reserved name rides the same path (ADR-0226): the

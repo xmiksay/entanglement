@@ -53,7 +53,7 @@ use axum::{
     routing::get,
     Router,
 };
-use entanglement_core::{Holly, IdKind, InMsg, SessionId, WireError};
+use entanglement_core::{mint_id, Holly, IdKind, InMsg, SessionId, WireError};
 use futures::{SinkExt, StreamExt};
 
 use crate::attendance::{Attendance, Watcher};
@@ -229,7 +229,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServeState>) {
     let mut sub = state.holly.subscribe();
     // A per-connection default session lets a bare-text frame become a `Prompt`,
     // matching the stdio `pipe` head's scripting affordance.
-    let default_session = SessionId::new(state.holly.next_id(IdKind::Session));
+    let default_session = SessionId::new(mint_id(IdKind::Session, None));
     // Identifies this connection for approval ownership (#402, ADR-0107).
     let conn_id = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
     // Watches the sessions this connection owns until it closes (ADR-0247).

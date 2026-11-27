@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use entanglement_core::{DefaultIdGen, IdContext, IdGen, IdKind, SessionId};
+use entanglement_core::{mint_id, IdKind, SessionId};
 
 /// Per-operation retention cap. Past this, the *tail* of the text survives —
 /// the same keep-the-end policy as every other bound in this codebase — and
@@ -62,7 +62,6 @@ pub struct RetainedOutputRegistry {
 
 struct Inner {
     entries: HashMap<String, Entry>,
-    id_gen: Arc<dyn IdGen>,
 }
 
 impl Default for RetainedOutputRegistry {
@@ -70,7 +69,6 @@ impl Default for RetainedOutputRegistry {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 entries: HashMap::new(),
-                id_gen: Arc::new(DefaultIdGen::new()),
             })),
         }
     }
@@ -89,7 +87,7 @@ impl RetainedOutputRegistry {
         let (text, dropped_bytes) = cap_retained(text);
         let mut inner = self.lock();
         evict_expired(&mut inner.entries, Instant::now());
-        let id = inner.id_gen.next(IdKind::Output, &IdContext::default());
+        let id = mint_id(IdKind::Output, None);
         inner.entries.insert(
             id.clone(),
             Entry {

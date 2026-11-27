@@ -1,14 +1,11 @@
 //! Tenant-prefix inheritance and `Holly::session_info` (#722, ADR-0211): a
 //! sub-agent child and a compaction successor of a `{tenant}:` root keep the
-//! prefix, the engine's directory answers who owns a session synchronously,
-//! and a custom `IdGen` sees the lineage it mints for.
+//! prefix, and the engine's directory answers who owns a session
+//! synchronously.
 
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use entanglement_core::{
-    EngineConfig, Holly, IdContext, IdGen, IdKind, InMsg, OutEvent, SessionId, UserId,
-};
+use entanglement_core::{mint_id, EngineConfig, Holly, IdKind, InMsg, OutEvent, SessionId, UserId};
 
 use crate::compaction_fork::{prune_fork, prune_only_engine};
 
@@ -64,7 +61,7 @@ async fn a_child_of_a_tenant_root_keeps_its_prefix_and_reports_its_lineage() {
     let alice = UserId::new("alice");
     spawn_root(&holly, &root, Some(alice.clone())).await;
 
-    let child = SessionId::new(holly.next_id_in(IdKind::Session, &IdContext::child_of(&root)));
+    let child = SessionId::new(mint_id(IdKind::Session, Some(&root)));
     assert!(child.0.starts_with("t1:s-"), "child id {child}");
 
     let mut sub = holly.subscribe();
@@ -115,45 +112,8 @@ async fn unprefixed_roots_mint_unprefixed_children() {
     let holly = Holly::spawn(EngineConfig::default());
     let root = SessionId::new("plain-root");
     spawn_root(&holly, &root, None).await;
-    let child = holly.next_id_in(IdKind::Session, &IdContext::child_of(&root));
+    let child = mint_id(IdKind::Session, Some(&root));
     assert!(child.starts_with("s-") && child.len() == 15, "{child}");
-}
-
-/// What a custom generator was asked for, in owned form.
-type Seen = Arc<Mutex<Vec<(Option<SessionId>, Option<SessionId>, Option<UserId>)>>>;
-
-struct Recorder(Seen);
-
-impl IdGen for Recorder {
-    fn next(&self, _kind: IdKind, ctx: &IdContext<'_>) -> String {
-        let mut seen = self.0.lock().unwrap();
-        seen.push((
-            ctx.parent.cloned(),
-            ctx.predecessor.cloned(),
-            ctx.user.cloned(),
-        ));
-        format!("custom-{}", seen.len())
-    }
-}
-
-#[tokio::test]
-async fn a_custom_id_gen_sees_the_lineage_with_the_user_filled_in() {
-    let seen: Seen = Arc::default();
-    let holly = Holly::spawn(EngineConfig {
-        id_gen: Arc::new(Recorder(seen.clone())),
-        ..EngineConfig::default()
-    });
-    let root = SessionId::new("t1:abc");
-    let alice = UserId::new("alice");
-    spawn_root(&holly, &root, Some(alice.clone())).await;
-
-    let id = holly.next_id_in(IdKind::Session, &IdContext::child_of(&root));
-    assert!(
-        id.starts_with("custom-"),
-        "the override owns the format: {id}"
-    );
-    let last = seen.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(last, (Some(root), None, Some(alice)));
 }
 
 #[tokio::test]

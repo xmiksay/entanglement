@@ -17,9 +17,8 @@ use tokio::sync::broadcast;
 
 use super::fork::{ForkFrame, Inherited};
 use super::Session;
-use crate::id_gen::{IdContext, IdKind};
+use crate::ids::{mint_id, IdKind};
 use crate::protocol::{InMsg, OutEvent, SessionId};
-use crate::EngineConfig;
 
 /// The history a fork starts from, and where it came from.
 pub(crate) struct ForkSeed {
@@ -49,7 +48,6 @@ pub(super) fn fork_session(
     session: &SessionId,
     s: &Session,
     events: &broadcast::Sender<OutEvent>,
-    cfg: &EngineConfig,
     at_turn: Option<u32>,
 ) -> Option<SessionId> {
     let Some(engine) = s.engine.clone() else {
@@ -62,8 +60,7 @@ pub(super) fn fork_session(
     };
     // Minted in the source's lineage so a `{tenant}:` prefix carries over
     // (ADR-0211); the fork is a root, so nothing else would supply it.
-    let ctx = IdContext::successor_of(session).with_user(s.user.as_ref());
-    let fork = SessionId::new(cfg.id_gen.next(IdKind::Session, &ctx));
+    let fork = SessionId::new(mint_id(IdKind::Session, Some(session)));
     let mut inherit = Inherited::of(s);
     inherit.seed = Some(ForkSeed {
         source: session.clone(),
@@ -121,6 +118,7 @@ pub(super) fn seed_fork(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EngineConfig;
     use entanglement_provider::ContentPart;
     use tokio::sync::mpsc;
 
@@ -144,7 +142,7 @@ mod tests {
         let (events, mut sub) = broadcast::channel(4);
         let src = SessionId::new("t1:src");
 
-        let fork = fork_session(&src, &s, &events, &cfg, Some(1)).expect("a fork");
+        let fork = fork_session(&src, &s, &events, Some(1)).expect("a fork");
         assert!(fork.0.starts_with("t1:"), "tenant prefix kept: {fork}");
         assert!(sub.try_recv().is_err(), "the source logs nothing");
 
@@ -178,7 +176,7 @@ mod tests {
         let cfg = EngineConfig::default();
         let s = session(&cfg);
         let (events, mut sub) = broadcast::channel(4);
-        assert!(fork_session(&SessionId::new("s"), &s, &events, &cfg, None).is_none());
+        assert!(fork_session(&SessionId::new("s"), &s, &events, None).is_none());
         assert!(matches!(sub.try_recv(), Ok(OutEvent::Error { .. })));
     }
 }

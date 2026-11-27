@@ -214,7 +214,7 @@ async fn enforce_context_window(
             return Some(outcome);
         }
     }
-    if let Some(outcome) = try_prune_fork(session, s, events, cfg) {
+    if let Some(outcome) = try_prune_fork(session, s, events) {
         return Some(outcome);
     }
     emit_turn_error(
@@ -279,7 +279,6 @@ async fn try_summary_fork(
         session,
         s,
         events,
-        cfg,
         Compaction {
             seed: &seed,
             kept,
@@ -312,7 +311,6 @@ fn try_prune_fork(
     session: &SessionId,
     s: &mut Session,
     events: &broadcast::Sender<OutEvent>,
-    cfg: &EngineConfig,
 ) -> Option<RoundOutcome> {
     let before = s.ctx.estimated_tokens();
     let mut pruned = s.ctx.clone();
@@ -339,7 +337,6 @@ fn try_prune_fork(
         session,
         s,
         events,
-        cfg,
         Compaction {
             seed: &seed,
             // The prune keeps no verbatim tail distinct from its head: the

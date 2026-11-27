@@ -35,7 +35,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::Notify;
 
-use entanglement_core::{DefaultIdGen, IdContext, IdGen, IdKind, SessionId};
+use entanglement_core::{mint_id, IdKind, SessionId};
 
 use eviction::{sweep, JOB_TTL, MAX_FINISHED_JOBS};
 
@@ -119,17 +119,12 @@ pub struct JobRegistry {
 
 struct Inner {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
-    /// Mints `j-` job ids (ADR-0164) — replaces the old per-registry
-    /// `AtomicU64` counter, which restarted at 0 on every fresh `JobRegistry`
-    /// (the non-uniqueness bug ADR-0164 retires).
-    id_gen: Arc<dyn IdGen>,
 }
 
 impl Default for Inner {
     fn default() -> Self {
         Self {
             jobs: Mutex::new(HashMap::new()),
-            id_gen: Arc::new(DefaultIdGen::new()),
         }
     }
 }
@@ -174,7 +169,7 @@ impl JobRegistry {
             state: Mutex::new(JobState::default()),
             notify: Notify::new(),
         });
-        let id = self.inner.id_gen.next(IdKind::Job, &IdContext::default());
+        let id = mint_id(IdKind::Job, None);
         self.inner
             .jobs
             .lock()

@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
-use entanglement_core::{DefaultIdGen, IdContext, IdGen, IdKind, SessionId};
+use entanglement_core::{mint_id, IdKind, SessionId};
 
 /// Retention cap for a not-yet-polled script's output — same bound and same
 /// keep-the-tail policy as a job's per-stream buffer.
@@ -155,8 +155,6 @@ pub struct ScriptRegistry {
 
 struct Inner {
     scripts: Mutex<HashMap<String, Arc<ScriptOp>>>,
-    /// Mints `x-` script handles (ADR-0164).
-    id_gen: Arc<dyn IdGen>,
 }
 
 impl Default for ScriptRegistry {
@@ -164,7 +162,6 @@ impl Default for ScriptRegistry {
         Self {
             inner: Arc::new(Inner {
                 scripts: Mutex::new(HashMap::new()),
-                id_gen: Arc::new(DefaultIdGen::new()),
             }),
         }
     }
@@ -196,10 +193,7 @@ impl ScriptRegistry {
             state: Mutex::new(ScriptState::default()),
             notify: Notify::new(),
         });
-        let id = self
-            .inner
-            .id_gen
-            .next(IdKind::Script, &IdContext::default());
+        let id = mint_id(IdKind::Script, None);
         self.inner
             .scripts
             .lock()

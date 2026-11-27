@@ -28,9 +28,8 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::user_fork::ForkSeed;
 use super::Session;
-use crate::id_gen::{IdContext, IdKind};
+use crate::ids::{mint_id, IdKind};
 use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId};
-use crate::EngineConfig;
 
 /// One frame on the session→supervisor fork channel: an ordinary `InMsg`
 /// (handled, and fanned out, exactly like an inbox one) plus, on the
@@ -123,15 +122,12 @@ pub(crate) fn fork_successor(
     session: &SessionId,
     s: &mut Session,
     events: &broadcast::Sender<OutEvent>,
-    cfg: &EngineConfig,
     compaction: Compaction<'_>,
 ) -> Option<PendingFork> {
     let engine = s.engine.clone()?;
-    // Minted in the source's lineage so the default generator keeps its
-    // tenant prefix — the successor may be a root, with nothing else to
-    // supply it (ADR-0211).
-    let ctx = IdContext::successor_of(session).with_user(s.user.as_ref());
-    let successor = SessionId::new(cfg.id_gen.next(IdKind::Session, &ctx));
+    // Minted in the source's lineage so it keeps its tenant prefix — the
+    // successor may be a root, with nothing else to supply it (ADR-0211).
+    let successor = SessionId::new(mint_id(IdKind::Session, Some(session)));
 
     s.seq.emit(events, |seq| OutEvent::Compacted {
         session: session.clone(),
@@ -200,6 +196,7 @@ fn seed_prompt(mode: CompactionMode, seed: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EngineConfig;
 
     #[test]
     fn a_summary_seed_is_framed_as_a_continuation() {
@@ -237,7 +234,6 @@ mod tests {
             &session,
             &mut s,
             &events,
-            &cfg,
             Compaction {
                 seed: "summary",
                 kept: 0,
@@ -271,7 +267,6 @@ mod tests {
             &session,
             &mut s,
             &events,
-            &cfg,
             Compaction {
                 seed: "the gist",
                 kept: 2,
@@ -374,7 +369,6 @@ mod tests {
             &SessionId::new("s1"),
             &mut s,
             &events,
-            &cfg,
             Compaction {
                 seed: "gist",
                 kept: 0,

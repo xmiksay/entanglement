@@ -259,7 +259,7 @@ pub(crate) async fn session_loop(
                 revert::revert_files(&mut s, &session, &events, &cfg, to_turn).await;
             }
             Some(SessionCmd::Fork(at_turn)) => {
-                let _ = user_fork::fork_session(&session, &s, &events, &cfg, at_turn);
+                let _ = user_fork::fork_session(&session, &s, &events, at_turn);
             }
             Some(SessionCmd::SetWorkdir(dir)) => {
                 workdir::set_workdir(&mut s, &session, &events, dir)

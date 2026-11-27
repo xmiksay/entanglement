@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use entanglement_core::{Holly, IdKind, InMsg, OutEvent, SessionId};
+use entanglement_core::{mint_id, Holly, IdKind, InMsg, OutEvent, SessionId};
 use entanglement_provider::Catalog;
 
 use crate::args::{Cli, Cmd};
@@ -41,7 +41,7 @@ pub(crate) async fn dispatch(
             let session_id = if let Some(resume_id) = &resume {
                 SessionId::new(resume_id.clone())
             } else {
-                SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)))
+                SessionId::new(session.unwrap_or_else(|| mint_id(IdKind::Session, None)))
             };
 
             // An explicit `--mode` wins over ADR-0215's read-only narrowing.
@@ -91,7 +91,7 @@ pub(crate) async fn dispatch(
         }
         Some(Cmd::Pipe { session }) => {
             let session_id =
-                SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
+                SessionId::new(session.unwrap_or_else(|| mint_id(IdKind::Session, None)));
             pipe(holly, &session_id).await
         }
         #[cfg(feature = "serve")]
@@ -114,7 +114,7 @@ pub(crate) async fn dispatch(
         }
         Some(Cmd::Tui { session, agent }) => {
             let session_id =
-                SessionId::new(session.unwrap_or_else(|| holly.next_id(IdKind::Session)));
+                SessionId::new(session.unwrap_or_else(|| mint_id(IdKind::Session, None)));
             // CLI `--agent` wins; else the user config's default agent (#172).
             let agent = agent.or_else(|| user_config.agent.clone());
             let launch = launch_mode(cli.mode, user_config, cwd)?;
@@ -137,7 +137,7 @@ pub(crate) async fn dispatch(
             // No subcommand:
             // - bare `skutter` (no prompt) → launch the TUI (the default head);
             // - `skutter "<prompt>"` → one implicit `run` turn, as before.
-            let session_id = SessionId::new(holly.next_id(IdKind::Session));
+            let session_id = SessionId::new(mint_id(IdKind::Session, None));
             let agent = user_config.agent.clone();
             let launch = launch_mode(cli.mode, user_config, cwd)?;
             if cli.prompt.is_empty() {

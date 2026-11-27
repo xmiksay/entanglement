@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::id_gen::{IdContext, IdGen, IdKind};
 use crate::protocol::{InMsg, OutEvent, SessionId, SessionInfo};
 use entanglement_provider::ContentPart;
 
@@ -107,12 +106,6 @@ pub struct Holly {
     outlets: Arc<Outlets>,
     /// Shared per-session seq counters (#157) — see [`SeqRegistry`].
     seqs: SeqRegistry,
-    /// The engine's configured id generator (ADR-0164), cloned out of
-    /// [`EngineConfig::id_gen`] at spawn time so an in-process embedder/head
-    /// can mint a fresh [`SessionId`]/job id/request id through the *same*
-    /// generator the engine itself would use, instead of reaching for a
-    /// hardcoded default.
-    id_gen: Arc<dyn IdGen>,
     /// The supervisor's live-session directory, read by
     /// [`session_info`][Self::session_info] (ADR-0211).
     directory: SessionDirectory,
@@ -126,7 +119,6 @@ impl Holly {
         let (inbound, _) = broadcast::channel::<InMsg>(INBOX_CAPACITY);
         let seqs = SeqRegistry::default();
         let activity: ActivityRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let id_gen = cfg.id_gen.clone();
         let directory = SessionDirectory::default();
         let (supervisor_events, supervisor_inbound) = (events.clone(), inbound.clone());
         let supervisor_seqs = seqs.clone();
@@ -149,7 +141,6 @@ impl Holly {
             inbox,
             outlets: Arc::new(outlets),
             seqs,
-            id_gen,
             directory,
         }
     }
@@ -161,36 +152,6 @@ impl Holly {
         if let Some(supervisor) = self.outlets.close() {
             let _ = supervisor.await;
         }
-    }
-
-    /// Mint a fresh id of `kind` through the engine's configured
-    /// [`IdGen`][crate::id_gen::IdGen] (ADR-0164) — the sanctioned way for a
-    /// head/embedder to mint a new [`SessionId`], background-job id, or
-    /// runtime request/correlation id so it goes through the same generator
-    /// (and, for an embedder that overrides it, the same *policy*) the engine
-    /// itself uses internally. Mints with an empty [`IdContext`] — a fresh
-    /// root, a job, a request id; use [`next_id_in`][Self::next_id_in] for an
-    /// id that belongs to a lineage.
-    pub fn next_id(&self, kind: IdKind) -> String {
-        self.next_id_in(kind, &IdContext::default())
-    }
-
-    /// Mint an id within `ctx` (ADR-0211) — e.g. a sub-agent child via
-    /// [`IdContext::child_of`], so the default generator keeps its parent's
-    /// tenant prefix. When `ctx` names no user, the lineage's owning user is
-    /// filled in from [`session_info`][Self::session_info] (parent first, then
-    /// predecessor), so a caller that only knows the parent still hands a
-    /// custom [`IdGen`] the whole picture.
-    pub fn next_id_in(&self, kind: IdKind, ctx: &IdContext<'_>) -> String {
-        let looked_up = match ctx.user {
-            Some(_) => None,
-            None => [ctx.parent, ctx.predecessor]
-                .into_iter()
-                .flatten()
-                .find_map(|s| self.session_info(s).and_then(|i| i.user)),
-        };
-        let ctx = ctx.with_user(ctx.user.or(looked_up.as_ref()));
-        self.id_gen.next(kind, &ctx)
     }
 
     /// The engine's own record of `session` — owning `user`, `parent`,
@@ -213,7 +174,7 @@ impl Holly {
     /// Don't combine the two assuming they agree.
     ///
     /// Event routing should key on the id's tenant prefix
-    /// instead (the default [`IdGen`] guarantees it across the lineage): a
+    /// instead ([`mint_id`][crate::mint_id] keeps it across the lineage): a
     /// session's own trailing events such as `SessionEnded` arrive after its
     /// entry is gone.
     pub fn session_info(&self, session: &SessionId) -> Option<SessionInfo> {

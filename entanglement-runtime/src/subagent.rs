@@ -32,7 +32,7 @@
 //! executor runs it *before* permission resolution — it bypasses the permission
 //! profile exactly like the runtime's `propose_plan` / `update_tasks` state tools.
 
-use entanglement_core::{AgentState, Holly, IdContext, IdKind, InMsg, OutEvent, SessionId};
+use entanglement_core::{mint_id, AgentState, Holly, IdKind, InMsg, OutEvent, SessionId};
 use tokio::sync::broadcast::Receiver;
 
 use crate::agent_registry::{AgentRegistry, AgentStatus};
@@ -149,7 +149,7 @@ async fn launch(
 ) {
     let (agent, prompt, _background, _model) = parse_input(&input);
     // Minted in the parent's lineage so it keeps the tenant prefix (ADR-0211).
-    let child = SessionId::new(holly.next_id_in(IdKind::Session, &IdContext::child_of(&parent)));
+    let child = SessionId::new(mint_id(IdKind::Session, Some(&parent)));
     // Register *before* sending Spawn so a poll can never precede the handle
     // (the parent only learns the id from the reply below, which comes after).
     let (status_tx, started) = registry.register(child.clone(), parent.clone(), agent.clone());

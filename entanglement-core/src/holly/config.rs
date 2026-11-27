@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::id_gen::{DefaultIdGen, IdGen};
 use crate::protocol::{Agent, FileRevertReport, SessionId};
 use entanglement_provider::{
     AuxLlmResolver, EchoLlm, GenerationParams, GenerationResolver, Llm, LlmFactory, ModelPricing,
@@ -230,15 +229,6 @@ pub struct EngineConfig {
     /// still doesn't fit. `false` restores the pre-#398 prune-only behavior
     /// unconditionally — no extra paid round-trip on overflow.
     pub auto_compact: bool,
-    /// Mints every session/job/runtime-request id (ADR-0164). Defaults to
-    /// [`DefaultIdGen`], the short `<kind>-<hex>` scheme; an embedder needing
-    /// fleet-coordinated ids (a database sequence, a Snowflake-style
-    /// generator, or plain UUIDs) installs its own — `SessionId` staying an
-    /// opaque `String` newtype is what makes any generator's output valid.
-    /// Unlike the `Option<...>` resolver seams above, this is never `None`:
-    /// there is always a scheme, mirroring the runtime's `SandboxResolver`
-    /// always-a-policy default (ADR-0134).
-    pub id_gen: Arc<dyn IdGen>,
     /// What a routable message addressed to a session with no live task does
     /// ([ADR-0210](../../docs/adr/archive/0210-unknown-session-policy.md)): spawn a
     /// blank root (the default — every in-tree single-user head), or resume it
@@ -321,7 +311,6 @@ impl Default for EngineConfig {
             max_ambiguous_stop_retries: 2,
             idle_ttl: None,
             auto_compact: true,
-            id_gen: Arc::new(DefaultIdGen::new()),
             unknown_session: UnknownSession::default(),
             mode_ladder: Vec::new(),
             file_reverter: None,
