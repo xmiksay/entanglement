@@ -17,7 +17,7 @@
 //! external SIGINT lands), `ctrl+q` (immediate quit, the escape hatch in every
 //! dialog) and `esc` (cancel/close everywhere, and the leader-chord cancel) —
 //! a remap must never be able to trap the user. Dialog-local keys (approval
-//! `y/s/a/d/n/e/v`, list navigation) and readline editing keys stay fixed too.
+//! `y/s/a/n/e/v`, list navigation) and readline editing keys stay fixed too.
 //! `jump_attention`/`list_sessions` are checked ahead of every dialog, so
 //! they may not take a dialog navigation key (enter, tab, arrows, page,
 //! home/end, backspace/delete) as a direct chord.

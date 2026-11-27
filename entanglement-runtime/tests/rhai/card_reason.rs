@@ -71,8 +71,7 @@ async fn a_floored_write_card_offers_only_once() {
 }
 
 /// An ordinary graded `Ask` carries no reason and every scope; an
-/// out-of-root `read` is a `RootEscape` card — without the triad's
-/// `SessionDir`, since an escape grant is exact-path.
+/// out-of-root `read` is a `RootEscape` card with the same scopes.
 #[tokio::test]
 async fn ordinary_and_escape_cards_keep_every_scope() {
     let (_tmp, root) = fixture();

@@ -234,11 +234,7 @@ fn approve_scope_defaults_to_once_and_omits_when_default() {
 
 #[test]
 fn approve_scope_roundtrips_when_set() {
-    for scope in [
-        ApprovalScope::Session,
-        ApprovalScope::Always,
-        ApprovalScope::SessionDir,
-    ] {
+    for scope in [ApprovalScope::Session, ApprovalScope::Always] {
         let msg = InMsg::Approve {
             session: SessionId::new("s1"),
             request_id: "r1".into(),

@@ -24,7 +24,7 @@ pub fn draw_approval_pager(f: &mut Frame, app: &App) {
     let title = Line::from(vec![
         Span::raw(" Approval "),
         Span::styled(
-            "· j/k/↑↓ scroll · PgUp/PgDn ×10 · y/s/a/d/n/e decide · Esc close",
+            "· j/k/↑↓ scroll · PgUp/PgDn ×10 · y/s/a/n/e decide · Esc close",
             Style::default().dim(),
         ),
     ]);

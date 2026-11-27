@@ -141,7 +141,7 @@ fn record_gap_with_no_known_roots_writes_nothing() {
 
     record_gap(&mut file_writer(&store), &roots, 5, "outbound");
 
-    let dir = store.dir().expect("session_dir");
+    let dir = store.dir().expect("store dir");
     let count = std::fs::read_dir(&dir).expect("read_dir").count();
     assert_eq!(count, 0, "no root known → no file written");
 }

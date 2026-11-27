@@ -97,8 +97,7 @@ pub(crate) fn render_body_lines(app: &mut App, available_width: u16) -> Rendered
 /// The approve keys a card offers, read off its `scopes` (ADR-0230) — never
 /// a letter whose scope the runtime would not honor. A `rhai` launch card
 /// (ADR-0228) adds `[r]` run all (this run only) and reads `[y]` as ask per
-/// command; its `s`/`a` also grant the script's path. `[d]` (#486, ADR-0126)
-/// is the read-only triad's directory grant.
+/// command; its `s`/`a` also grant the script's path.
 fn scope_footer(req: &PendingRequest, theme: &Theme) -> Vec<Span<'static>> {
     let key = |k: &'static str| Span::styled(k, theme.fg(Slot::Success).bold());
     let launch = req.tool == crate::tool_names::RHAI_TOOL;
@@ -106,19 +105,17 @@ fn scope_footer(req: &PendingRequest, theme: &Theme) -> Vec<Span<'static>> {
     if launch {
         footer.extend([key("[r]"), Span::raw(" run all  ")]);
     }
-    let labels: [(ApprovalScope, &'static str, &'static str); 4] = if launch {
+    let labels: [(ApprovalScope, &'static str, &'static str); 3] = if launch {
         [
             (ApprovalScope::Once, "[y]", " ask per command  "),
             (ApprovalScope::Session, "[s]", " + session  "),
             (ApprovalScope::Always, "[a]", " + always  "),
-            (ApprovalScope::SessionDir, "[d]", " allow dir (session)  "),
         ]
     } else {
         [
             (ApprovalScope::Once, "[y]", " approve  "),
             (ApprovalScope::Session, "[s]", " approve session  "),
             (ApprovalScope::Always, "[a]", " approve always  "),
-            (ApprovalScope::SessionDir, "[d]", " allow dir (session)  "),
         ]
     };
     for (scope, k, label) in labels {
@@ -130,7 +127,7 @@ fn scope_footer(req: &PendingRequest, theme: &Theme) -> Vec<Span<'static>> {
 }
 
 /// `propose_plan`'s own two accept keys (#560, ADR-0207 §7 extension) —
-/// replaces the generic `y`/`s`/`a`/`d` scope letters, which meant nothing for
+/// replaces the generic `y`/`s`/`a` scope letters, which meant nothing for
 /// this tool (its approval was never grant-tracked). `[u]` is the DEFAULT bare
 /// accept, landing in the bounded `auto` posture; `[b]` is the explicit
 /// opt-in to `build`. `input` is the resolved `ToolRequest` JSON

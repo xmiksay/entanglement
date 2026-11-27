@@ -655,8 +655,7 @@ mod tests {
     }
 
     /// ADR-0228: on a `rhai` launch card `r` is Run all (once) and
-    /// `y`/`s`/`a` are Ask per command with that grant scope; `d` does
-    /// nothing.
+    /// `y`/`s`/`a` are Ask per command with that grant scope.
     #[tokio::test]
     async fn rhai_launch_keys_choose_run_all_or_ask_per_command() {
         use entanglement_core::ApprovalScope::{Always, Once, Session};
@@ -665,7 +664,6 @@ mod tests {
             ('y', Some((false, Once))),
             ('s', Some((false, Session))),
             ('a', Some((false, Always))),
-            ('d', None),
         ] {
             let sid = SessionId::new("s1");
             let mut app = App::new_for_test(sid.clone());

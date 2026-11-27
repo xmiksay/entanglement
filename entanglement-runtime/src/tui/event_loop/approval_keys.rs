@@ -39,13 +39,12 @@ pub(super) async fn handle_waiting_for_approval(
         // The generic scope letters mean nothing for `propose_plan`
         // (no grant is ever recorded for it) — swallow them here
         // rather than let `y` silently fire the old default.
-        KeyCode::Char('y' | 's' | 'a' | 'd') if is_plan_request(app) => {}
+        KeyCode::Char('y' | 's' | 'a') if is_plan_request(app) => {}
         // A scope the card does not honor (ADR-0230: a floored write, an
         // inline launch, `request_mode`) is not on the footer — swallow its
         // letter rather than send an approval that silently means less.
         KeyCode::Char('s') if !offers(app, ApprovalScope::Session) => {}
         KeyCode::Char('a') if !offers(app, ApprovalScope::Always) => {}
-        KeyCode::Char('d') if !offers(app, ApprovalScope::SessionDir) => {}
         // A `rhai` launch card (ADR-0228): `r` runs the whole script
         // force-allowed, this run only; `y`/`s`/`a` run it asking per
         // command, `s`/`a` also granting the script's path (a later launch
@@ -63,9 +62,8 @@ pub(super) async fn handle_waiting_for_approval(
             send_rhai_approval(app, holly, request_id.clone(), false, scope).await;
         }
         // Approve scopes (#174): `y` this once, `s` for the rest of
-        // the session, `a` always (persisted), `d` the call's directory
-        // for the session (#486, ADR-0126) — each only when the card's
-        // `scopes` carry it (guards above).
+        // the session, `a` always (persisted) — each only when the
+        // card's `scopes` carry it (guards above).
         KeyCode::Char('y') => {
             send_approval(app, holly, request_id.clone(), ApprovalScope::Once).await;
         }
@@ -74,9 +72,6 @@ pub(super) async fn handle_waiting_for_approval(
         }
         KeyCode::Char('a') => {
             send_approval(app, holly, request_id.clone(), ApprovalScope::Always).await;
-        }
-        KeyCode::Char('d') => {
-            send_approval(app, holly, request_id.clone(), ApprovalScope::SessionDir).await;
         }
         KeyCode::Char('n') => {
             app.set_approval_mode(ApprovalMode::EnteringRejectReason {
@@ -236,14 +231,13 @@ pub(super) fn record_approved(app: &mut App, tool: &str, scope: ApprovalScope) {
         ApprovalScope::Once => "once",
         ApprovalScope::Session => "session",
         ApprovalScope::Always => "always",
-        ApprovalScope::SessionDir => "session, dir",
     };
     app.record_status("approval", format!("✓ approved {tool} ({scope_label})"));
 }
 
 /// Whether the currently parked approval is a `propose_plan` request (#560,
 /// ADR-0207 §7 extension) — the one tool whose accept keys diverge from the
-/// generic `y`/`s`/`a`/`d` scope letters (see the match arms above).
+/// generic `y`/`s`/`a` scope letters (see the match arms above).
 pub(super) fn is_plan_request(app: &App) -> bool {
     app.pending_tool_request()
         .is_some_and(|req| req.tool == crate::tool_names::PROPOSE_PLAN_TOOL)
@@ -294,7 +288,7 @@ pub(super) async fn send_rhai_approval(
         _ if !granted => "",
         ApprovalScope::Session => ", path granted for the session",
         ApprovalScope::Always => ", path granted always",
-        ApprovalScope::Once | ApprovalScope::SessionDir => "",
+        ApprovalScope::Once => "",
     };
     app.record_status("approval", format!("✓ approved rhai ({how}{grant})"));
 }
@@ -306,7 +300,7 @@ pub(super) async fn send_rhai_approval(
 /// `propose_plan::run_propose_plan` in place of the old hardcoded `build`
 /// constant. Scope stays `Once` — it was already inert for this tool (the
 /// runtime never records a grant for a plan approval), so there is nothing
-/// for `[s]`/`[a]`/`[d]` to mean here; this function is the only accept path
+/// for `[s]`/`[a]` to mean here; this function is the only accept path
 /// `propose_plan` offers now.
 pub(super) async fn send_plan_approval(
     app: &mut App,

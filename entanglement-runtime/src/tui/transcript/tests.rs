@@ -419,15 +419,6 @@ fn approval_tail_footer_offers_only_the_scopes_the_card_honors() {
     assert!(text.contains("[y]") && !text.contains("[s]"), "{text:?}");
 }
 
-/// The read-only triad's `[d]` rides its `SessionDir` scope.
-#[test]
-fn approval_tail_footer_shows_dir_for_the_read_triad() {
-    let sid = SessionId::new("s1");
-    let mut app = App::new_for_test(sid.clone());
-    feed_tool_request(&mut app, &sid, 1, "t1", "read", r#"{"path":"a"}"#);
-    assert!(footer_text(&mut app).contains("[d]"));
-}
-
 #[test]
 fn approval_tail_header_shows_primary_arg_like_a_block() {
     // #487: the approval tail's header now matches the block idiom — the
@@ -449,8 +440,6 @@ fn approval_tail_header_shows_primary_arg_like_a_block() {
 fn approval_tail_footer_shows_session_and_always_shortcuts() {
     // #174: the event loop accepts three approval scopes (`y`/`s`/`a`), so the
     // footer must surface `[s]` (session) and `[a]` (always) alongside `[y]`.
-    // `bash` is not a read-capability member, so `[d]` stays gated off — the two
-    // new hints must appear independent of the read-only triad's directory hint.
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
     feed_tool_request(&mut app, &sid, 1, "t1", "bash", r#"{"command":"echo hi"}"#);
@@ -469,10 +458,6 @@ fn approval_tail_footer_shows_session_and_always_shortcuts() {
     assert!(
         footer_text.contains("[a]"),
         "always shortcut missing: {footer_text:?}"
-    );
-    assert!(
-        !footer_text.contains("[d]"),
-        "non-read-only tool must not show [d]: {footer_text:?}"
     );
 }
 
@@ -509,7 +494,6 @@ fn approval_tail_footer_shows_the_rhai_launch_choices() {
     ] {
         assert!(text.contains(want), "{want}: {text:?}");
     }
-    assert!(!text.contains("[d]"), "{text:?}");
 }
 
 #[test]

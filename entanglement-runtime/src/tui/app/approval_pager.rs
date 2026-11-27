@@ -3,7 +3,7 @@
 //! same header + per-tool rendering the transcript's parked tail shows
 //! (`transcript::render_approval_tool_body`), so a diff/plan body that
 //! scrolled off the transcript viewport is still fully readable without
-//! leaving the approval parked. `y`/`s`/`a`/`d`/`n`/`e` keep resolving the
+//! leaving the approval parked. `y`/`s`/`a`/`n`/`e` keep resolving the
 //! approval while it's open — `event_loop`'s `WaitingForApproval` arm only
 //! gains pager-aware navigation (`j`/`k`/`PageUp`/`PageDown`/`Esc`), the
 //! decision keys are untouched.

@@ -12,17 +12,15 @@
 //! A grant only ever upgrades a resolved `Ask` to `Allow`; it never touches a
 //! `Deny`, so a hard policy floor (the session's permission mode or the config
 //! ceiling, #172) stands regardless of what the user once approved. Matching
-//! is **exact** for `Session`/`Always`: a grant for `bash(git status)`
-//! re-allows only that command, never `git status -s` — the issue is repeated
-//! prompts for the *same* call, not a pattern grant. Since ADR-0207 §8, a
+//! is **exact**: a grant for `bash(git status)` re-allows only that command,
+//! never `git status -s` — the issue is repeated prompts for the *same* call,
+//! not a pattern grant. Since ADR-0207 §8, a
 //! `Session`/`Always` grant also carries the **mode** it was earned in and
 //! matches only that mode exactly — a grant from `build` must not fire in
 //! `research` — so [`GrantKey`] gained a `mode` field; a pre-ADR-0207 grants
 //! file has no mode on its entries, loaded as `mode: None`, which by
 //! construction never equals a live call's `Some(mode)` (never matches, the
-//! safe direction). [`SessionDir`][ApprovalScope::SessionDir]
-//! (#486, ADR-0126) is a deliberate exception to both the exact-match and the
-//! mode-scoping rule — see below.
+//! safe direction).
 //!
 //! # Scopes
 //!
@@ -36,23 +34,8 @@
 //!   the commented user config the way secrets do. Loaded at startup, re-written
 //!   on each new `Always` grant. Best-effort: a write failure is logged, never
 //!   fatal.
-//! - **SessionDir** (#486, ADR-0126) — session-only like `Session`, but widens
-//!   to every call whose grading argument falls under the approved call's
-//!   directory ([`dir_for`], [`dir_covers`]) instead of matching one exact
-//!   call. Restricted to the read-only triad (`read`/`grep`/`glob`, the
-//!   ADR-0114 `read` capability's members) — the tools a repeated-prompt
-//!   nuisance actually comes from; any other tool degrades this to an exact
-//!   `Session` grant rather than widening it. Never persisted (no
-//!   `Always`-directory scope) — the TUI `/allow <path>` command
-//!   (`grant_session_dir`) is the other way to add one, beside approving a
-//!   prompted call with `[d]`. **Mode-scoped**, like every other scope (#634:
-//!   a prior draft of ADR-0207 §8 carved this one out as an exception —
-//!   "every mode with a human present to approve it allows the read-only
-//!   triad anyway" — but that leaves one grant scope unscoped for no
-//!   functional gain, and the user chose symmetry: a directory grant earned
-//!   in `research` matches only `research`, exactly like `GrantKey`).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use entanglement_core::{ApprovalScope, SessionId};
@@ -107,16 +90,10 @@ impl GrantKey {
 }
 
 /// The runtime's grant set: per-session (in-memory) plus persisted "always"
-/// grants, with the file path to re-write on an `Always` grant. `session_dirs`
-/// is the [`ApprovalScope::SessionDir`] store (#486, ADR-0126; mode-scoped
-/// since #634): a session-only, never-persisted set of directories
-/// (root-relative, #485), keyed by the mode they were earned in, that widen
-/// the read-only triad (`read`/`grep`/`glob`) instead of matching one exact
-/// call.
+/// grants, with the file path to re-write on an `Always` grant.
 #[derive(Debug, Default)]
 pub struct FileGrantStore {
     session: HashMap<SessionId, HashSet<GrantKey>>,
-    session_dirs: HashMap<SessionId, HashMap<String, BTreeSet<String>>>,
     always: HashSet<GrantKey>,
     path: Option<PathBuf>,
 }
@@ -143,19 +120,17 @@ impl FileGrantStore {
         };
         Self {
             session: HashMap::new(),
-            session_dirs: HashMap::new(),
             always,
             path,
         }
     }
 
     /// Whether a call `(tool, arg)` from `session` under `mode` is already
-    /// granted — an active session grant, a persisted `Always` grant, or a
-    /// [`ApprovalScope::SessionDir`] directory grant covering `arg` (#486),
+    /// granted — an active session grant or a persisted `Always` grant,
     /// earned under this same `mode`. The executor consults this only when a
     /// call resolves to `Ask`, upgrading it to `Allow`. `mode` is matched
-    /// exactly (ADR-0207 §8, extended to `SessionDir` by #634): a grant
-    /// earned in one mode never fires in another.
+    /// exactly (ADR-0207 §8): a grant earned in one mode never fires in
+    /// another.
     pub fn is_granted(
         &self,
         session: &SessionId,
@@ -164,34 +139,18 @@ impl FileGrantStore {
         mode: &str,
     ) -> bool {
         let key = GrantKey::new(tool, arg, mode);
-        if self.always.contains(&key)
+        self.always.contains(&key)
             || self
                 .session
                 .get(session)
                 .is_some_and(|set| set.contains(&key))
-        {
-            return true;
-        }
-        if crate::tool_names::is_read_capability_member(tool) {
-            if let (Some(by_mode), Some(arg)) = (self.session_dirs.get(session), arg) {
-                if let Some(dirs) = by_mode.get(mode) {
-                    return dirs.iter().any(|dir| dir_covers(dir, arg));
-                }
-            }
-        }
-        false
     }
 
     /// Record an approval per its [`ApprovalScope`], tagged with the mode it
     /// was earned in (ADR-0207 §8). `Once` records nothing; `Session` adds an
     /// in-memory grant for `session`; `Always` adds a persisted grant and
-    /// re-writes the managed file (best-effort); `SessionDir` (#486) derives
-    /// the directory `(tool, arg)` implies (see [`dir_for`]) and widens the
-    /// read-only triad under it, for this `mode` only (#634), for the rest of
-    /// the session — on any other tool, or a call `dir_for` can't derive a
-    /// directory from, it degrades to an exact `Session` grant instead of
-    /// widening. Returns whether a new grant was stored (an already-known
-    /// grant is a no-op).
+    /// re-writes the managed file (best-effort). Returns whether a new grant
+    /// was stored (an already-known grant is a no-op).
     pub fn record(
         &mut self,
         session: &SessionId,
@@ -214,47 +173,13 @@ impl FileGrantStore {
                 }
                 inserted
             }
-            ApprovalScope::SessionDir => {
-                if crate::tool_names::is_read_capability_member(tool) {
-                    if let Some(dir) = dir_for(tool, arg) {
-                        return self
-                            .session_dirs
-                            .entry(session.clone())
-                            .or_default()
-                            .entry(mode.to_string())
-                            .or_default()
-                            .insert(dir);
-                    }
-                }
-                let key = GrantKey::new(tool, arg, mode);
-                self.session.entry(session.clone()).or_default().insert(key)
-            }
         }
-    }
-
-    /// Grant `dir` to `session` for the read-only triad (`read`/`grep`/`glob`)
-    /// under `mode` only (#634) — the TUI `/allow <path>` command's entry
-    /// point (#486, ADR-0126). `dir` is lexically normalized
-    /// ([`crate::permission_path::normalize_lexical`], #485) before storage;
-    /// returns the normalized form for the caller's confirmation status line.
-    /// Never persisted — a directory grant is session-only by design, unlike
-    /// the exact-match `Always` scope above.
-    pub fn grant_session_dir(&mut self, session: &SessionId, dir: &str, mode: &str) -> String {
-        let normalized = crate::permission_path::normalize_lexical(dir);
-        self.session_dirs
-            .entry(session.clone())
-            .or_default()
-            .entry(mode.to_string())
-            .or_default()
-            .insert(normalized.clone());
-        normalized
     }
 
     /// Drop a session's in-memory grants when it closes, so a reused id (there are
     /// none today, but the store outlives sessions) never sees stale approvals.
     pub fn forget_session(&mut self, session: &SessionId) {
         self.session.remove(session);
-        self.session_dirs.remove(session);
     }
 
     /// Re-write the managed file from the current `Always` set, merged against
@@ -290,12 +215,6 @@ impl FileGrantStore {
         }
     }
 }
-
-// SessionDir directory derivation/coverage (#486, ADR-0126) — split out of
-// this (previously grandfathered-over-cap) file into its own module: a
-// self-contained unit with no dependency on `GrantKey`/mode-scoping.
-mod session_dir;
-use session_dir::{dir_covers, dir_for};
 
 // The managed grants file: path resolution, on-disk shape, read/write.
 mod file;
@@ -392,158 +311,6 @@ mod tests {
         let s = SessionId::new("s");
         store.record(&s, "grep", None, ApprovalScope::Session, "build");
         assert!(store.is_granted(&s, "grep", None, "build"));
-    }
-
-    // --- #486, ADR-0126: SessionDir directory grants ------------------------
-    // Mode-scoped since #634, symmetric with `GrantKey` -- a `SessionDir`
-    // grant only ever fires under the mode it was earned in.
-
-    #[test]
-    fn session_dir_grant_covers_repeated_reads_under_one_directory() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        assert!(store.record(
-            &s,
-            "read",
-            Some("src/a.rs"),
-            ApprovalScope::SessionDir,
-            "build"
-        ));
-        // The approved file itself, a sibling, and a nested subdirectory all
-        // fall under the granted "src" directory.
-        assert!(store.is_granted(&s, "read", Some("src/a.rs"), "build"));
-        assert!(store.is_granted(&s, "read", Some("src/b.rs"), "build"));
-        assert!(store.is_granted(&s, "read", Some("src/b/c.rs"), "build"));
-        // grep/glob under the same directory are covered too (the triad).
-        assert!(store.is_granted(&s, "grep", Some("src"), "build"));
-        assert!(store.is_granted(&s, "grep", Some("src/sub"), "build"));
-        assert!(store.is_granted(&s, "glob", Some("src/*.rs"), "build"));
-    }
-
-    /// #634: symmetric with `session_grant_is_scoped_to_its_mode` — a
-    /// `SessionDir` grant earned under `build` must not fire under `research`,
-    /// even for the same session/tool/directory.
-    #[test]
-    fn session_dir_grant_is_scoped_to_its_mode() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        store.record(
-            &s,
-            "read",
-            Some("src/a.rs"),
-            ApprovalScope::SessionDir,
-            "build",
-        );
-        assert!(store.is_granted(&s, "read", Some("src/a.rs"), "build"));
-        assert!(
-            !store.is_granted(&s, "read", Some("src/a.rs"), "research"),
-            "a directory grant earned in build must not fire in research"
-        );
-    }
-
-    #[test]
-    fn session_dir_grant_does_not_cover_a_sibling_directory() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        store.record(
-            &s,
-            "read",
-            Some("src/a.rs"),
-            ApprovalScope::SessionDir,
-            "build",
-        );
-        assert!(!store.is_granted(&s, "read", Some("src2/x"), "build"));
-    }
-
-    #[test]
-    fn session_dir_grant_does_not_widen_a_mutation_tool() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        // `edit` is not in the read-only triad, so this degrades to an exact
-        // `Session` grant -- the identical call is covered, a sibling isn't.
-        assert!(store.record(
-            &s,
-            "edit",
-            Some("src/a.rs"),
-            ApprovalScope::SessionDir,
-            "build"
-        ));
-        assert!(store.is_granted(&s, "edit", Some("src/a.rs"), "build"));
-        assert!(!store.is_granted(&s, "edit", Some("src/b.rs"), "build"));
-    }
-
-    #[test]
-    fn session_dir_grant_does_not_leak_to_bash() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        // `bash` has no directory concept (`dir_for` returns `None`), so this
-        // also degrades to an exact `Session` grant on the literal command.
-        store.record(
-            &s,
-            "bash",
-            Some("git status"),
-            ApprovalScope::SessionDir,
-            "build",
-        );
-        assert!(store.is_granted(&s, "bash", Some("git status"), "build"));
-        assert!(!store.is_granted(&s, "bash", Some("git log"), "build"));
-    }
-
-    #[test]
-    fn session_dir_grant_is_scoped_to_its_session() {
-        let mut store = FileGrantStore::default();
-        let a = SessionId::new("a");
-        let b = SessionId::new("b");
-        store.record(
-            &a,
-            "read",
-            Some("src/a.rs"),
-            ApprovalScope::SessionDir,
-            "build",
-        );
-        assert!(store.is_granted(&a, "read", Some("src/b.rs"), "build"));
-        assert!(!store.is_granted(&b, "read", Some("src/b.rs"), "build"));
-    }
-
-    #[test]
-    fn forget_session_clears_dir_grants() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        store.record(
-            &s,
-            "read",
-            Some("src/a.rs"),
-            ApprovalScope::SessionDir,
-            "build",
-        );
-        assert!(store.is_granted(&s, "read", Some("src/b.rs"), "build"));
-        store.forget_session(&s);
-        assert!(!store.is_granted(&s, "read", Some("src/b.rs"), "build"));
-    }
-
-    #[test]
-    fn grant_session_dir_normalizes_and_covers_the_triad() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        assert_eq!(
-            store.grant_session_dir(&s, "./src/", "build"),
-            "src".to_string()
-        );
-        assert!(store.is_granted(&s, "read", Some("src/a.rs"), "build"));
-        assert!(store.is_granted(&s, "grep", Some("src/a.rs"), "build"));
-        assert!(store.is_granted(&s, "glob", Some("src/*.rs"), "build"));
-        assert!(!store.is_granted(&s, "edit", Some("src/a.rs"), "build"));
-        // #634: the `/allow` grant is scoped to the mode it was made in too.
-        assert!(!store.is_granted(&s, "read", Some("src/a.rs"), "research"));
-    }
-
-    #[test]
-    fn grant_session_dir_dot_covers_every_relative_arg() {
-        let mut store = FileGrantStore::default();
-        let s = SessionId::new("s");
-        store.grant_session_dir(&s, ".", "build");
-        assert!(store.is_granted(&s, "read", Some("anything/at/all.rs"), "build"));
-        assert!(store.is_granted(&s, "read", Some("top_level.rs"), "build"));
     }
 
     #[test]

@@ -370,6 +370,15 @@ mod tests {
         let mut floored = approval(&s, "r1", ApprovalKind::Tool, "write", "{}", "why", None);
         floored.scopes = vec![ApprovalScope::Once];
         let launch = approval(&s, "r2", ApprovalKind::Rhai, "rhai", "1", "why", None);
+        let send = approval(
+            &s,
+            "r3",
+            ApprovalKind::Tool,
+            "agent_send",
+            "{}",
+            "why",
+            None,
+        );
         let approve = |scope| Decision::Approve {
             scope,
             mode: None,
@@ -377,11 +386,7 @@ mod tests {
         };
         for (req, sent, want) in [
             (floored, ApprovalScope::Always, ApprovalScope::Once),
-            (
-                launch.clone(),
-                ApprovalScope::SessionDir,
-                ApprovalScope::Once,
-            ),
+            (send, ApprovalScope::Always, ApprovalScope::Once),
             (launch, ApprovalScope::Session, ApprovalScope::Session),
         ] {
             let rid = req.request_id.clone();

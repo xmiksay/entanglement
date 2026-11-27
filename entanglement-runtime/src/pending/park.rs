@@ -22,9 +22,7 @@ use crate::seam::Decision;
 /// head should offer. `propose_plan`/`request_mode` ignore the scope (their
 /// approver picks a *mode*, not a grant lifetime), so only `Once`; so is a
 /// floored write (it always asks, so no grant is recorded) and an inline
-/// `rhai` launch (no path to key a grant on). `SessionDir` widens only the
-/// read-only triad (ADR-0126), and not on an escape card — elsewhere it
-/// would silently degrade to `Session`, so it isn't offered. `agent_send`
+/// `rhai` launch (no path to key a grant on). `agent_send`
 /// grades on a handle minted for this run (ADR-0235), so a persisted
 /// `Always` grant could never match again — not offered either.
 pub fn scopes_for(kind: ApprovalKind, tool: &str, card: Option<CardReason>) -> Vec<ApprovalScope> {
@@ -38,22 +36,11 @@ pub fn scopes_for(kind: ApprovalKind, tool: &str, card: Option<CardReason>) -> V
         ApprovalKind::Tool if tool == crate::tool_names::AGENT_SEND_TOOL => {
             vec![ApprovalScope::Once, ApprovalScope::Session]
         }
-        ApprovalKind::Tool | ApprovalKind::Rhai => {
-            let mut scopes = vec![
-                ApprovalScope::Once,
-                ApprovalScope::Session,
-                ApprovalScope::Always,
-            ];
-            // An escape grant is keyed on the exact path (`ExtraRootStore`
-            // folds `SessionDir` into `Session`), so a directory grant would
-            // over-promise there.
-            if crate::tool_names::is_read_capability_member(tool)
-                && card != Some(CardReason::RootEscape)
-            {
-                scopes.push(ApprovalScope::SessionDir);
-            }
-            scopes
-        }
+        ApprovalKind::Tool | ApprovalKind::Rhai => vec![
+            ApprovalScope::Once,
+            ApprovalScope::Session,
+            ApprovalScope::Always,
+        ],
     }
 }
 
@@ -178,18 +165,17 @@ mod tests {
     }
 
     #[test]
-    fn scopes_offer_session_dir_only_for_the_read_triad() {
-        let read = scopes_for(ApprovalKind::Tool, "read", None);
-        assert_eq!(read.last(), Some(&ApprovalScope::SessionDir));
-        let bash = scopes_for(ApprovalKind::Tool, "bash", None);
-        assert_eq!(
-            bash,
-            vec![
-                ApprovalScope::Once,
-                ApprovalScope::Session,
-                ApprovalScope::Always
-            ]
-        );
+    fn tools_offer_once_session_always() {
+        for tool in ["read", "bash"] {
+            assert_eq!(
+                scopes_for(ApprovalKind::Tool, tool, None),
+                vec![
+                    ApprovalScope::Once,
+                    ApprovalScope::Session,
+                    ApprovalScope::Always
+                ]
+            );
+        }
     }
 
     #[test]
