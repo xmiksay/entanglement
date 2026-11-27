@@ -120,8 +120,8 @@ impl SandboxPolicy {
 
 /// Build the `Command` that will run `program`+`args` under `policy`, rooted
 /// at `root` (the project root a sandboxed call may read/write — bind-mounted
-/// read-write at the same absolute path, so [`crate::path_grading::resolve_under_root`]'s
-/// symlink-safe containment keeps working unmodified inside the sandbox,
+/// read-write at the same absolute path, so the paths
+/// [`super::containment`] resolves stay valid inside the sandbox,
 /// ADR-0104 §5). `SandboxBackend::None` returns a plain, unwrapped
 /// `Command::new(program)` — identical to pre-sandbox behavior.
 pub fn command(policy: &SandboxPolicy, root: &Path, program: &str, args: &[String]) -> Command {

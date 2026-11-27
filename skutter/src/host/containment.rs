@@ -7,22 +7,6 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// Resolve `rel` against `root`, rejecting paths that escape the root via `..`
-/// (and absolute paths that don't live under it) **or via a symlink**. The root
-/// is canonicalized, then the resolved path is normalized lexically and its
-/// deepest existing ancestor is canonicalized (following symlinks) and required
-/// to stay under the canonical root; the not-yet-existing tail (for `edit`/
-/// `write` creating a file) is `..`-free plain names, so re-appending it can't
-/// escape. This upgrades ADR-0008's lexical-only containment to a real
-/// write/read boundary without breaking the create path (ADR-0054, #163).
-pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
-    let (resolved, contained) = resolve_and_contained(root, rel)?;
-    if !contained {
-        return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
-    }
-    Ok(resolved)
-}
-
 /// The absolute out-of-root target `rel` resolves to under `root`, or `None`
 /// when `rel` stays contained (or can't be resolved at all). The escape-root
 /// check (ADR-0109) asks for exactly this path, matching the resolution the
@@ -37,8 +21,8 @@ pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
 /// Resolve `rel` against `root` — lexical `..`/`.` normalization plus symlink-safe
 /// canonicalization of the deepest existing ancestor (#163) — returning the
 /// absolute target and whether it stays contained under `root`. The containment
-/// flag is the AND of the lexical and canonical checks; a strict caller rejects
-/// `false`, a tool the escape-root check already cleared uses the path. A genuinely malformed path (a `..` popping past the filesystem root)
+/// flag is the AND of the lexical and canonical checks: the escape-root check
+/// asks about a `false`, and a tool it cleared uses the path either way. A genuinely malformed path (a `..` popping past the filesystem root)
 /// is still a hard `Err`.
 pub fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
     // Canonicalize the root defensively so containment holds even when the head
