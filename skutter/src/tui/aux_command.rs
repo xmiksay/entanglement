@@ -56,11 +56,92 @@ pub(crate) fn pin_label(store: &AuxModelStore, purpose: Purpose) -> String {
 mod tests {
     use super::*;
 
+    use std::sync::{Arc, Mutex};
+
+    use entanglement_core::SessionId;
+
+    use crate::config::aux_models::AuxModelsPath;
+    use crate::tui::session_view::TranscriptEntry;
+
     #[test]
     fn pin_label_falls_back_when_a_purpose_is_unpinned() {
         let store = AuxModelStore::default();
         assert_eq!(pin_label(&store, Purpose::Summarize), "(primary model)");
         assert_eq!(pin_label(&store, Purpose::SessionTitle), "(primary model)");
         assert_eq!(pin_label(&store, Purpose::Narrate), "(primary model)");
+    }
+
+    fn last_aux_error(app: &App) -> Option<&str> {
+        app.transcript().iter().rev().find_map(|e| match e {
+            TranscriptEntry::ToolOutput { tool, output }
+                if tool.as_deref() == Some("aux-model") =>
+            {
+                output.strip_prefix("error: ")
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_path_less_store_records_an_error_and_keeps_the_store() {
+        let mut app = App::new_for_test(SessionId::new("t"));
+        let store = Arc::new(Mutex::new(AuxModelStore::default()));
+        app.set_aux_models(store.clone(), AuxModelsPath::at(None));
+
+        send_aux_model(&mut app, "/aux-model summarize p/m");
+
+        let err = last_aux_error(&app).expect("an aux-model error line");
+        assert!(err.contains("ENTANGLEMENT_STATE_DIR"), "{err}");
+        assert_eq!(store.lock().unwrap().get(Purpose::Summarize), None);
+        assert_eq!(app.toast(), None);
+    }
+
+    #[test]
+    fn no_installed_store_records_an_error() {
+        let mut app = App::new_for_test(SessionId::new("t"));
+        send_aux_model(&mut app, "/aux-model summarize p/m");
+        assert!(last_aux_error(&app).is_some());
+    }
+
+    #[test]
+    fn a_pin_lands_in_the_file_and_the_shared_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("aux-models.yml");
+        let mut app = App::new_for_test(SessionId::new("t"));
+        let store = Arc::new(Mutex::new(AuxModelStore::default()));
+        app.set_aux_models(store.clone(), AuxModelsPath::at(Some(file.clone())));
+
+        send_aux_model(&mut app, "/aux-model summarize p/m");
+
+        assert_eq!(last_aux_error(&app), None);
+        assert_eq!(
+            store.lock().unwrap().get(Purpose::Summarize),
+            Some(("p", "m"))
+        );
+        let on_disk = AuxModelsPath::at(Some(file)).load();
+        assert_eq!(on_disk.get(Purpose::Summarize), Some(("p", "m")));
+        assert!(app.toast().is_some_and(|t| t.contains("p/m")));
+    }
+
+    #[test]
+    fn a_poisoned_store_lock_is_an_error_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(SessionId::new("t"));
+        let store = Arc::new(Mutex::new(AuxModelStore::default()));
+        let poisoner = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("poison the aux-models lock");
+        })
+        .join();
+        app.set_aux_models(
+            store,
+            AuxModelsPath::at(Some(dir.path().join("aux-models.yml"))),
+        );
+
+        let err = app
+            .persist_aux_pin(Purpose::Summarize, "p", "m")
+            .unwrap_err();
+        assert!(err.contains("poisoned"), "{err}");
     }
 }
