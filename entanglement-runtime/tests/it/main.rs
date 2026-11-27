@@ -93,3 +93,4 @@ mod subagent_tenant_prefix;
 mod system_prompt_assembly;
 mod tool_mask;
 mod unattended_mode;
+mod unattended_reason;

@@ -12,7 +12,7 @@ use crate::run_limits;
 use crate::seam::ApprovalDecision;
 
 use super::gates::Cleared;
-use super::grade::graded_name;
+use super::grade::{graded_name, grant_key};
 use super::{Call, Dispatcher, Via};
 
 /// The card reason for a write the trusted-script floor carded (ADR-0228).
@@ -143,14 +143,14 @@ impl Dispatcher {
                     sc.approve(&call.tool, &call.input);
                 }
                 if scope != ApprovalScope::Once && !floored {
+                    let graded = graded_name(&self.tools, &call.tool, &call.input);
+                    let why = match &prompt {
+                        Prompt::Grade(why) => why.as_ref(),
+                        Prompt::Host(_) => None,
+                    };
+                    let (tool, arg) = grant_key(why, &graded, arg.as_deref());
                     self.grants
-                        .record(
-                            &earner,
-                            &graded_name(&self.tools, &call.tool, &call.input),
-                            arg.as_deref(),
-                            scope,
-                            &self.mode,
-                        )
+                        .record(&earner, tool, arg, scope, &self.mode)
                         .await;
                 }
                 Some(Cleared::Run)
@@ -177,6 +177,7 @@ mod tests {
         Prompt::Grade(Some(AskReason {
             text: "accesses a path outside the project root: /elsewhere/s/x.rhai".into(),
             card: CardReason::RootEscape,
+            grant: None,
         }))
     }
 

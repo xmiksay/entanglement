@@ -13,7 +13,7 @@ use entanglement_core::SessionId;
 use crate::capability::Capability;
 use crate::permission::min_permission;
 use crate::permission_path::grading_arg;
-use crate::policy::{Grade, GrantStore, PermissionResolver};
+use crate::policy::{AskReason, Grade, GrantStore, PermissionResolver};
 use crate::rhai_trust::Trust;
 use crate::tools::ToolRegistry;
 
@@ -46,7 +46,8 @@ pub(crate) struct GradeInputs<'a> {
 /// on: the mode grade clamped across the ancestor chain — a `Deny` returned
 /// as resolved, with its reason (#964) — then an `Ask` (the mode's, or a
 /// resolver's reasoned one) upgraded to `Allow` by an existing mode-scoped
-/// grant on the same `(tool, argument)`. Last, a write
+/// grant on the same `(tool, argument)`, or on the key the resolver named
+/// for its ask ([`grant_key`]). Last, a write
 /// ([`crate::rhai_trust::floored_write`]) of a `*.rhai` file inside a
 /// `rhai.trusted` folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored
 /// at `Ask` whatever allowed it (ADR-0228: such a file later runs or loads
@@ -59,7 +60,7 @@ pub(crate) async fn grade_call(
     let arg = grading_arg(g.tools, tool, input, g.root);
     let grade =
         match resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await {
-            Grade::Ask(_) if g.grants.is_granted(g.session, tool, arg.as_deref(), g.mode) => {
+            Grade::Ask(why) if granted(g, grant_key(why.as_ref(), tool, arg.as_deref())) => {
                 Grade::Allow
             }
             graded => graded,
@@ -73,6 +74,24 @@ pub(crate) async fn grade_call(
         return (Grade::Ask(None), arg);
     }
     (grade, arg)
+}
+
+fn granted(g: &GradeInputs<'_>, (tool, arg): (&str, Option<&str>)) -> bool {
+    g.grants.is_granted(g.session, tool, arg, g.mode)
+}
+
+/// The `(tool, argument)` a grant answering an `Ask` is looked up and
+/// recorded under: the key the resolver named for its ask
+/// ([`AskReason::grant`]), else the call's own.
+pub(crate) fn grant_key<'a>(
+    why: Option<&'a AskReason>,
+    tool: &'a str,
+    arg: Option<&'a str>,
+) -> (&'a str, Option<&'a str>) {
+    match why.and_then(|w| w.grant.as_ref()) {
+        Some(key) => (&key.tool, Some(&key.arg)),
+        None => (tool, arg),
+    }
 }
 
 /// The name a call grades under: the target its tool's
@@ -213,5 +232,65 @@ mod tests {
             resolve_effective(&plain, &chain, "bash", "{}", None).await,
             Grade::Deny(None)
         );
+    }
+
+    /// `grade_call` of a `bash` call no registered tool describes.
+    async fn grade_bash(
+        resolver: &dyn PermissionResolver,
+        grants: &dyn GrantStore,
+        session: &SessionId,
+    ) -> Grade {
+        let tools = ToolRegistry::new();
+        let chain = [session.clone()];
+        let inputs = GradeInputs {
+            tools: &tools,
+            resolver,
+            chain: &chain,
+            grants,
+            session,
+            mode: "build",
+            root: None,
+            floor: None,
+            capability_override: None,
+        };
+        grade_call(&inputs, "bash", "{}").await.0
+    }
+
+    /// #968 review: a resolver's keyed ask is answered by a grant on its
+    /// key only — a grant on the call's own argument does not lift it —
+    /// while a plain ask still keys on the argument.
+    #[tokio::test]
+    async fn a_keyed_ask_is_answered_by_its_own_grant_only() {
+        use crate::policy::{AskGrant, InMemoryGrantStore};
+        use entanglement_core::{ApprovalScope, CardReason};
+
+        let key = AskGrant {
+            tool: "bash#outside-root".into(),
+            arg: r#"["/elsewhere","make"]"#.into(),
+        };
+        let session = SessionId::new("s");
+        let keyed = per_session(&[(
+            &session,
+            Grade::ask_keyed("outside", CardReason::RootEscape, key.clone()),
+        )]);
+        let plain = per_session(&[(&session, Grade::Ask(None))]);
+        let grants = InMemoryGrantStore::new();
+        // No registered tool: the call's own key is `(bash, None)`.
+        grants
+            .record(&session, "bash", None, ApprovalScope::Session, "build")
+            .await;
+        let lifted = grade_bash(&keyed, &grants, &session).await;
+        assert!(matches!(lifted, Grade::Ask(Some(_))), "{lifted:?}");
+        assert_eq!(grade_bash(&plain, &grants, &session).await, Grade::Allow);
+        grants
+            .record(
+                &session,
+                &key.tool,
+                Some(&key.arg),
+                ApprovalScope::Session,
+                "build",
+            )
+            .await;
+        assert_eq!(grade_bash(&keyed, &grants, &session).await, Grade::Allow);
     }
 }

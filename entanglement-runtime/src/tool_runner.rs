@@ -74,7 +74,7 @@ use crate::run_limits;
 mod dispatch;
 pub(crate) use dispatch::grade::resolve_effective;
 #[cfg(feature = "rhai")]
-pub(crate) use dispatch::{Call, Dispatcher, Outcome, Posture, ScriptCall, Via};
+pub(crate) use dispatch::{grade::grant_key, Call, Dispatcher, Outcome, Posture, ScriptCall, Via};
 
 /// Lock the executor's per-session mode map. It holds plain values, valid
 /// whatever a panicking holder did, so a poisoned lock is read through.

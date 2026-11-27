@@ -54,8 +54,8 @@ rhai = ["dep:rhai"]
 entanglement-core = { workspace = true }
 entanglement-provider = { workspace = true, optional = true }
 # Per-crate feature trim (#502, ADR-0135): `rt`+`rt-multi-thread`+`macros`
-# back the examples' `#[tokio::main]` and the one `flavor = "multi_thread"`
-# test (`src/extra_roots.rs`); `sync`/`time` the mpsc/broadcast/oneshot/watch
+# back the examples' `#[tokio::main]` (multi-threaded by default);
+# `sync`/`time` the mpsc/broadcast/oneshot/watch
 # + sleep/timeout/interval usage throughout; `fs`/`process`/`io-util` the
 # file backups, mcp stdio and the exec helpers' piping; `net` the MCP transport tests' stub servers. The `tokio`
 # dev-dependency adds only `test-util`.

@@ -128,9 +128,14 @@ impl Dispatcher {
                     .denials
                     .record_repeat(&self.session, self.repeat_of(call, arg.as_deref()))
             {
+                // A resolver's reason says why the call needs asking at all
+                // (#968: it reaches outside the project root).
+                let why = reason
+                    .as_ref()
+                    .map_or_else(String::new, |w| format!(" ({})", w.text));
                 return Some(Cleared::Refused(format!(
-                    "tool `{}` denied — mode `{}` is unattended (question_timeout {}s, no one \
-                     to prompt); call it again to request a one-time approval",
+                    "tool `{}` denied{why} — mode `{}` is unattended (question_timeout {}s, \
+                     no one to prompt); call it again to request a one-time approval",
                     call.tool, self.mode, self.limits.question_timeout
                 )));
             }

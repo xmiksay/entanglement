@@ -29,6 +29,23 @@ pub enum Grade {
 pub struct AskReason {
     pub text: String,
     pub card: CardReason,
+    /// The grant that answers this ask, when it is not the call's own
+    /// `(tool, argument)`: the executor looks the grant up, and records an
+    /// approval wider than `Once`, under this key instead. A resolver that
+    /// asks about something the argument does not name (`skutter`'s
+    /// escape-root check: `bash`'s argument is its command, the question is
+    /// its `workdir`) keys it here, so a grant on the bare argument cannot
+    /// answer it, nor its approval grant the bare argument (#968).
+    pub grant: Option<AskGrant>,
+}
+
+/// A grant key a resolver names for its own ask (see [`AskReason::grant`]).
+/// `tool` should be a name no registered tool has, so the key never meets
+/// a grant on an ordinary call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskGrant {
+    pub tool: String,
+    pub arg: String,
 }
 
 impl Grade {
@@ -42,6 +59,17 @@ impl Grade {
         Grade::Ask(Some(AskReason {
             text: text.into(),
             card,
+            grant: None,
+        }))
+    }
+
+    /// [`Grade::ask`] answered only by a grant on `grant`, never on the
+    /// call's own `(tool, argument)`.
+    pub fn ask_keyed(text: impl Into<String>, card: CardReason, grant: AskGrant) -> Self {
+        Grade::Ask(Some(AskReason {
+            text: text.into(),
+            card,
+            grant: Some(grant),
         }))
     }
 

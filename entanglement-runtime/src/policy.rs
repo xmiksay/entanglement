@@ -39,7 +39,7 @@ use crate::tools::SharedRegistry;
 mod grade;
 mod memory;
 pub(crate) use grade::deny_text;
-pub use grade::{AskReason, Grade};
+pub use grade::{AskGrant, AskReason, Grade};
 pub use memory::InMemoryGrantStore;
 
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`

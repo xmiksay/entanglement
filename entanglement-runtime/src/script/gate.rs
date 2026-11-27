@@ -32,7 +32,7 @@ use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason};
 use crate::policy::{deny_text, AskReason, Grade};
 use crate::seam::ApprovalDecision;
 use crate::tool_names::RHAI_TOOL;
-use crate::tool_runner::{Dispatcher, Posture};
+use crate::tool_runner::{grant_key, Dispatcher, Posture};
 
 use super::input::{read_script, ScriptInput, Source};
 use super::Launch;
@@ -116,7 +116,8 @@ pub(super) async fn gate(
         Some(ApprovalDecision::Approve { scope, run_all, .. }) => {
             // A script that could not be read never ran: nothing to grant.
             if source.is_ok() {
-                record(d, arg.as_deref(), scope).await;
+                let (tool, arg) = grant_key(why.as_ref(), RHAI_TOOL, arg.as_deref());
+                record(d, tool, arg, scope).await;
             }
             run(if run_all {
                 Posture::RunAll
@@ -136,13 +137,13 @@ pub(super) async fn gate(
 /// so the next launch grades Allow (Ask per command). An inline script has
 /// no path to key a grant on, so its approval is once only; `run_all` is
 /// never recorded.
-async fn record(d: &Dispatcher, arg: Option<&str>, scope: ApprovalScope) {
+async fn record(d: &Dispatcher, tool: &str, arg: Option<&str>, scope: ApprovalScope) {
     if scope == ApprovalScope::Once {
         return;
     }
     if let Some(arg) = arg {
         d.grants
-            .record(&d.session, RHAI_TOOL, Some(arg), scope, &d.mode)
+            .record(&d.session, tool, Some(arg), scope, &d.mode)
             .await;
     }
 }
@@ -280,6 +281,7 @@ mod tests {
         let why = AskReason {
             text: "runs a script outside the project root: /elsewhere/x.rhai".into(),
             card: CardReason::LaunchEscape,
+            grant: None,
         };
         let out = card(&p, &Ok("1".into()), Some(&why));
         assert!(
