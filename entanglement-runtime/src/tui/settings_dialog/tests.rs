@@ -3,7 +3,6 @@ use entanglement_provider::{Catalog, GenerationParams, ReasoningEffort};
 use super::generation::{GenerationTab, ModelCaps};
 use super::session::ModelOption;
 use super::*;
-use crate::tui::session_tools_dialog::SessionToolRow;
 
 fn options() -> Vec<ModelOption> {
     model_options(&Catalog::builtin())
@@ -17,15 +16,6 @@ fn caps(provider: &str, model: &str) -> ModelCaps {
         .caps
 }
 
-fn tool(name: &str, profile_default: bool) -> SessionToolRow {
-    SessionToolRow {
-        name: name.to_string(),
-        profile_default,
-        checked: profile_default,
-        allow: false,
-    }
-}
-
 fn dialog_on(provider: &str, model: &str) -> SettingsDialog {
     let session = SessionTab::new(
         "general".to_string(),
@@ -34,7 +24,6 @@ fn dialog_on(provider: &str, model: &str) -> SettingsDialog {
         mode_names(),
         entanglement_core::DEFAULT_MODE,
     );
-    let tools = ToolsTab::new(vec![tool("read", true), tool("mcp__docs__search", false)]);
     let models = options()
         .into_iter()
         .map(|o| (o.provider, o.model))
@@ -42,7 +31,6 @@ fn dialog_on(provider: &str, model: &str) -> SettingsDialog {
     SettingsDialog::new(
         session,
         GenerationParams::default(),
-        tools,
         AuxTab::new(models, &[]),
     )
 }
@@ -64,19 +52,13 @@ fn focus(d: &mut SettingsDialog, id: RowId) {
 fn tabs_cycle_forward_and_back_with_wrap() {
     let mut d = dialog();
     let mut seen = vec![d.tab()];
-    for _ in 0..4 {
+    for _ in 0..3 {
         d.next_tab();
         seen.push(d.tab());
     }
     assert_eq!(
         seen,
-        [
-            Tab::Session,
-            Tab::Generation,
-            Tab::Tools,
-            Tab::Aux,
-            Tab::Session
-        ]
+        [Tab::Session, Tab::Generation, Tab::Aux, Tab::Session]
     );
     d.prev_tab();
     assert_eq!(d.tab(), Tab::Aux);
@@ -102,7 +84,6 @@ fn persist_flags_are_per_tab_and_aux_is_always_on() {
     d.activate(true);
     assert!(d.persist(Tab::Session));
     assert!(!d.persist(Tab::Generation));
-    assert!(!d.persist(Tab::Tools));
     d.set_tab(Tab::Aux);
     focus(&mut d, RowId::Persist);
     d.activate(true);
@@ -242,32 +223,17 @@ fn model_default_resolves_to_the_catalog_value_or_is_reported() {
     assert_eq!(unresettable, vec![GenField::ThinkingBudget]);
 }
 
-#[test]
-fn tools_changes_become_one_overlay_step() {
-    let mut d = dialog();
-    d.set_tab(Tab::Tools);
-    focus(&mut d, RowId::Tool(1));
-    d.activate(true);
-    let Confirm::Apply(plan) = d.confirm() else {
-        panic!("a plan");
-    };
-    let [ApplyStep::Tools(change)] = plan.as_slice() else {
-        panic!("one tools step: {plan:?}");
-    };
-    assert_eq!(change.entries.len(), 1);
-}
-
 #[derive(Default)]
 struct Recorder {
     calls: Vec<ApplyStep>,
-    fail_tools: bool,
+    fail_generation: bool,
 }
 
 impl SettingsEffects for Recorder {
     async fn apply(&mut self, step: &ApplyStep) -> Result<(), String> {
         self.calls.push(step.clone());
         match step {
-            ApplyStep::Tools(_) if self.fail_tools => Err("connect refused".into()),
+            ApplyStep::Generation { .. } if self.fail_generation => Err("engine gone".into()),
             _ => Ok(()),
         }
     }
@@ -286,9 +252,6 @@ fn everything_changed() -> SettingsDialog {
         RowId::Aux(crate::config::aux_models::Purpose::Narrate),
     );
     d.activate(true);
-    d.set_tab(Tab::Tools);
-    focus(&mut d, RowId::Tool(0));
-    d.activate(true);
     d
 }
 
@@ -297,7 +260,6 @@ fn kind(step: &ApplyStep) -> &'static str {
         ApplyStep::Model { .. } => "model",
         ApplyStep::PermMode { .. } => "perm-mode",
         ApplyStep::Generation { .. } => "generation",
-        ApplyStep::Tools(_) => "tools",
         ApplyStep::Aux { .. } => "aux",
     }
 }
@@ -311,8 +273,8 @@ async fn apply_runs_in_the_settled_order() {
     };
     let report = run_plan(&plan, &mut fx).await;
     let order: Vec<_> = fx.calls.iter().map(kind).collect();
-    assert_eq!(order, ["model", "generation", "tools", "aux"]);
-    assert_eq!(report.applied.len(), 4);
+    assert_eq!(order, ["model", "generation", "aux"]);
+    assert_eq!(report.applied.len(), 3);
     assert!(report.failed.is_none());
 }
 
@@ -323,20 +285,16 @@ async fn a_failing_step_stops_the_plan_and_the_summary_says_what_applied() {
         panic!("confirmed plan");
     };
     let mut fx = Recorder {
-        fail_tools: true,
+        fail_generation: true,
         ..Recorder::default()
     };
     let report = run_plan(&plan, &mut fx).await;
     let order: Vec<_> = fx.calls.iter().map(kind).collect();
-    assert_eq!(
-        order,
-        ["model", "generation", "tools"],
-        "aux never attempted"
-    );
+    assert_eq!(order, ["model", "generation"], "aux never attempted");
     assert_eq!(report.skipped.len(), 1);
     let summary = report.summary(&[]);
     assert!(summary.starts_with("applied: model → "), "{summary}");
-    assert!(summary.contains("FAILED: tool overlay"), "{summary}");
-    assert!(summary.contains("connect refused"), "{summary}");
+    assert!(summary.contains("FAILED: generation"), "{summary}");
+    assert!(summary.contains("engine gone"), "{summary}");
     assert!(summary.contains("not applied: aux narrate"), "{summary}");
 }

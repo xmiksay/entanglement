@@ -1,8 +1,7 @@
 //! What a background script that followed its session's compaction
 //! (ADR-0241) reads per call: the session's current mode (a grant earned
-//! under an older mode no longer clears it), the mode-scoped overlay (a
-//! launch-mode enable lapses), the switch's wait for the executor's mode
-//! fold, and an undo backup placed by the successor's clock rather than the
+//! under an older mode no longer clears it), the switch's wait for the
+//! executor's mode fold, and an undo backup placed by the successor's clock rather than the
 //! predecessor's `ToolExec` seq.
 
 use std::collections::HashMap;
@@ -12,7 +11,7 @@ use std::time::Duration;
 
 use entanglement_core::{
     ApprovalScope, EngineConfig, Holly, InMsg, Llm, OutEvent, Permission, PermissionProfile,
-    SessionId, ToolOverlayEntry,
+    SessionId,
 };
 use entanglement_runtime::file_backup::FileBackups;
 use entanglement_runtime::host::{host_tools_with, BashTool, HostToolOptions};
@@ -203,38 +202,6 @@ async fn a_grant_earned_under_the_old_mode_no_longer_clears_the_script() {
         std::fs::read_to_string(dir.path.join("f.txt")).unwrap(),
         "zero\n"
     );
-}
-
-/// The overlay is mode-scoped (ADR-0207 §8): an `allow` enable set on the
-/// predecessor in `build` is in the script's launch snapshot, but once the
-/// successor is in `strict` the executor dropped it, and so does the script.
-#[tokio::test]
-async fn a_launch_mode_overlay_enable_lapses_after_the_successors_mode_changes() {
-    let dir = TempDir::new("bg-follow-overlay");
-    let g1 = gate(&dir, "g1");
-    let script = format!(
-        r#"{} edit("f.txt", "", "one\n"); "finished""#,
-        wait_on(&g1, None)
-    );
-    let (holly, _modes) = engine(&dir.path, script, None);
-    let (pred, succ) = ids();
-    let mut sub = holly.subscribe();
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: pred.clone(),
-            entries: vec![ToolOverlayEntry::allow("edit")],
-        })
-        .await
-        .unwrap();
-    launch_and_compact(&holly, &mut sub, &pred, &succ).await;
-    set_mode(&holly, &mut sub, &succ, "strict").await;
-
-    std::fs::write(&g1, "").unwrap();
-    until(&mut sub, "the script's edit asked", no_card, |ev| {
-        edit_card_on(ev, &succ)
-    })
-    .await;
-    assert!(!dir.path.join("f.txt").exists(), "the edit has not run");
 }
 
 /// Until the executor folded the successor's mode the script stays on the

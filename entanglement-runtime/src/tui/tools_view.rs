@@ -1,18 +1,8 @@
 //! `/tools`'s read-heavy browser (#560 P9, ADR-0199 part 3): every tool the
 //! session could reach, grouped by kind, filterable by free text plus a
-//! category cycle. Unlike [`super::session_tools_dialog`] (a checklist that
-//! *edits* the overlay), this is primarily a *lookup* surface — `Enter` on a
-//! row still enables it (delegating to the same `/enable` path,
-//! ADR-0199 part 4), but the point of the view is answering "what exists,
-//! and can I already use it" before reaching for `/enable` by hand.
-//!
-//! Kept as its own dialog rather than folded into `SessionToolsDialog`: that
-//! dialog's `to_entries` diff-against-profile submit shape has no analogue
-//! here (this view never submits a batch), and its rows carry only a
-//! name/checkbox — no room for a description, kind, or status without
-//! reshaping a struct three other call sites already depend on. The
-//! row-building logic it needs (name/description/kind) is *not*
-//! reimplemented here — see `App::tools_view_rows` (`app/tools_view.rs`),
+//! category cycle. A read-only *lookup* surface answering "what exists"; what
+//! a session may call is its permission mode's decision. The row-building
+//! logic it needs (name/description/kind) is *not* reimplemented here — see `App::tools_view_rows` (`app/tools_view.rs`),
 //! which calls into [`crate::discover::index_rows`], the runtime's one live
 //! tool index.
 
@@ -31,11 +21,6 @@ pub struct ToolsViewRow {
     pub kind: &'static str,
     /// `"advertised"` | `"hidden"` | `"n/a"`.
     pub status: &'static str,
-    /// Withheld by the session's own tool overlay — the same
-    /// effective-availability read `session_tools_dialog` computes. No
-    /// profile-borne mask exists any more (ADR-0207): every profile inherits
-    /// every tool, so the overlay is the only thing that can mask a row.
-    pub masked: bool,
     /// Always `None` now (ADR-0207 moved the permission grade off the
     /// profile and onto the session's mode, not wired into this view yet) —
     /// kept as a field so a later stage can populate it from the mode
@@ -112,11 +97,6 @@ impl ToolsView {
             .collect()
     }
 
-    pub fn selected(&self) -> Option<&ToolsViewRow> {
-        let idx = self.state.selected()?;
-        self.filtered().into_iter().nth(idx)
-    }
-
     fn clamp_selection(&mut self) {
         let len = self.filtered().len();
         if len == 0 {
@@ -182,7 +162,6 @@ mod tests {
             description: format!("{name} description"),
             kind,
             status: "n/a",
-            masked: false,
             grade: None,
         }
     }
@@ -244,7 +223,6 @@ mod tests {
         // selection.
         v.cycle_category(); // -> tool (one row)
         assert_eq!(v.state().selected(), Some(0));
-        assert_eq!(v.selected(), Some(&row("bash", "tool")));
     }
 
     #[test]
@@ -252,7 +230,6 @@ mod tests {
         let mut v = view_with(vec![row("bash", "tool")]);
         v.push_filter_char('z');
         assert_eq!(v.state().selected(), None);
-        assert_eq!(v.selected(), None);
     }
 
     #[test]

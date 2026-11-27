@@ -21,7 +21,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
+    LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -400,95 +400,4 @@ async fn update_tasks_runs_unprompted_under_every_built_in_mode() {
             "{mode}: update_tasks must run and ack; got {outs:?}"
         );
     }
-}
-
-/// #634 (gap 2 of stage 4b): a matching overlay **deny** entry — inert since
-/// ADR-0207 stage 4a deleted `tool_mask_source` — must decline the call flat
-/// again, checked before the mode grade even runs. `build` mode alone would
-/// allow `edit` outright, so any decline here is attributable to the overlay.
-#[tokio::test]
-async fn overlay_deny_declines_the_call_flat() {
-    let holly = spawn_with_edit_call();
-    let sid = SessionId::new("s1");
-    let mut sub = holly.subscribe();
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: sid.clone(),
-            entries: vec![ToolOverlayEntry::deny("edit")],
-        })
-        .await
-        .unwrap();
-    loop {
-        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
-            Ok(Ok(OutEvent::ToolOverlayChanged { .. })) => break,
-            Ok(Ok(_)) => {}
-            other => panic!("no overlay confirmation: {other:?}"),
-        }
-    }
-    holly
-        .send(InMsg::prompt(sid.clone(), "edit it"))
-        .await
-        .unwrap();
-    let events = collect(sub, &sid).await;
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
-        "an overlay deny declines flat, no prompt; got {events:?}"
-    );
-    let outs = outputs(&events);
-    assert!(
-        outs.iter()
-            .any(|o| o.contains("withdrawn for this session") && o.contains("/enable")),
-        "the decline must name the withdrawal and the way out; got {outs:?}"
-    );
-    assert!(any_is_error(&events), "got {events:?}");
-    assert!(
-        !outs.iter().any(|o| o.starts_with("ran:")),
-        "a denied call must never run"
-    );
-}
-
-/// ADR-0207 §8: an overlay **enable** still overrides a mode `deny` — the
-/// user's own `/enable tool X --allow` is trusted-frame-only (ADR-0177), so
-/// only the user (never the model) can reach it. Regression pin alongside
-/// the deny restore above so neither posture regresses while fixing the
-/// other. `research` mode class-denies `write`, so `edit` running here can
-/// only be the overlay.
-#[tokio::test]
-async fn overlay_enable_beats_a_mode_deny() {
-    let holly = spawn_with_edit_call();
-    let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::SetMode {
-            session: sid.clone(),
-            mode: "research".into(),
-        })
-        .await
-        .unwrap();
-    let mut sub = holly.subscribe();
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: sid.clone(),
-            entries: vec![ToolOverlayEntry::allow("edit")],
-        })
-        .await
-        .unwrap();
-    loop {
-        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
-            Ok(Ok(OutEvent::ToolOverlayChanged { .. })) => break,
-            Ok(Ok(_)) => {}
-            other => panic!("no overlay confirmation: {other:?}"),
-        }
-    }
-    holly
-        .send(InMsg::prompt(sid.clone(), "edit it"))
-        .await
-        .unwrap();
-    let events = collect(sub, &sid).await;
-    let outs = outputs(&events);
-    assert!(
-        outs.iter().any(|o| o.starts_with("ran:")),
-        "an overlay enable must override the mode's write deny; got {outs:?}"
-    );
 }

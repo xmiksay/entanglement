@@ -22,9 +22,8 @@
 //! - [`mcp`] (#558): the resolved MCP server roster (the user's `mcp:`
 //!   entries), with OAuth posture and last-seen tools.
 //! - [`session`] (#558): a session's resolved live state folded straight from
-//!   its persisted log — closes the one blind spot the four views above can't
-//!   reach, the per-session tool overlay (ADR-0149), which has no managed file
-//!   of its own.
+//!   its persisted log — the agent, model and name the views above can't
+//!   reach, which have no managed file of their own.
 //! - [`commands`] (#733): the user slash commands (prompt templates) with the
 //!   layer + file each name resolved to, and any built-in clash that hides one.
 //! - [`modes`] (#560, ADR-0207 stage 6c): the four permission modes' resolved

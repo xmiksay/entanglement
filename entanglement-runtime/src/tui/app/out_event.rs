@@ -75,12 +75,6 @@ impl App {
         // Session-log outage transitions (#767) — engine-global, folded into
         // the status-line badge.
         self.handle_persistence(&event);
-        // A session's live tool overlay changed (#539): track the head-side
-        // mirror + render the confirmation (the per-session reducer folds no
-        // view state for it).
-        if let OutEvent::ToolOverlayChanged { session, entries } = &event {
-            self.handle_tool_overlay_changed(session, entries.clone());
-        }
         // Compaction (ADR-0205): every path forks a successor, and the engine
         // mints it — the head no longer sends the `Spawn` itself. All that is
         // left here is carrying the summary across to the successor, which

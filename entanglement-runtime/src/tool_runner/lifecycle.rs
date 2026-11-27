@@ -42,16 +42,6 @@ pub(super) async fn run(
     // order), so the check is race-free without a lock. Cleared per session on
     // `SessionEnded`.
     let mut in_flight: HashMap<SessionId, HashSet<String>> = HashMap::new();
-    // Per-session live tool overlay (#539, ADR-0149), folded from
-    // `ToolOverlayChanged` — the dispatch-side mirror of core's
-    // `Session::tool_overlay`. Consulted for the Ask/Allow grade override
-    // the generic route applies in `dispatch` (an enable entry can
-    // override even a mode `deny` for that session, ADR-0207 §8) and
-    // dropped wholesale on a mode change (the overlay is mode-scoped).
-    // Loop-owned: the per-call overlay entry is resolved before the
-    // detached task is spawned, so no sharing is needed. Cleared on
-    // `SessionEnded`/`SessionHibernated`.
-    let mut overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>> = HashMap::new();
     // Bounds the spawn tree (#76): tracks parent links from lifecycle events
     // and per-root running sub-agent counts. Lives in this single-threaded loop, so the
     // spawn decision below is race-free.
@@ -131,35 +121,14 @@ pub(super) async fn run(
             // fold the same way `active` folds `AgentChanged`, so
             // `ModeResolver` reads the current mode. Fires once at
             // session start (mirroring `AgentChanged`) and again on every
-            // `InMsg::SetMode`. The session's own tool overlay is
-            // mode-scoped (ADR-0207 §8, "the overlay becomes mode-scoped")
-            // — it is dropped on any *actual* mode change, since an entry
-            // enabled under one mode carries no meaning in another; a
-            // duplicate `ModeChanged` for the same value (replay, a
-            // no-op `SetMode`) leaves it untouched.
-            // A switch also moves the session's mode epoch, which a running
-            // script's overlay snapshot is checked against (ADR-0243).
+            // `InMsg::SetMode`. A running script re-reads it before each
+            // nested call (ADR-0243).
             Ok(OutEvent::ModeChanged { session, mode }) => {
-                if ctx.mode_epochs.fold(&ctx.perm_modes, &session, mode) {
-                    overlays.remove(&session);
-                }
+                super::lock_modes(&ctx.perm_modes).insert(session, mode);
             }
             // A hibernated session (#318) tore down just like an ended one, so
             // its executor-side bookkeeping is equally moot — release it. Its
             // persisted "always" grants survive; a resume rebuilds the rest.
-            // The session's live tool overlay changed (#539, ADR-0149):
-            // mirror core's full-replacement semantics — an empty list
-            // clears the entry entirely.
-            Ok(OutEvent::ToolOverlayChanged { session, entries }) => {
-                // An enable never touches the advertised array (ADR-0226):
-                // it only changes how a call is graded.
-                super::overlay_warn::warn_inert_entries(&session, overlays.get(&session), &entries);
-                if entries.is_empty() {
-                    overlays.remove(&session);
-                } else {
-                    overlays.insert(session, entries);
-                }
-            }
             Ok(ev @ OutEvent::SessionEnded { .. })
             | Ok(ev @ OutEvent::SessionHibernated { .. }) => {
                 let session = ev
@@ -180,10 +149,6 @@ pub(super) async fn run(
                 // Drop the closed session's in-memory grants (#174); persisted
                 // "always" grants survive.
                 ctx.grants.forget_session(&session);
-                // The live tool overlay dies with the session (#539) — a
-                // resume replays core's `ToolOverlayChanged` records, which
-                // re-emit on the broadcast and re-fold here.
-                overlays.remove(&session);
                 // Its in-flight tool bookkeeping is moot once the session ends.
                 ctx.cancels.forget_session(&session);
                 // Unwind the cards of its turn (ADR-0232): a parked spawn
@@ -348,7 +313,6 @@ pub(super) async fn run(
                 ladder::route_tool_exec(
                     ctx,
                     &mut spawn_guard,
-                    &overlays,
                     route,
                     envelope,
                     session,

@@ -1,14 +1,11 @@
 //! Edges of the resumed sub-agent mode rule (#905, ADR-0246): a child spawned
-//! under a hibernated parent, a compacted ancestor in a fresh process, the
-//! mode-scoped overlay on a clamped resume, and the supervisor's cache while
-//! the old task still tears down.
+//! under a hibernated parent, a compacted ancestor in a fresh process, and the
+//! supervisor's cache while the old task still tears down.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use entanglement_core::{
-    EngineConfig, Holly, InMsg, Llm, OutEvent, SessionId, ToolOverlayEntry, UnknownSession,
-};
+use entanglement_core::{EngineConfig, Holly, InMsg, Llm, OutEvent, SessionId, UnknownSession};
 
 use super::resume_mode::{engine_with, hibernate, set_mode, spawn, started_mode, tree, Recorder};
 use super::resume_tail::{RecordingLlm, Seen};
@@ -80,40 +77,6 @@ async fn a_compacted_parent_stands_for_its_successor_in_a_fresh_process() {
     let kid = SessionId::new("kid");
     holly.resume(kid.clone(), log).await.unwrap();
     assert_eq!(started_mode(&mut sub, &kid).await, "research");
-}
-
-/// A clamped resume is a real switch: the child's mode-scoped overlay goes,
-/// so nothing re-announces it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_clamped_resume_drops_the_mode_scoped_overlay() {
-    let holly = engine();
-    let (root, child) = (SessionId::new("root"), SessionId::new("kid"));
-    let mut rec = Recorder::new(&holly, &[&root, &child]);
-    tree(&holly, &mut rec, &root, &child).await;
-    let overlay = InMsg::SetToolOverlay {
-        session: child.clone(),
-        entries: vec![ToolOverlayEntry::allow("bash")],
-    };
-    holly.send(overlay).await.unwrap();
-    rec.until(|e| matches!(e, OutEvent::ToolOverlayChanged { session, .. } if *session == child))
-        .await;
-    hibernate(&holly, &mut rec, &child).await;
-    set_mode(&holly, &mut rec, &root, "research").await;
-
-    let mut sub = holly.subscribe();
-    holly.resume(child.clone(), rec.log).await.unwrap();
-    assert_eq!(started_mode(&mut sub, &child).await, "research");
-    let revived = tokio::time::timeout(Duration::from_millis(300), async {
-        loop {
-            if let Ok(OutEvent::ToolOverlayChanged { session, entries }) = sub.recv().await {
-                if session == child && !entries.is_empty() {
-                    return entries;
-                }
-            }
-        }
-    })
-    .await;
-    assert!(revived.is_err(), "overlay re-announced: {revived:?}");
 }
 
 /// The old task applies a `SetMode research` during its teardown, after the

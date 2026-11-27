@@ -1,15 +1,14 @@
 //! The gate ladder every call climbs, model-issued or script-issued
 //! (ADR-0227): resolve the tool (lazy MCP connect), the `Control` bypass,
-//! overlay withdrawal, mode grade + grants, the `pre_tool_use` veto, the
+//! mode grade + grants, the `pre_tool_use` veto, the
 //! escape-root gate (ADR-0109), the credentialed-`http` gate — then run,
 //! refuse, or park for approval.
 
 use std::path::PathBuf;
 
-use entanglement_core::{Permission, ToolOverlayEntry};
+use entanglement_core::Permission;
 
 use crate::capability;
-use crate::permission::{overlay_denies, overlay_grade_entry};
 use crate::tools::ToolRegistry;
 use crate::{mode, run_limits};
 
@@ -17,12 +16,11 @@ use super::decision::Prompt;
 use super::grade::{grade_call, graded_name, GradeInputs};
 use super::{script, Call, Dispatcher, Outcome, Via};
 
-/// What [`Dispatcher::clear`] decided: run (with the overlay entry that
-/// graded it, and the out-of-root path a trusted / **Run all** script's call
-/// reaches — its single-use escape token is recorded just before the host
-/// tool runs), or refuse with the reason.
+/// What [`Dispatcher::clear`] decided: run (with the out-of-root path a
+/// trusted / **Run all** script's call reaches — its single-use escape token
+/// is recorded just before the host tool runs), or refuse with the reason.
 pub(super) enum Cleared {
-    Run(Option<ToolOverlayEntry>, Option<PathBuf>),
+    Run(Option<PathBuf>),
     Refused(String),
 }
 
@@ -46,38 +44,31 @@ impl Dispatcher {
         // and is never graded (a script never gets here — `unreachable`);
         // the spawning pair is the exception (ADR-0232), gated in [`Self::gate`].
         if capability::bypasses_grading(&call.tool, capability::capability_of(&call.tool, &tools)) {
-            return Some(self.execute(&tools, call, via, None, None).await);
+            return Some(self.execute(&tools, call, via, None).await);
         }
         Some(match self.clear(&tools, &call, via).await? {
-            Cleared::Run(overlay_entry, escape_token) => {
-                self.execute(&tools, call, via, overlay_entry, escape_token)
-                    .await
-            }
+            Cleared::Run(escape_token) => self.execute(&tools, call, via, escape_token).await,
             Cleared::Refused(why) => Outcome::Refused(why),
         })
     }
 
     /// The whole ladder for a model call whose route runs its own handler
-    /// once cleared — `agent`/`agent_send` (ADR-0232): overlay deny, grade,
-    /// hooks, mode deny, the unattended collapse and the approval park, the
+    /// once cleared — `agent`/`agent_send` (ADR-0232): grade, hooks, mode deny, the unattended collapse and the approval park, the
     /// same rungs as any tool. `Err` is the refusal text the model sees;
     /// `None` when a `Stop` unwound the park.
     pub(crate) async fn gate(&self, call: &Call) -> Option<Result<(), String>> {
         Some(match self.clear(&self.tools, call, Via::Model).await? {
-            Cleared::Run(..) => Ok(()),
+            Cleared::Run(_) => Ok(()),
             Cleared::Refused(why) => Err(why),
         })
     }
 
-    /// Every gate short of execution: overlay deny, grade + grants,
+    /// Every gate short of execution: grade + grants,
     /// `pre_tool_use`, the mode deny, escape-root, the credentialed-`http`
     /// gate, the unattended collapse and the approval park. `None` when a
     /// `Stop` unwound the park.
     async fn clear(&self, tools: &ToolRegistry, call: &Call, via: Via<'_>) -> Option<Cleared> {
-        let (perm, arg, overlay_entry) = match self.grade(tools, &call.tool, &call.input).await {
-            Ok(graded) => graded,
-            Err(why) => return Some(Cleared::Refused(why)),
-        };
+        let (perm, arg) = self.grade(tools, &call.tool, &call.input).await;
         if let Some(reason) = self
             .hooks
             .run_pre_tool_use(&self.session, &call.tool, &call.input)
@@ -109,19 +100,19 @@ impl Dispatcher {
             .http_gate
             .credentialed_host(&call.tool, &call.input)
             .filter(|host| !self.http_gate.is_approved(&self.session, host));
-        let run = Cleared::Run(overlay_entry.clone(), None);
+        let run = Cleared::Run(None);
         let floored = self.floored(graded_name(&call.tool), &call.input);
         // ADR-0228: a trusted script, or one the user chose **Run all** for,
         // passes every remaining gate — a graded `Ask`, escape-root (a
         // single-use token the host tool spends), the credentialed-`http`
-        // approval. The denies above (overlay, hook, mode, ceiling) already
+        // approval. The denies above (hook, mode, ceiling) already
         // won. A floored write is the exception for **Run all**: approving a
         // script once must not let it author trusted code unseen, so that
         // write gets its own card. A trusted script's writes are its
         // owner's, and pass.
         if let Via::Script(sc) = via {
             if sc.run_all() && (!floored || sc.trusted()) {
-                return Some(Cleared::Run(overlay_entry, escape));
+                return Some(Cleared::Run(escape));
             }
         }
         let unattended = run_limits::unattended(&self.limits, &self.attendance, &self.chain);
@@ -174,24 +165,22 @@ impl Dispatcher {
             (None, Some(host)) => Prompt::Host(host),
             (None, None) => Prompt::Grade,
         };
-        self.park(call, via, arg, prompt, overlay_entry, floored)
-            .await
+        self.park(call, via, arg, prompt, floored).await
     }
 
-    /// The overlay deny, then the grade (overlay enable entry or mode grade,
-    /// grants, the write floor) — the first rungs of every call, shared with
-    /// `rhai`'s own launch (ADR-0228). `Err` is the refusal text.
+    /// The grade (mode grade, grants, the write floor) — the first rung of
+    /// every call, shared with `rhai`'s own launch (ADR-0228).
     ///
     /// A tool returning [`CallGrading`][crate::tools::CallGrading] from its
     /// `call_grading(input)` is graded under the target name and capabilities
-    /// it returns (ADR-0249): the overlay, the resolver, the grants and the
+    /// it returns (ADR-0249): the resolver, the grants and the
     /// approval card all see the target, not the envelope tool.
     pub(crate) async fn grade(
         &self,
         tools: &ToolRegistry,
         tool: &str,
         input: &str,
-    ) -> Result<(Permission, Option<String>, Option<ToolOverlayEntry>), String> {
+    ) -> (Permission, Option<String>) {
         // A per-call grading override: the tool tells us what name and
         // capabilities to grade as (e.g. an embedder's `invoke` -> its target).
         let call_grade = tools.get(tool).and_then(|t| t.call_grading(input));
@@ -201,28 +190,17 @@ impl Dispatcher {
             Some(cg) => cg.name.as_str(),
             None => graded_name(tool),
         };
-        // An overlay deny withdraws the tool outright (#634), ahead of hooks.
-        if overlay_denies(&self.overlays, &self.chain, graded) {
-            return Err(format!(
-                "tool `{tool}` withdrawn for this session by /disable — /enable to restore"
-            ));
-        }
-        let overlay_entry = overlay_grade_entry(&self.overlays, &self.chain, graded);
         let inputs = GradeInputs {
-            tools,
             resolver: &*self.resolver,
             chain: &self.chain,
             grants: &*self.grants,
             session: &self.session,
             mode: &self.mode,
-            overlay_entry: overlay_entry.as_ref(),
-            ceiling: &self.ceiling,
             root: self.escape_root.as_ref().map(|er| er.root.as_path()),
             floor: Some((&*self.trust, self.files_root.as_path())),
             capability_override: call_grade.as_ref().map(|cg| cg.capabilities),
         };
-        let (perm, arg) = grade_call(&inputs, graded, input).await;
-        Ok((perm, arg, overlay_entry))
+        grade_call(&inputs, graded, input).await
     }
 
     /// Whether this call is a write the floor carries at `Ask` (ADR-0228) —
@@ -233,8 +211,8 @@ impl Dispatcher {
 
     /// What makes a retry of `call` the same call (ADR-0247): the session
     /// mode's named rule that graded it `Ask`, else its exact argument —
-    /// a default grade, or an `Ask` from elsewhere (an ancestor's clamp, an
-    /// overlay entry), keys on the argument as before.
+    /// a default grade, or an `Ask` from elsewhere (an ancestor's clamp),
+    /// keys on the argument as before.
     fn repeat_of(&self, call: &Call, arg: Option<&str>) -> run_limits::Repeat {
         let tool = graded_name(&call.tool);
         let rule = self.mode_table.get(&self.mode).and_then(|mode| {

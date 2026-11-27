@@ -153,9 +153,8 @@ pub(crate) enum InspectCmd {
     /// its transport, OAuth posture and last-seen tools.
     Mcp,
     /// Print one session's resolved live state folded from its persisted log
-    /// (#558) — agent, model, and the per-session tool overlay (ADR-0149),
-    /// which has no managed file of its own. Takes a **root** session id (see
-    /// `skutter sessions`).
+    /// (#558) — agent, model and name, which have no managed file of their
+    /// own. Takes a **root** session id (see `skutter sessions`).
     Session { id: String },
     /// List the four permission modes (no `name`), or print one mode's
     /// resolved rules — built-in shape plus any `config.yml` `modes:` tuning

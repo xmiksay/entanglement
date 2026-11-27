@@ -1,8 +1,8 @@
 //! Advertisement is decoupled from enforcement (#116, ADR-0038 revisited).
 //!
 //! Core's turn loop advertises **every** spec the config provides — the profile
-//! mask and the session tool overlay no longer filter it. WHY: a surface that
-//! changes mid-session (an overlay toggle, a live tool enable) invalidates the
+//! mask no longer filters it. WHY: a surface that changes mid-session (a live
+//! tool enable) invalidates the
 //! provider's prompt cache from the tools block onward, i.e. the whole prompt
 //! — moot for the agent axis specifically now anyway, since an agent is fixed
 //! for a session's whole life (ADR-0207 §9). The mask still binds, but at
@@ -11,7 +11,7 @@
 //! decline every masked call now gets.
 //!
 //! These tests pin the advertisement half of that contract: a restrictive
-//! profile, an overlay deny, and a spawned read-only child all still see the
+//! profile and a spawned read-only child both still see the
 //! full schema set.
 
 use std::sync::{Arc, Mutex};
@@ -20,7 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, Agent, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
-    LlmStream, SessionId, ToolOverlayEntry, ToolSpec,
+    LlmStream, SessionId, ToolSpec,
 };
 
 /// The read-only `explore` profile the runtime ships as `explore.md` — core no
@@ -147,96 +147,6 @@ async fn restrictive_profile_still_advertises_the_full_set() {
             .iter()
             .any(|n| n == "update_tasks" || n == "propose_plan"),
         "core must not advertise plan/task built-ins; got {names:?}"
-    );
-}
-
-#[tokio::test]
-async fn setting_a_tool_overlay_does_not_perturb_the_advertised_set() {
-    // The rewrite of `tool_overlay_injects_past_the_profile_mask` +
-    // `tool_overlay_deny_withdraws_a_profile_advertised_tool` (#539, ADR-0149).
-    // The overlay is still the per-session escape hatch, but it moves the
-    // *grade*/existence decision at dispatch only: setting, then clearing, an
-    // overlay leaves the advertised array byte-identical across all three
-    // turns — precisely the prompt-cache stability this change buys.
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let mut cfg = recording_config(seen.clone());
-    cfg.tool_specs
-        .push(ToolSpec::new("mcp__docs__search", "search the docs server"));
-    let holly = Holly::spawn(cfg);
-    let mut events = holly.subscribe();
-    let sid = SessionId::new("s1");
-    holly
-        .send(InMsg::Spawn {
-            session: sid.clone(),
-            parent: None,
-            predecessor: None,
-            agent: "explore".into(),
-            prompt: "before the overlay".into(),
-            user: None,
-            model: None,
-            mode: None,
-            workdir: None,
-        })
-        .await
-        .unwrap();
-    let baseline = first_recorded(&seen).await;
-    assert!(
-        ["read", "edit", "mcp__docs__search"]
-            .iter()
-            .all(|t| baseline.iter().any(|n| n == t)),
-        "everything the config provides is advertised; got {baseline:?}"
-    );
-
-    // A deny entry for a tool the profile advertises, plus an enable entry for
-    // one it masks: neither moves the needle on advertisement.
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: sid.clone(),
-            entries: vec![
-                ToolOverlayEntry::deny("read"),
-                ToolOverlayEntry::ask("mcp__docs__*"),
-            ],
-        })
-        .await
-        .unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        tokio::select! {
-            ev = events.recv() => {
-                if let Ok(entanglement_core::OutEvent::ToolOverlayChanged { entries, .. }) = ev {
-                    assert_eq!(entries.len(), 2);
-                    break;
-                }
-            }
-            _ = tokio::time::sleep_until(deadline) => panic!("no ToolOverlayChanged seen"),
-        }
-    }
-    holly
-        .send(InMsg::prompt(sid.clone(), "with the overlay"))
-        .await
-        .unwrap();
-    let with_overlay = recorded_at_least(&seen, 2).await;
-    assert_eq!(
-        with_overlay[1], baseline,
-        "an overlay must not rewrite the advertised tools array"
-    );
-
-    // Clearing it is likewise inert on the wire.
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: sid.clone(),
-            entries: vec![],
-        })
-        .await
-        .unwrap();
-    holly
-        .send(InMsg::prompt(sid.clone(), "after clearing"))
-        .await
-        .unwrap();
-    let cleared = recorded_at_least(&seen, 3).await;
-    assert_eq!(
-        cleared[2], baseline,
-        "clearing an overlay must not rewrite it either"
     );
 }
 

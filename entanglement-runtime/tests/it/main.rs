@@ -101,7 +101,6 @@ mod mcp_scoped;
 mod misaimed_decisions;
 #[cfg(feature = "provider")]
 mod narrate;
-mod overlay_resume;
 mod parked_prompt_persistence;
 mod permission_dispatch;
 mod persistence_signal;

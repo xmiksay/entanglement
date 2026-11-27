@@ -1,6 +1,6 @@
 //! The permission-grading primitives `dispatch` composes (issue #451, split
 //! out of `tool_runner.rs`): [`grade_call`] composes a call's whole grade
-//! (overlay entry or mode grade, then [`apply_grant`]'s `Ask`→`Allow` off an
+//! (the mode grade, then [`apply_grant`]'s `Ask`→`Allow` off an
 //! existing grant, then the trusted-script write floor), and
 //! [`resolve_effective`] walks a call's ancestor chain through the pluggable
 //! [`PermissionResolver`]. `resolve_effective` is re-exported at
@@ -8,14 +8,13 @@
 
 use std::path::Path;
 
-use entanglement_core::{Permission, PermissionProfile, SessionId, ToolOverlayEntry};
+use entanglement_core::{Permission, SessionId};
 
 use crate::capability::Capability;
-use crate::permission::{clamp_to_base, min_permission};
+use crate::permission::min_permission;
 use crate::permission_path::grading_arg;
 use crate::policy::{GrantStore, PermissionResolver};
 use crate::rhai_trust::Trust;
-use crate::tools::ToolRegistry;
 
 /// Everything a call's grade depends on besides the call itself — what
 /// [`grade_call`] composes. Borrowed so `dispatch` builds it from its own
@@ -23,14 +22,11 @@ use crate::tools::ToolRegistry;
 /// the same set and lends it out, so a redirect hop grades *exactly* like a
 /// dispatched call.
 pub(crate) struct GradeInputs<'a> {
-    pub tools: &'a ToolRegistry,
     pub resolver: &'a dyn PermissionResolver,
     pub chain: &'a [SessionId],
     pub grants: &'a dyn GrantStore,
     pub session: &'a SessionId,
     pub mode: &'a str,
-    pub overlay_entry: Option<&'a ToolOverlayEntry>,
-    pub ceiling: &'a PermissionProfile,
     pub root: Option<&'a Path>,
     /// The trusted folders and skill dirs plus the root a relative file-tool
     /// `path` resolves against — for the write floor (ADR-0228); `None`
@@ -43,44 +39,20 @@ pub(crate) struct GradeInputs<'a> {
 }
 
 /// The grade `(tool, input)` resolves to, plus the argument it was graded
-/// on: the nearest overlay enable entry's grade (ceiling-clamped) when one
-/// matched, else the mode grade clamped across the ancestor chain — then
+/// on: the mode grade clamped across the ancestor chain — then
 /// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Last, a
 /// `write`/`edit`/`apply_patch` of a `*.rhai` file inside a `rhai.trusted`
 /// folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored at `Ask`
 /// whatever allowed it (ADR-0228: such a file later runs or loads unasked,
-/// so authoring one is never unseen); a `Deny` stays `Deny`. Hooks, the escape-root gate and the overlay *deny* stay
-/// with the caller.
+/// so authoring one is never unseen); a `Deny` stays `Deny`. Hooks and the
+/// escape-root gate stay with the caller.
 pub(crate) async fn grade_call(
     g: &GradeInputs<'_>,
     tool: &str,
     input: &str,
 ) -> (Permission, Option<String>) {
     let arg = grading_arg(tool, input, g.root);
-    let workdir = crate::permission::permission_workdir(tool, input);
-    let base = match g.overlay_entry {
-        Some(entry) => {
-            let overlay_profile = crate::permission::overlay_entry_grade(tool, entry);
-            let grade = crate::permission_bash::resolve_scoped_bash_aware(
-                &overlay_profile,
-                tool,
-                arg.as_deref(),
-                workdir.as_deref(),
-            );
-            let capabilities = g
-                .capability_override
-                .unwrap_or_else(|| crate::capability::capability_of(tool, g.tools).unwrap_or(&[]));
-            clamp_to_base(
-                grade,
-                g.ceiling,
-                tool,
-                capabilities,
-                arg.as_deref(),
-                workdir.as_deref(),
-            )
-        }
-        None => resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await,
-    };
+    let base = resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await;
     let perm = apply_grant(g.grants, g.session, tool, arg.as_deref(), base, g.mode);
     let perm = if perm == Permission::Allow
         && g.floor

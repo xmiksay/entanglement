@@ -12,7 +12,6 @@ use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmFactory, LlmRequest, LlmResponse,
     LlmStream, OutEvent, Permission, PermissionProfile, ResolvedModel, SessionId, ToolCall,
-    ToolOverlayEntry,
 };
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
@@ -280,31 +279,6 @@ async fn round_one_advertises_the_kernel_only() {
     ] {
         assert!(!names.iter().any(|n| n == absent), "{absent}: {names:?}");
     }
-}
-
-#[tokio::test]
-async fn an_overlay_enable_never_changes_the_array() {
-    let h = harness("zai", "glm-5.3", vec![text(), text()]);
-    h.turn("one").await;
-    let mut sub = h.holly.subscribe();
-    h.holly
-        .send(InMsg::SetToolOverlay {
-            session: h.sid.clone(),
-            entries: vec![ToolOverlayEntry::allow("glob")],
-        })
-        .await
-        .unwrap();
-    loop {
-        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
-            Ok(Ok(OutEvent::ToolOverlayChanged { .. })) => break,
-            Ok(Ok(_)) => {}
-            other => panic!("no overlay confirmation: {other:?}"),
-        }
-    }
-    h.turn("two").await;
-    let rec = h.requests();
-    assert_eq!(rec.len(), 2, "{rec:#?}");
-    assert_eq!(rec[0], rec[1], "an overlay enable changed the request");
 }
 
 /// A tool registered mid-session (an MCP server connecting) or removed never

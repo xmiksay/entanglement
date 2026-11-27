@@ -126,10 +126,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         modals::draw_key_dialog(f, app);
     }
 
-    if app.showing_session_tools_dialog() {
-        modals::draw_session_tools_dialog(f, app);
-    }
-
     if app.showing_tools_view() {
         modals::draw_tools_view(f, app);
     }

@@ -30,8 +30,7 @@
 //! **`bash` compound commands** (`&&`/`||`/`;`/`|`/`&`, ADR-0197) are split
 //! and graded per segment; a command the splitter can't fully account for
 //! ([`crate::shell_split::SplitOutcome::Opaque`]) grades at the mode's
-//! `default` outright — no whole-string fallback guess, unlike the
-//! `bash`-only legacy resolver in `permission_bash.rs`.
+//! `default` outright — no whole-string fallback guess.
 //!
 //! The `tool(pattern)`/`tool{pattern}` glob grammar itself is
 //! `entanglement_core::protocol`'s (`split_rule_key`/`glob_match`), private
@@ -207,9 +206,7 @@ pub const PRECEDENCE: &str = "A rule naming the tool outranks a capability-class
 ///
 /// [`SplitOutcome::Opaque`] grades at `default` directly — a construct the
 /// splitter can't fully account for is never graded on a guess (ADR-0207
-/// §4), so unlike the bash-only legacy resolver in `permission_bash.rs`
-/// (which re-resolved with the argument dropped, still consulting bare/
-/// workdir rules), a mode's `default` already *is* the safe fallback here.
+/// §4): a mode's `default` already *is* the safe fallback here.
 fn decide<'a>(
     rules: &'a Rules,
     default: Permission,

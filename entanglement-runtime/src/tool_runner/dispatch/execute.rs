@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use entanglement_core::{ApprovalScope, Holly, OutEvent, SessionId, ToolCall, ToolOverlayEntry};
+use entanglement_core::{ApprovalScope, Holly, OutEvent, SessionId, ToolCall};
 
 use crate::arg_validate;
 use crate::skills::load_skill::parse_skill_id;
@@ -25,7 +25,6 @@ impl Dispatcher {
         tools: &ToolRegistry,
         call: Call,
         via: Via<'_>,
-        overlay_entry: Option<ToolOverlayEntry>,
         escape_token: Option<PathBuf>,
     ) -> Outcome {
         let Call {
@@ -90,15 +89,11 @@ impl Dispatcher {
         // The call's own grading context, reachable mid-run for targets it
         // reaches beyond its argument (redirect hops, #808/ADR-0225).
         let grader = CallGrader {
-            tools: tools.clone(),
             resolver: self.resolver.clone(),
             chain: self.chain.clone(),
             grants: self.grants.clone(),
             session: session.clone(),
             mode: self.mode.clone(),
-            overlay_entry,
-            overlay_denied: false,
-            ceiling: self.ceiling.clone(),
             root: self.escape_root.as_ref().map(|er| er.root.clone()),
             run_all: matches!(via, Via::Script(sc) if sc.run_all()),
         };

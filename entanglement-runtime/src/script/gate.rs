@@ -1,5 +1,5 @@
 //! `rhai`'s own launch (ADR-0228), graded like any other tool call — the
-//! overlay deny, the overlay enable entry or the mode's rules (a `path`
+//! mode's rules (a `path`
 //! script graded on its canonical root-relative path, so
 //! `rhai(scripts/deploy/*)` matches; an inline one only by a bare `rhai`
 //! rule), the ceiling, grants and the `pre_tool_use` veto:
@@ -67,10 +67,7 @@ pub(super) async fn gate(
     let d = dispatcher;
     let root = launch_root(d, launch);
     let graded = graded_input(root, input);
-    let (perm, arg) = match d.grade(&d.tools, RHAI_TOOL, &graded).await {
-        Ok((perm, arg, _)) => (perm, arg),
-        Err(why) => return Verdict::Refuse(why),
-    };
+    let (perm, arg) = d.grade(&d.tools, RHAI_TOOL, &graded).await;
     if let Some(reason) = d.hooks.run_pre_tool_use(&d.session, RHAI_TOOL, input).await {
         return Verdict::Refuse(reason);
     }

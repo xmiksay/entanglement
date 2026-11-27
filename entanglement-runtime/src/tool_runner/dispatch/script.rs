@@ -2,17 +2,17 @@
 //! per-run approval cache, the detached flag, the run's deadline, which
 //! tools a script may never reach, how a background script follows its
 //! session's compaction (ADR-0241), and how every script run re-reads its
-//! session's mode and drops stale overlay entries per call (ADR-0243).
+//! session's mode per call (ADR-0243).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use entanglement_core::{SessionId, ToolOverlayEntry};
+use entanglement_core::SessionId;
 
 use crate::capability::{self, Capability};
 use crate::tool_names::{MCP_TOOL, RHAI_TOOL};
-use crate::tool_runner::mode_epochs::{lock_modes, Snapshot};
+use crate::tool_runner::lock_modes;
 use crate::tools::ToolRegistry;
 
 use super::{Dispatcher, Via};
@@ -92,9 +92,8 @@ impl Dispatcher {
     /// script's turn is parked on its own session, which can't compact under
     /// it, so only a detached run switches. Every run then follows its
     /// ancestors' compactions as the executor's chain does, re-reads its
-    /// session's mode and limits, drops the overlay entries whose lineage
-    /// epoch moved since the snapshot, and forgets the run's approvals on a
-    /// mode change (ADR-0243). Between calls, never mid-call, so a call
+    /// session's mode and limits, and forgets the run's approvals on a mode
+    /// change (ADR-0243). Between calls, never mid-call, so a call
     /// already graded or parked as the predecessor finishes as it began
     /// (ADR-0238 moves its card).
     #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
@@ -117,19 +116,9 @@ impl Dispatcher {
                 to.map(|to| (link.clone(), to))
             })
             .collect();
-        let mode = self.mode_epochs.read(
-            &self.perm_modes,
-            switched.as_ref().unwrap_or(&self.session),
-            &mut self.overlay_epochs,
-        );
+        let mode = self.mode_of(switched.as_ref().unwrap_or(&self.session));
         for (from, to) in &moves {
-            rekey(
-                &mut self.chain,
-                &mut self.overlays,
-                &mut self.overlay_epochs,
-                from,
-                to,
-            );
+            rekey(&mut self.chain, from, to);
         }
         if let Some(to) = &switched {
             self.session = to.clone();
@@ -140,8 +129,6 @@ impl Dispatcher {
             // (ADR-0244).
             self.seq_leases.push(self.holly.seq_lease(to));
         }
-        let kept = &self.overlay_epochs;
-        self.overlays.retain(|s, _| kept.contains_key(s));
         if let Some(mode) = mode {
             if mode != self.mode {
                 // Approved under the old mode; the new one grades afresh.
@@ -199,25 +186,11 @@ impl Dispatcher {
 }
 
 /// Re-key `from` to its compaction successor `to`: its slot in the
-/// ancestor chain, its overlay entry and that entry's snapshot. The
-/// snapshot names the lineage, so whether the entry survives does not
-/// depend on the move (ADR-0243).
+/// ancestor chain.
 #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
-fn rekey(
-    chain: &mut [SessionId],
-    overlays: &mut HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    snapshot: &mut Snapshot,
-    from: &SessionId,
-    to: &SessionId,
-) {
+fn rekey(chain: &mut [SessionId], from: &SessionId, to: &SessionId) {
     for link in chain.iter_mut().filter(|s| *s == from) {
         *link = to.clone();
-    }
-    if let Some(own) = overlays.remove(from) {
-        overlays.insert(to.clone(), own);
-    }
-    if let Some(at) = snapshot.remove(from) {
-        snapshot.insert(to.clone(), at);
     }
 }
 
@@ -278,29 +251,15 @@ mod tests {
     }
 
     #[test]
-    fn rekey_moves_the_chain_slot_and_the_overlay() {
+    fn rekey_moves_the_chain_slot() {
         let (p, s, child) = (
             SessionId::new("p"),
             SessionId::new("s"),
             SessionId::new("child"),
         );
-        let entry = ToolOverlayEntry::ask;
         let mut chain = vec![child.clone(), p.clone()];
-        let mut overlays = HashMap::from([
-            (p.clone(), vec![entry("bash")]),
-            (child.clone(), vec![entry("read")]),
-        ]);
-        let mut snapshot = Snapshot::from([(p.clone(), (p.clone(), 2))]);
-        rekey(&mut chain, &mut overlays, &mut snapshot, &p, &s);
-        assert_eq!(chain, vec![child.clone(), s.clone()]);
-        assert_eq!(
-            snapshot,
-            Snapshot::from([(s.clone(), (p.clone(), 2))]),
-            "same lineage"
-        );
-        assert!(!overlays.contains_key(&p));
-        assert_eq!(overlays[&s][0].pattern, "bash");
-        assert_eq!(overlays[&child][0].pattern, "read", "another link's stays");
+        rekey(&mut chain, &p, &s);
+        assert_eq!(chain, vec![child, s]);
     }
 
     #[test]

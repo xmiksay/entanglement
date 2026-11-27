@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason, ToolOverlayEntry};
+use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason};
 
 use crate::run_limits;
 use crate::seam::ApprovalDecision;
@@ -83,7 +83,6 @@ impl Dispatcher {
         via: Via<'_>,
         arg: Option<String>,
         prompt: Prompt,
-        overlay_entry: Option<ToolOverlayEntry>,
         // ADR-0228: a floored write always asks — a wider grant would never
         // be consulted, so none is recorded.
         floored: bool,
@@ -177,7 +176,7 @@ impl Dispatcher {
                             .await;
                     }
                 }
-                Some(Cleared::Run(overlay_entry, None))
+                Some(Cleared::Run(None))
             }
             ApprovalDecision::Reject { reason } => {
                 set_state(AgentState::Thinking);

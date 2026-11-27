@@ -60,13 +60,6 @@ impl App {
         self.modal_click.key_dialog
     }
 
-    pub fn set_session_tools_dialog_rect(&mut self, area: Rect) {
-        self.modal_click.session_tools_dialog = area;
-    }
-    pub fn session_tools_dialog_rect(&self) -> Rect {
-        self.modal_click.session_tools_dialog
-    }
-
     /// The command palette's list chunk (below the query row) — the `List`
     /// widget's own area, not the palette's outer frame.
     pub fn set_command_palette_rect(&mut self, area: Rect) {

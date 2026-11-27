@@ -30,7 +30,6 @@ impl InMsg {
             | InMsg::SetModel { session, .. }
             | InMsg::SetGeneration { session, .. }
             | InMsg::SetSessionMeta { session, .. }
-            | InMsg::SetToolOverlay { session, .. }
             | InMsg::Oneshot { session, .. }
             | InMsg::RevertFiles { session, .. }
             | InMsg::ForkSession { session, .. }
@@ -71,15 +70,6 @@ impl InMsg {
     ///   file*, not an unauthenticated wire frame. Trusted heads (the TUI
     ///   `/mcp` command) keep both via [`Holly::send`][crate::Holly::send];
     ///   `McpList` is read-only and stays wire-allowed.
-    /// - [`SetToolOverlay`][InMsg::SetToolOverlay] (#539, ADR-0149, same
-    ///   rationale as `McpAdd`/`McpRemove`): an **enable** entry makes tools
-    ///   usable past the session's permission mode — even over a mode `Deny`
-    ///   — optionally graded `allow` with no approval prompt, so it stays
-    ///   trusted-only. A **deny-only** overlay (every entry has `deny: true`)
-    ///   only *withdraws* tools — it can never widen what the model may
-    ///   call — so it is wire-allowed (#634, ADR-0149 "Consequences" amended
-    ///   by ADR-0177). An empty `entries` list (clearing back to the mode's
-    ///   own grades) is vacuously deny-only and also wire-allowed.
     /// - [`SetMode`][InMsg::SetMode] (ADR-0207): a mode *is* the session's
     ///   authority — unlike the agent, which is identity fixed at session
     ///   start and carries no live switch message at all (ADR-0207 §9). A
@@ -133,11 +123,6 @@ impl InMsg {
             | InMsg::SetGeneration { .. }
             | InMsg::SetSessionMeta { .. }
             | InMsg::Oneshot { .. } => true,
-            // Deny-only (#634, ADR-0177): withdraws tools, never grants one —
-            // safe over an unauthenticated wire. Any enable entry refuses the
-            // whole frame (full replacement, so a mixed list is refused
-            // outright rather than silently dropping the enable entries).
-            InMsg::SetToolOverlay { entries, .. } => entries.iter().all(|e| e.deny),
             InMsg::ToolResult { .. }
             | InMsg::Spawn { .. }
             | InMsg::Resume { .. }
@@ -177,7 +162,6 @@ impl InMsg {
             InMsg::SetModel { .. } => "set_model",
             InMsg::SetGeneration { .. } => "set_generation",
             InMsg::SetSessionMeta { .. } => "set_session_meta",
-            InMsg::SetToolOverlay { .. } => "set_tool_overlay",
             InMsg::Oneshot { .. } => "oneshot",
             InMsg::RevertFiles { .. } => "revert_files",
             InMsg::ForkSession { .. } => "fork_session",

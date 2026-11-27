@@ -26,7 +26,6 @@ mod aux;
 mod compact;
 mod construct;
 mod dispatch;
-mod enable;
 mod generation;
 mod hit;
 pub(crate) mod image_paste;
@@ -147,28 +146,12 @@ pub struct App {
     // tools from. `None` in tests.
     mcp_handles: Option<crate::mcp::McpHandles>,
 
-    // Per-session live tool overlays (#539, ADR-0149), folded from
-    // `OutEvent::ToolOverlayChanged` — the head-side mirror `/enable`/`/disable`
-    // read to compute the full-replacement list `InMsg::SetToolOverlay` needs.
-    tool_overlays: HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
-    // Bare `/enable`'s session-tools checklist dialog (#539): toggle any
-    // advertised tool's availability for the active session; the overlay is
-    // the diff against the session's inherit-all default (ADR-0207 — no
-    // profile carries a mask any more).
-    session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog,
-
-    // The full advertised tool roster (host + MCP + runtime-owned specs, from
-    // `EngineConfig::tool_specs` at startup) — feeds `/tools` and the bare
-    // `/enable` session-tools checklist.
-    tool_roster: Vec<String>,
-
     // The shared advertising state (ADR-0226): read-only here — `/tools`'
     // status column (advertised/hidden) is the only consumer. `None` in
     // tests degrades every row's status to "n/a" rather than guessing.
     advertising: Option<std::sync::Arc<crate::tool_advertising::AdvertisingState>>,
     // `/tools`' own read-heavy browser (#560 P9, ADR-0199 part 3): grouped by
-    // kind, filterable by free text plus a category cycle, `Enter` enables
-    // the highlighted row exactly like a typed `/enable`.
+    // kind, filterable by free text plus a category cycle.
     tools_view: crate::tui::tools_view::ToolsView,
 
     // Leader key state

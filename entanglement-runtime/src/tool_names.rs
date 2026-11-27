@@ -108,17 +108,15 @@ pub const DISCOVERY_TOOLS: &[&str] = &[
     MCP_TOOLS_TOOL,
 ];
 
-/// The names an overlay entry or a mode/ceiling rule can spell but never
-/// match (#843, #849): the six discovery tools and the bookkeeping Control
-/// tools take a bypass before any overlay or rule is read (ADR-0226
+/// The names a mode/ceiling rule can spell but never match (#843, #849): the
+/// six discovery tools and the bookkeeping Control tools take a bypass
+/// before any rule is read (ADR-0226
 /// Maskability, ADR-0232), core unwraps the `mcp` envelope to
 /// `mcp__<server>__<tool>` before dispatch, and the script-only read variants
 /// grade as the tool they ride on (`dispatch::grade::graded_name`).
 /// `propose_plan` is graded, but only by its `plan` class — a rule naming it
 /// is skipped by the matcher (`mode::rules`), so the class is the one gate.
-/// The TUI's toggle roster leaves them out, `/enable`/`/disable` refuses
-/// them, and a config rule or a wire overlay entry naming one warns
-/// ([`non_maskable_reason`]). `agent`/`agent_send` are absent on purpose:
+/// A config rule naming one warns ([`non_maskable_reason`]). `agent`/`agent_send` are absent on purpose:
 /// they are graded like any tool (ADR-0232).
 pub const NON_MASKABLE_TOOLS: &[&str] = &[
     LIST_AGENTS_TOOL,
@@ -143,7 +141,7 @@ pub fn is_non_maskable(tool: &str) -> bool {
     NON_MASKABLE_TOOLS.contains(&tool)
 }
 
-/// Why an overlay entry or rule naming `tool` can never take effect, and
+/// Why a rule naming `tool` can never take effect, and
 /// what to name instead — `None` for any other name (globs included: a
 /// pattern may still match real tools).
 pub fn non_maskable_reason(tool: &str) -> Option<String> {

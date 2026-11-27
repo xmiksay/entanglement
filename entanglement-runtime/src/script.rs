@@ -13,7 +13,7 @@
 //! (`bash`), `http()`, per-run generated `mcp::<server>::<tool>`
 //! namespaces and each skill's `lib.rhai` as `skill::<skill>` — and every
 //! binding call climbs the **same dispatch seam** as a model-issued call
-//! ([`crate::tool_runner`]'s `Dispatcher`): mode grade, overlay, ceiling,
+//! ([`crate::tool_runner`]'s `Dispatcher`): mode grade, ceiling,
 //! grants, escape-root, hooks, argument validation, lazy MCP connect,
 //! `FileChange` capture. Nested `rhai`, the `mcp` envelope and every
 //! runtime-owned tool are unreachable from a script.

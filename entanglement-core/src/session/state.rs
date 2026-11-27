@@ -11,7 +11,7 @@ use super::fork::ForkFrame;
 use super::TurnState;
 use crate::context::Context;
 use crate::holly::{SeqCell, DEFAULT_MODE};
-use crate::protocol::{Agent, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{Agent, OutEvent, SessionId};
 use crate::EngineConfig;
 use entanglement_provider::{GenerationParams, Llm, ResolvedModel, UserId};
 
@@ -98,13 +98,6 @@ pub struct Session {
     /// [`GenerationChanged`][crate::protocol::OutEvent::GenerationChanged]
     /// records.
     pub generation_by_agent: HashMap<String, GenerationParams>,
-    /// The session's live tool overlay (#539, ADR-0149): patterns a trusted
-    /// head injected via [`SetToolOverlay`][super::SessionCmd::SetToolOverlay]
-    /// whose matching tools are advertised **in addition to** (and regardless
-    /// of) the active agent's #116 mask. Reconstructed on replay from
-    /// [`ToolOverlayChanged`][crate::protocol::OutEvent::ToolOverlayChanged]
-    /// records. Empty by default (no overlay).
-    pub tool_overlay: Vec<ToolOverlayEntry>,
     /// Monotonic per-session emit counter, shared (`Arc<SeqCell>`, #157) with
     /// the supervisor's seq registry so runtime-authored events minted while this
     /// session is parked (an approval `ToolRequest`, a `Plan`/`TaskList` snapshot,
@@ -201,7 +194,6 @@ impl Session {
             bound: None,
             generation: cfg.generation,
             generation_by_agent: HashMap::new(),
-            tool_overlay: Vec::new(),
             seq: Arc::default(),
             parent: None,
             children: Vec::new(),

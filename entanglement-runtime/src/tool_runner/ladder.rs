@@ -14,11 +14,9 @@
 //! [`LadderCtx`] bundles the executor's long-lived, cheaply-clonable shared
 //! state (constructed once before the loop starts) so a handler takes one
 //! reference instead of two dozen positional parameters. Only `spawn_guard`
-//! (mutated by `SpawnGuard::try_spawn`) and `overlays` (mutated elsewhere in
-//! the loop on `ModeChanged`/`ToolOverlayChanged`) stay outside it, passed
-//! explicitly — both are loop-owned state a handler only ever reads
-//! (`overlays`) or synchronously updates (`spawn_guard`), never holds across
-//! an `.await`.
+//! (mutated by `SpawnGuard::try_spawn`) stays outside it, passed explicitly
+//! — loop-owned state a handler only synchronously updates, never holds
+//! across an `.await`.
 
 mod graded;
 mod orchestration;
@@ -26,7 +24,7 @@ mod orchestration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentCatalog, Catalog, Holly, PermissionProfile, SessionId, ToolEnvelope};
+use entanglement_core::{AgentCatalog, Catalog, Holly, SessionId, ToolEnvelope};
 
 use crate::agent_registry::AgentRegistry;
 use crate::cancel::CancelRegistry;
@@ -151,9 +149,6 @@ pub(super) struct LadderCtx {
     pub resolver: Arc<dyn PermissionResolver>,
     pub agents: Arc<RwLock<AgentCatalog>>,
     pub perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
-    /// Each compaction lineage's overlay epoch, moved by the `perm_modes`
-    /// fold (ADR-0243).
-    pub mode_epochs: super::mode_epochs::ModeEpochs,
     pub mode_table: Arc<ModeTable>,
     pub plan_files: Arc<PlanFileRegistry>,
     pub plan_root: std::path::PathBuf,
@@ -165,7 +160,6 @@ pub(super) struct LadderCtx {
     pub mcp_scopes: Option<Arc<crate::mcp::McpScopes>>,
     pub advertising: SharedAdvertisingState,
     pub escape_root: Option<EscapeRoot>,
-    pub base: PermissionProfile,
     pub grants: Arc<dyn GrantStore>,
     pub mcp_http: Option<entanglement_core::HttpClient>,
     pub active_skill: Arc<Mutex<std::collections::HashSet<SessionId>>>,
@@ -209,14 +203,13 @@ impl LadderCtx {
     }
 }
 
-/// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` and
-/// `overlays` are the executor loop's own mutable state — see the module doc
-/// for why they stay outside [`LadderCtx`].
+/// Dispatch one `ToolExec` per its [`Intercept`] route. `spawn_guard` is the
+/// executor loop's own mutable state — see the module doc for why it stays
+/// outside [`LadderCtx`].
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn route_tool_exec(
     ctx: &LadderCtx,
     spawn_guard: &mut SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<entanglement_core::ToolOverlayEntry>>,
     route: Intercept,
     // The call exactly as the model emitted it, when core unwrapped an
     // `mcp` envelope (ADR-0226). Only the `Permission` route's schema
@@ -234,10 +227,10 @@ pub(super) async fn route_tool_exec(
 ) {
     match route {
         Intercept::Spawn => {
-            orchestration::spawn(ctx, spawn_guard, overlays, session, request_id, input).await;
+            orchestration::spawn(ctx, spawn_guard, session, request_id, input).await;
         }
         Intercept::AgentSend => {
-            orchestration::agent_send(ctx, spawn_guard, overlays, session, request_id, input).await;
+            orchestration::agent_send(ctx, spawn_guard, session, request_id, input).await;
         }
         Intercept::Poll => {
             orchestration::poll(ctx, session, request_id, input).await;
@@ -253,13 +246,12 @@ pub(super) async fn route_tool_exec(
         }
         #[cfg(feature = "rhai")]
         Intercept::Rhai => {
-            graded::rhai(ctx, spawn_guard, overlays, session, seq, request_id, input).await;
+            graded::rhai(ctx, spawn_guard, session, seq, request_id, input).await;
         }
         Intercept::Permission => {
             graded::permission(
                 ctx,
                 spawn_guard,
-                overlays,
                 tool,
                 envelope,
                 session,

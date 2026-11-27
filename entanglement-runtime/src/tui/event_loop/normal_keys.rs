@@ -173,13 +173,6 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
                         crate::tui::allow_command::send_allow(app, &text);
                         return Ok(false);
                     }
-                    if cmd == crate::tui::commands::Command::Enable
-                        || cmd == crate::tui::commands::Command::Disable
-                    {
-                        let enabling = cmd == crate::tui::commands::Command::Enable;
-                        crate::tui::enable_command::send_enable(app, holly, &text, enabling).await;
-                        return Ok(false);
-                    }
                     if cmd == crate::tui::commands::Command::Name {
                         send_name(app, holly, &text).await;
                         return Ok(false);

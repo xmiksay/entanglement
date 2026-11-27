@@ -2,8 +2,7 @@
 //! (ADR-0197): breaks a compound command into its top-level segments so each
 //! can be graded against an argument-scoped permission rule independently,
 //! instead of the whole raw string being graded as one opaque blob —
-//! `entanglement-runtime/src/permission_bash.rs` is the grading side that
-//! consumes this.
+//! `mode::rules` is the grading side that consumes this.
 //!
 //! Deliberately narrow: anything the splitter cannot fully account for —
 //! a redirect naming a real file target, command/process substitution, a

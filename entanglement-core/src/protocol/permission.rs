@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(doc)]
-use crate::protocol::{Agent, InMsg, OutEvent, ToolOverlayEntry};
+use crate::protocol::{Agent, InMsg, OutEvent};
 
 /// What the engine does when the model asks to run a host tool. Driven by the
 /// session's active [`Agent`] permission profile — e.g. a `plan` profile
@@ -201,15 +201,13 @@ fn split_rule_key(key: &str) -> (&str, RuleScope<'_>) {
     (key, RuleScope::None)
 }
 
-/// Minimal `*`/`?` wildcard match for argument-scoped permission rules (#173)
-/// and the session tool overlay's [`ToolOverlayEntry::pattern`] (#537,
-/// ADR-0148 — the agent tool mask this once also served is retired,
-/// ADR-0207): `*` matches any run of characters (including `/` and the empty
+/// Minimal `*`/`?` wildcard match for argument-scoped permission rules
+/// (#173): `*` matches any run of characters (including `/` and the empty
 /// string), `?` matches exactly one, everything else is literal. Deliberately
 /// separator-agnostic and free of `**`/character-classes — so `bash(git *)`,
 /// `edit(src/*)` and `mcp__docs__*` all read naturally and core stays
 /// dependency-free (ADR-0006).
-pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
+fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
     let (mut pi, mut ti) = (0, 0);

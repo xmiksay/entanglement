@@ -11,7 +11,6 @@ mod commands;
 mod cost_command;
 mod diff;
 mod editor;
-mod enable_command;
 mod event;
 mod event_loop;
 mod export;
@@ -32,7 +31,6 @@ mod modals;
 pub(crate) mod onboarding;
 mod progress;
 mod selection;
-mod session_tools_dialog;
 mod session_tree;
 mod session_view;
 mod sessions;
@@ -91,7 +89,6 @@ pub async fn tui(
     aux_models: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<crate::watch::ReloadNotice>,
     root: std::path::PathBuf,
-    tool_roster: Vec<String>,
     http_client: HttpClient,
     configured_editor: Option<String>,
     tui_config: crate::config::TuiConfig,
@@ -154,7 +151,7 @@ pub async fn tui(
     // registry's stable `iter` (name-sorted).
     let secret_env = catalog.key_envs(); // scrubbed from the status command (#164)
     let entry_profiles = entry_profiles_from(&agents.read().unwrap());
-    let mut app = App::new(initial_session, catalog, entry_profiles, tool_roster);
+    let mut app = App::new(initial_session, catalog, entry_profiles);
     app.set_model_info(model_info);
     app.set_active_provider(provider_name);
     app.set_agent_models(agent_models);

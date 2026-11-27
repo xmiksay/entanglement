@@ -1,7 +1,7 @@
 //! A session whose model makes a scripted series of tool calls (`rhai`, or
 //! any host tool via [`run_calls`]), wired the
 //! way `engine_setup` wires the executor (real grants, mode resolver,
-//! optional escape-root policy, hooks, overlay, ceiling, workdir,
+//! optional escape-root policy, hooks, ceiling, workdir,
 //! `rhai.trusted`, credentialed `http()`) — the shared harness of the ADR-0228 launch tests.
 
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use entanglement_core::{
     ApprovalScope, CardReason, EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission,
-    PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
+    PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::hooks::Hooks;
@@ -75,8 +75,6 @@ pub struct Setup {
     /// Wire the escape-root policy (as `main.rs` does).
     pub escape_root: bool,
     pub hooks: Hooks,
-    /// Set on the session before its first prompt.
-    pub overlay: Vec<ToolOverlayEntry>,
     /// The session's workdir, relative to the root.
     pub workdir: Option<&'static str>,
     /// `rhai.trusted` folders, canonical.
@@ -105,7 +103,6 @@ impl Setup {
             launch,
             escape_root: true,
             hooks: Hooks::default(),
-            overlay: Vec::new(),
             workdir: None,
             trusted: TrustedFolders::default(),
             gate: Arc::default(),
@@ -248,20 +245,11 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
             })
             .await
             .unwrap();
-    }
-    if !setup.overlay.is_empty() || setup.mode.is_some() {
-        holly
-            .send(InMsg::SetToolOverlay {
-                session: sid.clone(),
-                entries: setup.overlay,
-            })
-            .await
-            .unwrap();
         loop {
             match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
-                Ok(Ok(OutEvent::ToolOverlayChanged { .. })) => break,
+                Ok(Ok(OutEvent::ModeChanged { mode: m, .. })) if m == mode => break,
                 Ok(Ok(_)) => {}
-                other => panic!("no overlay confirmation: {other:?}"),
+                other => panic!("no mode confirmation: {other:?}"),
             }
         }
         holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();

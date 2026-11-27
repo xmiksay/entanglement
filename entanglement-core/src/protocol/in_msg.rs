@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(doc)]
 use super::{AgentState, McpAction};
-use super::{
-    ApprovalScope, McpAuthAction, McpServerSpec, ModelChoice, OutEvent, SessionId, ToolOverlayEntry,
-};
+use super::{ApprovalScope, McpAuthAction, McpServerSpec, ModelChoice, OutEvent, SessionId};
 use content::de_prompt_content;
 
 mod content;
@@ -283,10 +281,9 @@ pub enum InMsg {
     /// **opaque name it never evaluates** — the runtime owns the mode table
     /// (`research`/`plan`/`build`/`auto` for `skutter`) and every rule that
     /// name resolves to. Applied **immediately**, turn live or not — unlike
-    /// [`SetModel`][InMsg::SetModel]/[`SetGeneration`][InMsg::SetGeneration]/
-    /// [`SetToolOverlay`][InMsg::SetToolOverlay], which defer because they
-    /// touch something a live round is actively using (the backend, the
-    /// in-flight request's generation knobs, the advertised tool array). A
+    /// [`SetModel`][InMsg::SetModel]/[`SetGeneration`][InMsg::SetGeneration],
+    /// which defer because they touch something a live round is actively
+    /// using (the backend, the in-flight request's generation knobs). A
     /// mode is a label consulted only when the runtime next grades a tool
     /// call, so there is nothing for a live turn to protect by waiting —
     /// deferring it instead left a `propose_plan` approval's very next tool
@@ -365,26 +362,6 @@ pub enum InMsg {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         if_unset: bool,
     },
-    /// Replace this session's live **tool overlay** (#539, ADR-0149): the full
-    /// list of [`ToolOverlayEntry`] patterns whose matching tools exist for
-    /// this session *regardless* of the active profile's #116 mask — the
-    /// per-session injection a head uses to enable an MCP server/tool (or any
-    /// registered tool) without editing agent definitions. Full replacement,
-    /// not a merge (an empty list clears the overlay); the head computes the
-    /// new list from the previous [`OutEvent::ToolOverlayChanged`] it holds.
-    /// Always succeeds and always emits `ToolOverlayChanged` with the full
-    /// effective list (mirroring [`SetGeneration`][InMsg::SetGeneration]);
-    /// deferred while a turn is live (stash replay), like `SetModel` — a
-    /// mid-round edit would change the advertised tool array under a request
-    /// already in flight. Unlike [`SetMode`][InMsg::SetMode], which applies
-    /// immediately since it changes no array and busts no cache.
-    /// **Trusted-only** (not wire-allowed, #472, ADR-0124): it can hand the
-    /// model tools with no restart and — with `allow: true` — no approval
-    /// prompt.
-    SetToolOverlay {
-        session: SessionId,
-        entries: Vec<ToolOverlayEntry>,
-    },
     /// Run a single out-of-band LLM op outside the turn loop (#324, ADR-0082).
     /// The generic surface is the **wire shape** — an opaque `op` string plus
     /// `args` — not a plugin registry: `session::ops::run_oneshot` matches on
@@ -426,7 +403,7 @@ pub enum InMsg {
     /// (the source's own prompts, 1-based, ADR-0212's numbering; `Some(0)`
     /// keeps nothing but a fork's own seed). It gets a fresh id minted in
     /// the source's lineage (tenant prefix kept, ADR-0211), the same agent,
-    /// and the source's live model, generation, mode and tool overlay. The
+    /// and the source's live model, generation and mode. The
     /// source stays live and untouched — nothing is logged against it.
     /// Announced by the fork's own `SessionStarted` followed by
     /// [`OutEvent::SessionForked`], which carries the seed history so the

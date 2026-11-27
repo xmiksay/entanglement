@@ -25,7 +25,6 @@ fn app_with_three_agents(sid: SessionId) -> App {
                 description: "Cross-vendor helper".to_string(),
             },
         ],
-        vec!["read".to_string(), "edit".to_string(), "bash".to_string()],
     )
 }
 

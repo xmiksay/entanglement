@@ -1,14 +1,14 @@
 //! The live side effects of the `/set` dialog's plan. Each step goes through
 //! the path its single-purpose command already uses: `SetModel`/
 //! `SetGeneration` with the ADR-0081/0095 persist-on-confirmation pendings,
-//! `/enable`'s `SetToolOverlay`, and `/aux-model`'s store write. The agent row is
+//! and `/aux-model`'s store write. The agent row is
 //! read-only display now (ADR-0207 §9) — there is no `ApplyStep::Agent` any
 //! more.
 
 use entanglement_core::{Holly, InMsg};
 
 use super::App;
-use crate::tui::settings_dialog::{ApplyStep, SettingsEffects, ToolsChange};
+use crate::tui::settings_dialog::{ApplyStep, SettingsEffects};
 
 pub(super) struct LiveEffects<'a> {
     pub app: &'a mut App,
@@ -62,10 +62,6 @@ impl SettingsEffects for LiveEffects<'_> {
                 }
                 let overrides = *overrides;
                 self.send(InMsg::SetGeneration { session, overrides }).await
-            }
-            ApplyStep::Tools(ToolsChange { entries }) => {
-                let entries = entries.clone();
-                self.send(InMsg::SetToolOverlay { session, entries }).await
             }
             ApplyStep::Aux {
                 purpose,

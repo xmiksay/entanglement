@@ -1,6 +1,6 @@
 //! A compaction lineage is linear (ADR-0243): a session has at most one
 //! successor, so no session's lineage head ever moves under the runtime,
-//! which keys a running script's overlay epochs by it.
+//! which keys a resumed sub-agent's handle by it.
 
 use std::time::Duration;
 

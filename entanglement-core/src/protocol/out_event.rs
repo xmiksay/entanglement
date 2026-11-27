@@ -12,7 +12,7 @@ use super::InMsg;
 use super::{
     AgentState, ApprovalOutcome, ApprovalScope, CardReason, FileChangeKind, McpAction,
     McpAuthStatus, McpServerStatus, OperationInfo, PendingApproval, PendingQuestion, Questions,
-    RevertSkip, SessionId, SessionInfo, ToolOverlayEntry,
+    RevertSkip, SessionId, SessionInfo,
 };
 
 mod accessors;
@@ -213,8 +213,7 @@ pub enum OutEvent {
     /// Carries only the opaque `mode` name; core carries no rule table to
     /// resolve it against — the runtime owns what a mode means. Folded on
     /// replay by overwrite (last write wins),
-    /// the same shape as [`GenerationChanged`][OutEvent::GenerationChanged]/
-    /// [`ToolOverlayChanged`][OutEvent::ToolOverlayChanged].
+    /// the same shape as [`GenerationChanged`][OutEvent::GenerationChanged].
     ModeChanged { session: SessionId, mode: String },
     /// The session's working directory changed (point-in-time, no `seq`, #764,
     /// ADR-0224), in reply to [`InMsg::SetWorkdir`] — and at session start
@@ -259,17 +258,6 @@ pub enum OutEvent {
     GenerationChanged {
         session: SessionId,
         generation: GenerationParams,
-    },
-    /// The session's live tool overlay changed (point-in-time, no `seq`), in
-    /// reply to [`InMsg::SetToolOverlay`] (#539, ADR-0149). Carries the **full**
-    /// effective entry list — not a delta — so a head can render/track the
-    /// overlay directly and replay restores it by overwriting
-    /// [`Session::tool_overlay`][crate::session::Session] verbatim (the
-    /// `GenerationChanged` pattern). The runtime's tool executor also folds it
-    /// to honor the overlay at dispatch (mask + grade override).
-    ToolOverlayChanged {
-        session: SessionId,
-        entries: Vec<ToolOverlayEntry>,
     },
     /// Ack to [`InMsg::SetSessionMeta`] carrying the session's full merged
     /// display metadata (both fields as stored, not just the ones the set

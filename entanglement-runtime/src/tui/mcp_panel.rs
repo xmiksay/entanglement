@@ -1,8 +1,7 @@
 //! `/mcp list` result panel (#373): a popup listing connected MCP servers,
 //! their transport, status, and tools. Mirrors [`crate::tui::key_dialog::KeyDialog`]'s
 //! show/hide shape. Selectable since #539: `Up`/`Down` move a server
-//! selection so `e`/`d` can enable/disable the highlighted server for the
-//! active session (a `mcp__<name>__*` tool-overlay entry).
+//! selection so `c`/`t` can run the OAuth connect/check for it.
 
 use entanglement_core::McpServerStatus;
 

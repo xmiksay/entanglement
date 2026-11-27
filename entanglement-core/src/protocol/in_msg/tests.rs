@@ -45,41 +45,6 @@ fn wire_allowlist_refuses_the_privileged_frames() {
     }
     .wire_allowed());
     assert!(!InMsg::McpRemove { name: "srv".into() }.wire_allowed());
-    // The live tool overlay is trusted-only for an *enable* entry (#539,
-    // ADR-0149, the McpAdd rationale): it injects tools past the agent
-    // mask, optionally graded `allow` with no approval prompt — never
-    // wire-grantable. A mixed list (any enable entry present) refuses the
-    // whole frame.
-    assert!(!InMsg::SetToolOverlay {
-        session: s.clone(),
-        entries: vec![ToolOverlayEntry::ask("mcp__*")],
-    }
-    .wire_allowed());
-    assert!(!InMsg::SetToolOverlay {
-        session: s.clone(),
-        entries: vec![
-            ToolOverlayEntry::deny("bash"),
-            ToolOverlayEntry::ask("mcp__*"),
-        ],
-    }
-    .wire_allowed());
-    // A deny-only overlay only withdraws tools the profile already
-    // advertises — it can never widen the model's tool surface — so it is
-    // wire-allowed (#634, ADR-0177 amending ADR-0149). An empty list
-    // (clearing back to the profile default) is vacuously deny-only.
-    assert!(InMsg::SetToolOverlay {
-        session: s.clone(),
-        entries: vec![
-            ToolOverlayEntry::deny("bash"),
-            ToolOverlayEntry::deny("mcp__*")
-        ],
-    }
-    .wire_allowed());
-    assert!(InMsg::SetToolOverlay {
-        session: s.clone(),
-        entries: vec![],
-    }
-    .wire_allowed());
     // Mode carries real authority (ADR-0207), unlike the agent (identity
     // fixed at session start, no live switch message at all) — a wire head
     // must not be able to widen its own permission posture by naming a mode

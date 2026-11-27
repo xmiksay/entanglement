@@ -47,8 +47,6 @@ pub struct ModalClickAreas {
     pub mode_picker: Rect,
     /// `/key` dialog — the provider list on the `PickProvider` stage only.
     pub key_dialog: Rect,
-    /// Bare `/enable` session-tools checklist (#539).
-    pub session_tools_dialog: Rect,
     /// `Ctrl+P` command palette — the list chunk below the query row.
     pub command_palette_list: Rect,
     /// `/mcp list` panel — a `Paragraph` rendering two lines per server.

@@ -30,14 +30,12 @@ pub(crate) struct ForkSeed {
 
 impl Inherited {
     /// Everything a session hands a session continuing from it: its live
-    /// backend, generation, mode, overlay and workdir (#768/#776/#764). `seed` is the
+    /// backend, generation and workdir (#768/#764). `seed` is the
     /// caller's: only a user fork carries history this way.
     pub(crate) fn of(s: &Session) -> Self {
         Self {
             model: s.live_binding(),
             generation: s.generation,
-            mode: s.mode.clone(),
-            overlay: s.tool_overlay.clone(),
             workdir: s.workdir.clone(),
             seed: None,
         }
@@ -102,7 +100,7 @@ pub(super) fn fork_session(
 }
 
 /// Seed a freshly started fork and announce it. Called by `start_session`
-/// after the model/generation/overlay hand-over, so the announcement follows
+/// after the model/generation hand-over, so the announcement follows
 /// them in the log and nothing the fork does later precedes it.
 pub(super) fn seed_fork(
     session: &SessionId,
@@ -168,7 +166,6 @@ mod tests {
             other => panic!("expected Spawn, got {other:?}"),
         }
         let inherit = frame.inherit.expect("inherited state");
-        assert_eq!(inherit.mode, "plan");
         let seed = inherit.seed.expect("a seed");
         assert_eq!(seed.source, src);
         assert_eq!(seed.at_turn, Some(1));

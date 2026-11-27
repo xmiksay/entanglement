@@ -1,30 +1,25 @@
 //! `skutter inspect session <id>` (#558).
 //!
-//! Closes the "session tool overlay" blind spot: `InMsg::SetToolOverlay`
-//! (ADR-0149) is session-scoped state that lives only in that session's own
-//! event log (`Session.tool_overlay`, folded on resume) — there is no managed
-//! file for it, and it cannot be reconstructed by re-running load-time
+//! A session's live agent/model/name is session-scoped state that lives only
+//! in its own event log — it cannot be reconstructed by re-running load-time
 //! discovery the way `inspect prompt`/`agents`/`skills`/`config` do. This view
 //! instead reads the persisted `.jsonl` log directly and folds the same
 //! "last write wins" events [`crate::session_store::SessionStore::list_sessions`] already
 //! folds for `name` — no engine, no LLM, just the log.
 //!
 //! Only a **root** session id resolves: a spawned child's records live inside
-//! its root's log file, not a file of their own ([`crate::session_store::SessionStore::session_path`]),
-//! so its tool overlay is visible by inspecting the root and reading the
-//! child's own `ToolOverlayChanged` records within it — a future refinement,
-//! not needed by #558's scope.
+//! its root's log file, not a file of their own ([`crate::session_store::SessionStore::session_path`]).
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use entanglement_core::{OutEvent, SessionId, ToolOverlayEntry};
+use entanglement_core::{OutEvent, SessionId};
 
 use crate::session_store::{self, LogPayload, LogRecord};
 
-/// Read `id`'s persisted log and print its resolved agent/model/name plus its
-/// live tool overlay (folded from the log's events, last write wins).
+/// Read `id`'s persisted log and print its resolved agent/model/name
+/// (folded from the log's events, last write wins).
 pub fn inspect_session(cwd: &Path, id: &str) -> Result<()> {
     let session_id = SessionId::new(id);
     let records = session_store::SessionStore::for_cwd(cwd)
@@ -41,7 +36,7 @@ pub fn inspect_session(cwd: &Path, id: &str) -> Result<()> {
 
 /// State folded from `target`'s own records in a (possibly multi-session) log —
 /// mirrors the "last write wins" scan [`session_store::SessionStore::list_sessions`] runs for
-/// `name`, extended to agent/model/tool-overlay.
+/// `name`, extended to agent/model.
 #[derive(Default)]
 struct FoldedState {
     started: bool,
@@ -49,7 +44,6 @@ struct FoldedState {
     provider: Option<String>,
     model: Option<String>,
     name: Option<String>,
-    tool_overlay: Vec<ToolOverlayEntry>,
 }
 
 fn fold(target: &SessionId, records: &[LogRecord]) -> FoldedState {
@@ -83,9 +77,6 @@ fn fold(target: &SessionId, records: &[LogRecord]) -> FoldedState {
             }
             OutEvent::SessionMetaChanged { session, name, .. } if session == target => {
                 state.name = name.clone();
-            }
-            OutEvent::ToolOverlayChanged { session, entries } if session == target => {
-                state.tool_overlay = entries.clone();
             }
             _ => {}
         }
@@ -121,25 +112,6 @@ fn render_session(target: &SessionId, records: &[LogRecord]) -> String {
         "name:    {}",
         state.name.as_deref().unwrap_or("(unset)")
     );
-
-    let _ = writeln!(
-        out,
-        "\ntool overlay (ADR-0149 — live, per-session override of the permission mode):"
-    );
-    if state.tool_overlay.is_empty() {
-        let _ = writeln!(out, "  (none — the permission mode grades every tool)");
-    } else {
-        for entry in &state.tool_overlay {
-            let disposition = if entry.deny {
-                "deny"
-            } else if entry.allow {
-                "allow (no approval prompt)"
-            } else {
-                "ask (overrides a mode deny, still prompts)"
-            };
-            let _ = writeln!(out, "  {}: {disposition}", entry.pattern);
-        }
-    }
     out
 }
 
@@ -156,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn folds_started_agent_model_name_and_overlay_last_write_wins() {
+    fn folds_started_agent_model_name_last_write_wins() {
         let target = SessionId::new("root-1");
         let records = vec![
             out(
@@ -196,30 +168,21 @@ mod tests {
                     action: None,
                 },
             ),
-            out(
-                &target,
-                OutEvent::ToolOverlayChanged {
-                    session: target.clone(),
-                    entries: vec![ToolOverlayEntry::deny("bash")],
-                },
-            ),
         ];
 
         let rendered = render_session(&target, &records);
         assert!(rendered.contains("agent:   plan"));
         assert!(rendered.contains("model:   zai/glm-5.2"));
         assert!(rendered.contains("name:    my session"));
-        assert!(rendered.contains("bash: deny"));
         assert!(!rendered.contains("warning:"));
     }
 
     #[test]
-    fn empty_log_reports_no_started_record_and_an_empty_overlay() {
+    fn empty_log_reports_no_started_record() {
         let target = SessionId::new("orphan");
         let rendered = render_session(&target, &[]);
         assert!(rendered.contains("warning: no SessionStarted"));
         assert!(rendered.contains("agent:   (unknown)"));
-        assert!(rendered.contains("(none — the permission mode grades every tool)"));
     }
 
     #[test]
@@ -242,13 +205,14 @@ mod tests {
             ),
             out(
                 &sibling,
-                OutEvent::ToolOverlayChanged {
+                OutEvent::SessionMetaChanged {
                     session: sibling.clone(),
-                    entries: vec![ToolOverlayEntry::ask("mcp__docs__*")],
+                    name: Some("the child".to_string()),
+                    action: None,
                 },
             ),
         ];
         let rendered = render_session(&target, &records);
-        assert!(rendered.contains("(none — the permission mode grades every tool)"));
+        assert!(rendered.contains("name:    (unset)"));
     }
 }

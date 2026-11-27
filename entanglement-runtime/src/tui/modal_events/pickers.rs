@@ -1,5 +1,5 @@
 //! Keyboard handling for the picker-style dialogs: agent profile, model,
-//! mode, provider key, session tools, and the `/tools` browser.
+//! mode, provider key, and the `/tools` browser.
 
 use anyhow::Result;
 use entanglement_core::{Holly, InMsg};
@@ -168,54 +168,15 @@ pub(in crate::tui) async fn handle_key_dialog_event(app: &mut App, key: KeyEvent
     Ok(false)
 }
 
-/// Bare `/enable`'s session-tools checklist (#539): `Space` toggles a tool's
-/// availability for the active session, `a` toggles auto-allow on an enabled
-/// override row, `Enter` sends the computed overlay diff, `Esc` discards.
-pub(in crate::tui) async fn handle_session_tools_dialog_event(
-    app: &mut App,
-    holly: &Holly,
-    key: KeyEvent,
-) -> Result<bool> {
-    match key.code {
-        KeyCode::Esc => app.close_session_tools_dialog(),
-        KeyCode::Enter => {
-            let entries = app.session_tools_dialog().to_entries();
-            app.close_session_tools_dialog();
-            let session = app.active_session_id().clone();
-            crate::tui::enable_command::send_overlay(holly, session, entries).await;
-        }
-        KeyCode::Char(' ') => app.session_tools_dialog_mut().toggle_selected(),
-        KeyCode::Char('a') => app.session_tools_dialog_mut().toggle_allow_selected(),
-        KeyCode::Down | KeyCode::Char('j') => app.session_tools_dialog_mut().select_next(),
-        KeyCode::Up | KeyCode::Char('k') => app.session_tools_dialog_mut().select_prev(),
-        KeyCode::PageDown => app.session_tools_dialog_mut().page_down(DIALOG_PAGE_SIZE),
-        KeyCode::PageUp => app.session_tools_dialog_mut().page_up(DIALOG_PAGE_SIZE),
-        KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
-            return Ok(true);
-        }
-        _ => {}
-    }
-    Ok(false)
-}
-
 /// `/tools`' read-heavy browser (#560 P9, ADR-0199 part 3): a free-text
 /// typeahead filter (like `mention`/`slash_popup`'s own typed-filter
 /// popups), so plain letter keys — *including* `j`/`k` — extend the filter
-/// rather than doubling as vim-style navigation (`session_tools_dialog`'s
-/// own `Space`-toggle checklist has no filter box to conflict with, which is
-/// why it can reserve them; this view does, so it can't). `Up`/`Down` move
-/// the highlight, `Tab` cycles the category filter, `Backspace` shortens the
-/// filter, `Enter` enables the highlighted row exactly like a typed
-/// `/enable` (ADR-0199 part 4) and closes the view, `Esc` closes without
-/// acting.
-pub(in crate::tui) async fn handle_tools_view_event(
-    app: &mut App,
-    holly: &Holly,
-    key: KeyEvent,
-) -> Result<bool> {
+/// rather than doubling as vim-style navigation. `Up`/`Down` move the
+/// highlight, `Tab` cycles the category filter, `Backspace` shortens the
+/// filter, `Esc` closes.
+pub(in crate::tui) fn handle_tools_view_event(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Esc => app.close_tools_view(),
-        KeyCode::Enter => app.enable_selected_tools_view_row(holly).await,
         KeyCode::Tab => app.tools_view_cycle_category(),
         KeyCode::Down => app.tools_view_select_next(),
         KeyCode::Up => app.tools_view_select_prev(),

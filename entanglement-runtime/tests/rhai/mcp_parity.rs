@@ -1,10 +1,9 @@
-//! #843: per-tool MCP control is a `mcp__<server>__<tool>` rule or overlay
-//! entry (a server-wide `mcp__<server>__*` glob in the overlay only — rule
-//! keys match the tool part exactly), and it holds on both ways a model reaches an MCP tool — the `mcp`
-//! envelope (core unwraps it to the inner name) and a script's generated
-//! `mcp::<server>::<tool>()` binding (ADR-0227). A per-tool mode `deny` and a
-//! session overlay deny each refuse both calls with the same text, and the
-//! stub server never sees a `tools/call`.
+//! #843: per-tool MCP control is a `mcp__<server>__<tool>` rule (rule keys
+//! match the tool part exactly), and it holds on both ways a model reaches
+//! an MCP tool — the `mcp` envelope (core unwraps it to the inner name) and
+//! a script's generated `mcp::<server>::<tool>()` binding (ADR-0227). A
+//! per-tool mode `deny` refuses both calls with the same text, and the stub
+//! server never sees a `tools/call`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +17,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use entanglement_core::{
     EngineConfig, Holly, InMsg, Llm, LlmResponse, OutEvent, Permission, PermissionProfile,
-    SessionId, ToolCall, ToolOverlayEntry,
+    SessionId, ToolCall,
 };
 use entanglement_runtime::host::host_tools;
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig, McpToolCache};
@@ -70,7 +69,6 @@ enum Path {
 enum Policy {
     None,
     ModeDeny(&'static str),
-    OverlayDeny(&'static str),
 }
 
 /// What one run produced: the call's tool output, whether any approval card
@@ -100,7 +98,6 @@ async fn run(path: Path, policy: Policy) -> Run {
     let tag = match policy {
         Policy::None => "none",
         Policy::ModeDeny(_) => "mode",
-        Policy::OverlayDeny(_) => "overlay",
     };
     let dir = TempDir::new(&format!("mcp-parity-{path:?}-{tag}"));
     // The last-seen list generates the script's `mcp::stub_srv::call_`; the
@@ -211,15 +208,6 @@ async fn run(path: Path, policy: Policy) -> Run {
         .await
         .unwrap();
     let sub = holly.subscribe();
-    if let Policy::OverlayDeny(pattern) = policy {
-        holly
-            .send(InMsg::SetToolOverlay {
-                session: sid.clone(),
-                entries: vec![ToolOverlayEntry::deny(pattern)],
-            })
-            .await
-            .unwrap();
-    }
     holly.send(InMsg::prompt(sid.clone(), "go")).await.unwrap();
     let events = tokio::time::timeout(
         Duration::from_secs(20),
@@ -227,14 +215,6 @@ async fn run(path: Path, policy: Policy) -> Run {
     )
     .await
     .unwrap();
-    if let Policy::OverlayDeny(_) = policy {
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, OutEvent::ToolOverlayChanged { .. })),
-            "the overlay was applied: {events:?}"
-        );
-    }
     let output = events
         .iter()
         .find_map(|e| match e {
@@ -295,13 +275,4 @@ async fn refused_identically(policy: Policy) -> String {
 async fn a_per_tool_mode_deny_refuses_the_envelope_and_the_script_alike() {
     let why = refused_identically(Policy::ModeDeny(REGISTERED)).await;
     assert!(why.contains("denied by mode `build`"), "{why}");
-}
-
-#[tokio::test]
-async fn an_overlay_deny_refuses_the_envelope_and_the_script_alike() {
-    let why = refused_identically(Policy::OverlayDeny("mcp__stub-srv__*")).await;
-    assert!(
-        why.contains("withdrawn for this session by /disable"),
-        "{why}"
-    );
 }

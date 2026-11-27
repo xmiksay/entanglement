@@ -10,7 +10,7 @@ use super::Session;
 use crate::holly::SeqCell;
 #[cfg(doc)]
 use crate::protocol::InMsg;
-use crate::protocol::{OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{OutEvent, SessionId};
 
 /// Ceiling on the deferred-command queue (#556): mid-turn, every wire-allowed
 /// command that arrives is stashed until the live turn ends — a stuck
@@ -95,11 +95,6 @@ pub(crate) enum SessionCmd {
     /// third field is `if_unset` (#553): when `true`, `name` only applies if
     /// the session has no name yet.
     SetSessionMeta(Option<String>, Option<String>, bool),
-    /// Replace the session's live tool overlay (#539, ADR-0149): the full
-    /// [`ToolOverlayEntry`] list whose matching tools exist for this session
-    /// regardless of the profile mask. Always succeeds and emits
-    /// [`OutEvent::ToolOverlayChanged`] with the effective list.
-    SetToolOverlay(Vec<ToolOverlayEntry>),
     /// Single out-of-band LLM op (`op`, `args`, #324) — `"compact"` today.
     Oneshot(String, serde_json::Value),
     /// Revert tracked file edits after a turn (#731, ADR-0212) through

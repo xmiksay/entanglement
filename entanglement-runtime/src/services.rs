@@ -30,7 +30,6 @@ pub(crate) struct Head {
     pub(crate) live_agent_generation: Arc<Mutex<config::agent_generation::AgentGenerationStore>>,
     pub(crate) live_aux_models: Arc<Mutex<config::aux_models::AuxModelStore>>,
     pub(crate) reload_rx: tokio::sync::mpsc::UnboundedReceiver<watch::ReloadNotice>,
-    pub(crate) tool_names: Vec<String>,
     pub(crate) http_client: HttpClient,
     pub(crate) grants: Arc<DefaultGrantStore>,
     pub(crate) mcp: mcp::McpHandles,
@@ -67,7 +66,6 @@ pub(crate) fn start(
         provider_name,
         http_client,
         tools,
-        tool_names,
         mcp_active,
         mcp_available,
         mcp_configs,
@@ -288,7 +286,6 @@ pub(crate) fn start(
         live_agent_generation,
         live_aux_models,
         reload_rx,
-        tool_names,
         http_client,
         grants,
         mcp: mcp::McpHandles {

@@ -18,7 +18,7 @@ pub use sessions::{
     draw_sessions_modal,
 };
 pub use settings::{draw_settings_dialog, settings_tab_at};
-pub use tool_popups::{draw_mcp_panel, draw_session_tools_dialog, draw_tools_view};
+pub use tool_popups::{draw_mcp_panel, draw_tools_view};
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()

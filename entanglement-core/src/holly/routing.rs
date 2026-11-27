@@ -149,7 +149,6 @@ pub(super) fn msg_to_cmd(msg: InMsg) -> Option<SessionCmd> {
             if_unset,
             ..
         } => SessionCmd::SetSessionMeta(name, action, if_unset),
-        InMsg::SetToolOverlay { entries, .. } => SessionCmd::SetToolOverlay(entries),
         InMsg::Oneshot { op, args, .. } => SessionCmd::Oneshot(op, args),
         InMsg::RevertFiles { to_turn, .. } => SessionCmd::RevertFiles(to_turn),
         InMsg::ForkSession { at_turn, .. } => SessionCmd::Fork(at_turn),

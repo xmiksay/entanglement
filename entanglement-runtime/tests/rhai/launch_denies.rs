@@ -1,12 +1,12 @@
 //! ADR-0228's explicit denies: a mode deny of `rhai` itself refuses even a
 //! trusted path (before the file is touched), and inside a trusted or
-//! **Run all** script an overlay deny, a `pre_tool_use` veto and a ceiling
-//! deny of a nested tool are each a catchable error. Plus the never-hang
+//! **Run all** script a `pre_tool_use` veto and a ceiling deny of a nested
+//! tool are each a catchable error. Plus the never-hang
 //! posture of a script `path` naming a FIFO.
 
 use std::path::Path;
 
-use entanglement_core::{Permission, PermissionProfile, ToolOverlayEntry};
+use entanglement_core::{Permission, PermissionProfile};
 
 use super::launch_harness::{fixture, run, table, Launch, Setup};
 
@@ -68,15 +68,6 @@ async fn a_mode_deny_of_rhai_refuses_even_a_trusted_path() {
         "{:?}",
         seen.outputs
     );
-}
-
-#[tokio::test]
-async fn an_overlay_deny_of_a_nested_tool_wins_under_trust_and_run_all() {
-    assert_nested_write_refused(
-        |s| s.overlay = vec![ToolOverlayEntry::deny("write")],
-        "withdrawn for this session",
-    )
-    .await;
 }
 
 #[tokio::test]

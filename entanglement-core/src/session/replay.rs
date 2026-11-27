@@ -227,14 +227,7 @@ impl Session {
                 // persisted push would desync from the live session's history
                 // (the pairing-order hazard around a session's very first
                 // `Prompt`).
-                OutEvent::ModeChanged { mode, .. } => {
-                    // Mirrors the live drop of the mode-scoped overlay
-                    // (`immediate.rs`); a same-value re-announce keeps it.
-                    if *mode != session.mode {
-                        session.tool_overlay.clear();
-                    }
-                    session.mode = mode.clone();
-                }
+                OutEvent::ModeChanged { mode, .. } => session.mode = mode.clone(),
                 OutEvent::WorkdirChanged { dir, .. } => session.workdir = Some(dir.clone()),
                 OutEvent::ParentChanged { parent, .. } => session.parent = Some(parent.clone()),
                 // Re-bind a resumed session to the model it was switched to
@@ -268,13 +261,6 @@ impl Session {
                     session
                         .generation_by_agent
                         .insert(session.agent.name.clone(), *generation);
-                }
-                // Restore the live tool overlay (#539, ADR-0149): the logged
-                // value is the full effective list, so replay overwrites it —
-                // last write wins, same as the live engine's full-replacement
-                // semantics.
-                OutEvent::ToolOverlayChanged { entries, .. } => {
-                    session.tool_overlay = entries.clone();
                 }
                 // Display metadata: the logged values are the full merged
                 // state, so replay overwrites — last write wins.

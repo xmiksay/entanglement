@@ -1,12 +1,12 @@
-//! ADR-0228: the `rhai` launch is graded like any tool — the overlay (deny
-//! and enable), mode rules on the script's canonical `path`, grants — and
+//! ADR-0228: the `rhai` launch is graded like any tool — mode rules (on
+//! `rhai` itself and on the script's canonical `path`), grants — and
 //! `auto` (`default: allow`) runs a script with no card while its explicit
 //! denies still win.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use entanglement_core::{ApprovalScope, Permission, ToolOverlayEntry};
+use entanglement_core::{ApprovalScope, Permission};
 use entanglement_runtime::mode::ModeTable;
 
 use super::launch_harness::{fixture, run, run_calls, table, Launch, Setup, ADD};
@@ -33,27 +33,12 @@ fn inline(script: &str) -> String {
     serde_json::json!({ "script": script }).to_string()
 }
 
+/// An allow rule on `rhai` is an Allow: no card, and the script runs Ask
+/// per command — its nested write still cards.
 #[tokio::test]
-async fn an_overlay_deny_of_rhai_refuses_the_launch_trusted_path_included() {
+async fn an_allow_rule_on_rhai_runs_without_a_card_asking_per_command() {
     let (_tmp, root) = fixture();
-    let mut setup = ask(Launch::RunAll);
-    setup.trusted = vec![root.join("scripts")].into();
-    setup.overlay = vec![ToolOverlayEntry::deny("rhai")];
-    let seen = run(&root, &[ADD, &inline("40 + 2")], setup).await;
-    assert!(seen.launch_cards.is_empty(), "{:?}", seen.launch_cards);
-    assert_eq!(seen.outputs.len(), 2, "{:?}", seen.outputs);
-    for out in &seen.outputs {
-        assert!(out.contains("withdrawn") && !out.contains("42"), "{out}");
-    }
-}
-
-/// An overlay enable is an Allow: no card, and the script runs Ask per
-/// command — its nested write still cards.
-#[tokio::test]
-async fn an_overlay_enable_of_rhai_runs_without_a_card_asking_per_command() {
-    let (_tmp, root) = fixture();
-    let mut setup = ask(Launch::Reject);
-    setup.overlay = vec![ToolOverlayEntry::allow("rhai")];
+    let setup = Setup::new(table(Permission::Ask, &["rhai"], &[], 0), Launch::Reject);
     let seen = run(&root, &[&inline(WRITE)], setup).await;
     assert!(seen.launch_cards.is_empty(), "{:?}", seen.launch_cards);
     assert_eq!(seen.nested_cards.len(), 1, "{:?}", seen.nested_cards);
@@ -148,8 +133,7 @@ async fn auto_runs_a_script_with_no_card_and_its_nested_calls_pass() {
 }
 
 /// A `default: allow` mode's deny rule still wins inside a script (a
-/// catchable error), and an overlay deny of `rhai` still refuses the launch
-/// in `auto`.
+/// catchable error).
 #[tokio::test]
 async fn denies_still_win_where_everything_else_runs() {
     let (_tmp, root) = fixture();
@@ -166,10 +150,6 @@ async fn denies_still_win_where_everything_else_runs() {
         seen.outputs
     );
     assert!(!root.join("no.txt").exists());
-    let mut setup = auto();
-    setup.overlay = vec![ToolOverlayEntry::deny("rhai")];
-    let seen = run(&root, &[&inline("1")], setup).await;
-    assert!(seen.outputs[0].contains("withdrawn"), "{:?}", seen.outputs);
 }
 
 /// The escape-root gate still asks in `auto` (Run all / trust pass it).

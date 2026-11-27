@@ -109,7 +109,6 @@ mod permission_arg;
 // a compound command (`&&`/`|`/`;`/...) is graded segment-by-segment instead
 // of as one full-string glob match. Ungated — pure logic over core types and
 // `shell_split`, needed by the lean build's dispatch path too.
-pub mod permission_bash;
 pub mod permission_path;
 pub mod persistence;
 pub mod plan_files;
@@ -151,7 +150,7 @@ pub mod session_store;
 #[cfg(feature = "provider")]
 pub mod session_title;
 // Conservative, quote-aware compound-command splitter (ADR-0197) — the
-// splitting side `permission_bash` grades against. Ungated — pure `char`
+// splitting side a mode's `bash` rules grade against. Ungated — pure `char`
 // scanning, no deps.
 pub mod shell_split;
 pub mod skills;

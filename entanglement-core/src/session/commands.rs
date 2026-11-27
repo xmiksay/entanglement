@@ -8,7 +8,7 @@ use tokio::sync::broadcast;
 
 use super::Session;
 use crate::holly::{ActivityRegistry, SeqRegistry};
-use crate::protocol::{AgentState, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{AgentState, OutEvent, SessionId};
 use crate::EngineConfig;
 
 /// Wall-clock milliseconds since the Unix epoch, for lifecycle `ts` fields.
@@ -70,21 +70,6 @@ pub(super) fn set_generation(
     let _ = events.send(OutEvent::GenerationChanged {
         session: session.clone(),
         generation: merged,
-    });
-}
-
-/// `SetToolOverlay` (#539, ADR-0149): replace the overlay and ack with the
-/// full effective list.
-pub(super) fn set_tool_overlay(
-    s: &mut Session,
-    session: &SessionId,
-    events: &broadcast::Sender<OutEvent>,
-    entries: Vec<ToolOverlayEntry>,
-) {
-    s.tool_overlay = entries.clone();
-    let _ = events.send(OutEvent::ToolOverlayChanged {
-        session: session.clone(),
-        entries,
     });
 }
 

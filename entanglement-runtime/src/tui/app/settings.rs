@@ -10,7 +10,7 @@ use super::settings_apply::LiveEffects;
 use super::App;
 use crate::config::aux_models::Purpose;
 use crate::tui::settings_dialog::{
-    mode_names, model_options, run_plan, AuxTab, Confirm, SessionTab, SettingsDialog, ToolsTab,
+    mode_names, model_options, run_plan, AuxTab, Confirm, SessionTab, SettingsDialog,
 };
 
 /// The dialog (`None` = closed, so cancelling discards by construction), the
@@ -94,9 +94,8 @@ impl App {
                 store.lock().ok()?.get(&agent)
             })
             .unwrap_or_default();
-        let tools = ToolsTab::new(self.session_tool_rows());
         let aux = AuxTab::new(aux_models, &self.aux_pins());
-        self.settings.dialog = Some(SettingsDialog::new(session, current, tools, aux));
+        self.settings.dialog = Some(SettingsDialog::new(session, current, aux));
         self.mark_dirty();
     }
 

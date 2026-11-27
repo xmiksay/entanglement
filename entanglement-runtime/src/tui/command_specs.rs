@@ -116,44 +116,6 @@ pub struct AllowArgs {
     pub path: String,
 }
 
-/// `/enable`/`/disable` subcommand target (#539, ADR-0149): a bare tool name
-/// or glob (`tool <name>`, e.g. `mcp__<server>__*`). MCP servers need no
-/// enabling (ADR-0226).
-#[derive(clap::Subcommand, Clone, Debug, PartialEq)]
-pub enum EnableTarget {
-    /// Enable/disable a single tool name or glob pattern.
-    Tool { name: String },
-}
-
-/// `/enable tool <name> [--allow [<pattern>]]` (bare `/enable`
-/// opens the session-tools dialog; `--allow` is enable-only). `--allow` is
-/// `global` so it parses after the `tool` subcommand
-/// (`/enable tool bash --allow`). The optional trailing `<pattern>` (ADR-0163,
-/// #611 — folds live bash enablement's `--allow [<pattern>]` into this one
-/// command surface) is a free-form, possibly multi-word command-argument glob
-/// (`git *`) that doesn't map onto clap's single-token option-value model, so
-/// [`super::command_args::parse_enable_via_clap`] splits it off and rejoins it
-/// verbatim *before* this struct ever sees it — `allow` here only ever
-/// resolves to whether the bare flag was present.
-#[derive(Parser, Debug)]
-#[command(name = "/enable")]
-pub struct EnableArgs {
-    #[command(subcommand)]
-    pub target: Option<EnableTarget>,
-    /// Only meaningful for `/enable` (ignored by `/disable`): grade the entry as
-    /// `allow` instead of the default `ask`.
-    #[arg(long, global = true)]
-    pub allow: bool,
-}
-
-/// `/disable tool <name>` (bare `/disable` clears the overlay).
-#[derive(Parser, Debug)]
-#[command(name = "/disable")]
-pub struct DisableArgs {
-    #[command(subcommand)]
-    pub target: Option<EnableTarget>,
-}
-
 /// `/stop`'s `--all`/`-a` flag (#6).
 #[derive(Parser, Debug)]
 #[command(name = "/lifecycle")]

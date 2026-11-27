@@ -58,7 +58,7 @@ A skill's own scripts run the same way: `load_skill` prints the skill's
 ## Host I/O bindings
 
 Each binding call goes through **the same dispatch path as the equivalent
-tool call** (the session's permission mode, its tool overlay, the config
+tool call** (the session's permission mode, the config
 ceiling, grants, `pre_tool_use`/`post_tool_use` hooks, the escape-root gate
 for an out-of-project path, argument validation, `FileChange` events) and
 returns that tool's text output. A refusal (denied, rejected, vetoed by a

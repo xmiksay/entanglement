@@ -80,14 +80,9 @@ impl App {
             // text, not available here — both call sites intercept it before
             // reaching this dispatch.
             Command::Allow => false,
-            // Same shape again (#539): `/enable`/`/disable` need `holly` plus
-            // the trailing text — both call sites intercept them before
-            // reaching this dispatch.
-            Command::Enable | Command::Disable => false,
             // `/tools` (#560 P9, ADR-0199 part 3) needs nothing `holly`/text
             // could add — the view builds its own row set from state already
-            // on `App` — so it's fully handled here, unlike `Enable`/`Disable`
-            // above.
+            // on `App` — so it's fully handled here.
             Command::Tools => {
                 self.open_tools_view();
                 false

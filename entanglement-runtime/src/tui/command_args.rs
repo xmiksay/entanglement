@@ -72,8 +72,6 @@ impl Command {
             Command::Set => render_help::<SetArgs>(),
             Command::Mcp => render_help::<McpArgs>(),
             Command::Allow => render_help::<AllowArgs>(),
-            Command::Enable => render_help::<EnableArgs>(),
-            Command::Disable => render_help::<DisableArgs>(),
             Command::Stop => LifecycleArgs::command()
                 .name("stop")
                 .render_help()
@@ -99,13 +97,7 @@ impl Command {
     pub fn has_args(&self) -> bool {
         matches!(
             self,
-            Command::Compact
-                | Command::Set
-                | Command::Mcp
-                | Command::Allow
-                | Command::Enable
-                | Command::Disable
-                | Command::Stop
+            Command::Compact | Command::Set | Command::Mcp | Command::Allow | Command::Stop
         )
     }
 }
@@ -197,50 +189,6 @@ pub(crate) fn parse_allow_via_clap(text: &str) -> Result<String, String> {
     let argv = tokens_after_slash(text, &Command::Allow).unwrap_or_default();
     let args: AllowArgs = parse_or_usage(argv)?;
     Ok(args.path)
-}
-
-/// Split a `--allow`'s free-form trailing pattern (ADR-0163, #611 —
-/// `/enable tool bash --allow git *`) off `argv` before handing the rest to
-/// clap: `Option<Option<String>>`-style inference only ever consumes a single
-/// token, which would truncate a multi-word glob like `git *`. Mirrors the
-/// pre-ADR-0163 `/bash on --allow <pattern>` manual parser's verbatim
-/// single-space rejoin. Returns `argv` with everything after `--allow`
-/// dropped (so clap sees a bare flag) plus the joined pattern, or `argv`
-/// unchanged and `None` when `--allow` never appears or has nothing after it.
-fn split_allow_pattern(argv: Vec<String>) -> (Vec<String>, Option<String>) {
-    match argv.iter().position(|t| t == "--allow") {
-        Some(idx) if idx + 1 < argv.len() => {
-            let pattern = argv[idx + 1..].join(" ");
-            (argv[..=idx].to_vec(), Some(pattern))
-        }
-        _ => (argv, None),
-    }
-}
-
-/// Parse `/enable`/`/disable`'s subcommand + optional `--allow [<pattern>]`
-/// via clap. `enabling` selects which command's grammar `text` is parsed
-/// under. Returns the parsed target, whether `--allow` was present, and its
-/// optional narrowing pattern (ADR-0163, #611); the caller
-/// ([`crate::tui::enable_command`]) maps them onto [`EnableCommand`].
-pub(crate) fn parse_enable_via_clap(
-    text: &str,
-    enabling: bool,
-) -> Result<(Option<EnableTarget>, bool, Option<String>), String> {
-    let cmd = if enabling {
-        Command::Enable
-    } else {
-        Command::Disable
-    };
-    let argv = tokens_after_slash(text, &cmd).unwrap_or_default();
-    if enabling {
-        let (argv, pattern) = split_allow_pattern(argv);
-        let args: EnableArgs = parse_or_usage(argv)?;
-        let arg_pattern = if args.allow { pattern } else { None };
-        Ok((args.target, args.allow, arg_pattern))
-    } else {
-        let args: DisableArgs = parse_or_usage(argv)?;
-        Ok((args.target, false, None))
-    }
 }
 
 /// Parse `/mcp`'s subcommand via clap. Returns the parsed subcommand (or `None`

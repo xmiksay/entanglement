@@ -92,9 +92,7 @@ pub(super) fn start_session(
         s.workdir = initial_workdir;
     } else if s.mode != initial_mode {
         // A resumed sub-agent clamped to its ancestor (ADR-0246) switches
-        // mode: as a live `SetMode` and replay's `ModeChanged` fold do, the
-        // mode-scoped overlay goes, and the model is told what changed.
-        s.tool_overlay.clear();
+        // mode, and the model is told what changed.
         s.mode_transition_from = Some(std::mem::replace(&mut s.mode, initial_mode));
     }
     // A fresh (non-resumed) successor records the session it succeeds; a resumed
@@ -173,17 +171,6 @@ pub(super) fn start_session(
     // The workdir, fresh or replayed: the runtime reads it off each
     // `ToolExec`, but a head only learns it here (#764).
     super::workdir::announce(&s, session, events);
-    // Re-announce a resumed session's replayed overlay, after the mode, for
-    // the same reason. The runtime grades dispatch off its own copy, built
-    // only from `ToolOverlayChanged` and forgotten on hibernate/end. If it is
-    // not told again, a user's deny entry stops applying after a resume
-    // (fail-open) and an enable entry is lost (#776).
-    if is_resumed && !s.tool_overlay.is_empty() {
-        let _ = events.send(OutEvent::ToolOverlayChanged {
-            session: session.clone(),
-            entries: s.tool_overlay.clone(),
-        });
-    }
 
     // Session-start model pin (#323, ADR-0081): bind the starting agent's pin
     // when no model is bound yet. A fresh `build`/spawned sub-agent (e.g. a
@@ -267,19 +254,6 @@ pub(super) fn start_session(
             generation,
         });
     }
-    // ...and its tool overlay (#776), logged after the `ModeChanged` above
-    // so neither replay nor the runtime's mirror drops it as a mode switch.
-    // Mode-scoped (ADR-0207): carried only when the successor starts in the
-    // mode the entries were set under — a `SetMode` the source never got to
-    // apply before the fork already moved the supervisor's mode on.
-    if let Some(i) = inherited.filter(|i| !i.overlay.is_empty() && i.mode == s.mode) {
-        s.tool_overlay = i.overlay;
-        let _ = events.send(OutEvent::ToolOverlayChanged {
-            session: session.clone(),
-            entries: s.tool_overlay.clone(),
-        });
-    }
-
     // A user fork's verbatim history (#786), announced after the hand-over
     // above so the fork's log carries it ahead of anything it does next.
     if let Some(seed) = fork_seed {
@@ -308,72 +282,4 @@ pub(super) fn start_session(
         }
     }
     s
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::protocol::ToolOverlayEntry;
-
-    /// Start a fresh successor whose source set its overlay under
-    /// `source_mode` while the supervisor hands it `initial_mode`.
-    fn successor_overlay(source_mode: &str, initial_mode: &str) -> (Session, Vec<OutEvent>) {
-        let cfg = EngineConfig::default();
-        let agent = cfg.agents.get("general").cloned().expect("general");
-        let (events, mut sub) = broadcast::channel(32);
-        let (forks, _rx) = mpsc::channel(1);
-        let s = start_session(
-            &SessionId::new("succ"),
-            &events,
-            &cfg,
-            &SeqRegistry::default(),
-            forks,
-            SessionStart {
-                agent,
-                initial_session: None,
-                parent: None,
-                predecessor: Some(SessionId::new("src")),
-                user: None,
-                initial_mode: initial_mode.into(),
-                spawn_model: None,
-                inherited: Some(Inherited {
-                    model: None,
-                    generation: None,
-                    mode: source_mode.into(),
-                    overlay: vec![ToolOverlayEntry::allow("bash")],
-                    workdir: None,
-                    seed: None,
-                }),
-                initial_workdir: None,
-                prior: None,
-                records: None,
-            },
-        );
-        let mut out = Vec::new();
-        while let Ok(ev) = sub.try_recv() {
-            out.push(ev);
-        }
-        (s, out)
-    }
-
-    #[test]
-    fn the_overlay_carries_under_the_same_mode() {
-        let (s, events) = successor_overlay("plan", "plan");
-        assert_eq!(s.tool_overlay, [ToolOverlayEntry::allow("bash")]);
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, OutEvent::ToolOverlayChanged { .. })));
-    }
-
-    /// A `SetMode` the supervisor already applied but the source never
-    /// processed before forking: the overlay belongs to the old mode
-    /// (ADR-0207), so it is not carried.
-    #[test]
-    fn the_overlay_is_dropped_when_the_inherited_mode_differs() {
-        let (s, events) = successor_overlay("plan", "build");
-        assert!(s.tool_overlay.is_empty());
-        assert!(!events
-            .iter()
-            .any(|e| matches!(e, OutEvent::ToolOverlayChanged { .. })));
-    }
 }

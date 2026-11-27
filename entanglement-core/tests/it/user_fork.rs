@@ -1,6 +1,6 @@
 //! `InMsg::ForkSession` (#786, ADR-0223): a non-compacting fork copies the
 //! source's history verbatim (whole, or cut after a turn) into a fresh root
-//! that inherits the live model/generation/mode/overlay, replays exactly from
+//! that inherits the live model/generation/mode, replays exactly from
 //! its own log, and leaves the source live and untouched.
 
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use entanglement_core::session::Session;
 use entanglement_core::{
     content_text, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream, OutEvent,
-    SessionId, ToolOverlayEntry,
+    SessionId,
 };
 use tokio::sync::broadcast::Receiver;
 
@@ -176,24 +176,13 @@ async fn a_fork_at_a_turn_keeps_only_that_prefix_and_replays_exactly() {
 }
 
 #[tokio::test]
-async fn a_fork_inherits_the_live_model_generation_mode_and_overlay() {
+async fn a_fork_inherits_the_live_model_generation_and_mode() {
     let h = Harness::new();
     let cfg = h.config(false);
     let holly = Holly::spawn(cfg.clone());
     let src = SessionId::new("src");
     let mut sub = holly.subscribe();
     start_and_switch(&holly, &mut sub, &src).await;
-    let overlay = vec![ToolOverlayEntry::allow("bash")];
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: src.clone(),
-            entries: overlay.clone(),
-        })
-        .await
-        .unwrap();
-    while !matches!(next(&mut sub).await, OutEvent::ToolOverlayChanged { session, .. } if session == src)
-    {
-    }
 
     let (fork_id, log) = fork(&holly, &mut sub, &src, None).await;
     let models: Vec<&str> = log
@@ -207,9 +196,6 @@ async fn a_fork_inherits_the_live_model_generation_mode_and_overlay() {
     assert!(log
         .iter()
         .any(|e| matches!(e, OutEvent::ModeChanged { mode, .. } if mode == "plan")));
-    assert!(log
-        .iter()
-        .any(|e| matches!(e, OutEvent::ToolOverlayChanged { entries, .. } if *entries == overlay)));
 
     turn(&holly, &mut sub, &fork_id, "go").await;
     assert_eq!(h.last_request(), (Some("glm-b".into()), Some(0.3)));
@@ -217,7 +203,6 @@ async fn a_fork_inherits_the_live_model_generation_mode_and_overlay() {
     let records: Vec<(Option<InMsg>, OutEvent)> = log.into_iter().map(|e| (None, e)).collect();
     let replayed = Session::replay(&records, &cfg, &fork_id).expect("replay");
     assert_eq!(replayed.mode, "plan");
-    assert_eq!(replayed.tool_overlay, overlay);
     assert_eq!(replayed.generation.and_then(|g| g.temperature), Some(0.3));
 }
 

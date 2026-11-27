@@ -1,5 +1,5 @@
 //! `agent`/`agent_send` are graded like any tool (#849, ADR-0232): the
-//! session overlay and the mode's rules reach them through the same dispatch
+//! mode's rules reach them through the same dispatch
 //! ladder every host tool climbs. A refusal is an ordinary error result the
 //! model sees, and no child session is ever started.
 
@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use entanglement_core::{
     stream_from_response, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse, LlmStream,
-    MessageRole, OutEvent, Permission, PermissionProfile, SessionId, ToolCall, ToolOverlayEntry,
+    MessageRole, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::tool_names::{AGENT_SEND_TOOL, AGENT_TOOL};
@@ -105,24 +105,6 @@ fn spawn(tool: &'static str, input: &'static str, table: Arc<ModeTable>) -> Holl
     spawn_calls(&[(tool, input)], table)
 }
 
-async fn set_overlay(holly: &Holly, sid: &SessionId, entries: Vec<ToolOverlayEntry>) {
-    let mut sub = holly.subscribe();
-    holly
-        .send(InMsg::SetToolOverlay {
-            session: sid.clone(),
-            entries,
-        })
-        .await
-        .unwrap();
-    loop {
-        match tokio::time::timeout(Duration::from_secs(5), sub.recv()).await {
-            Ok(Ok(OutEvent::ToolOverlayChanged { .. })) => return,
-            Ok(Ok(_)) => {}
-            other => panic!("no overlay confirmation: {other:?}"),
-        }
-    }
-}
-
 /// Every event until `sid`'s turn ends (the bounded per-event timeout also
 /// ends it), from every session — a child start must be visible.
 pub(crate) async fn run_turn(holly: &Holly, sid: &SessionId) -> Vec<OutEvent> {
@@ -164,21 +146,6 @@ pub(crate) fn assert_refused(events: &[OutEvent], tool: &str, needle: &str) {
             .iter()
             .any(|e| matches!(e, OutEvent::ToolRequest { .. })),
         "a refusal is flat, no approval card: {events:?}"
-    );
-}
-
-/// `/disable agent` (the TUI upserts exactly this wire deny entry) means no
-/// spawning.
-#[tokio::test]
-async fn an_overlay_deny_on_agent_refuses_the_spawn() {
-    let holly = spawn(AGENT_TOOL, SPAWN, table(&[], &[]));
-    let sid = SessionId::new("s1");
-    set_overlay(&holly, &sid, vec![ToolOverlayEntry::deny(AGENT_TOOL)]).await;
-    let events = run_turn(&holly, &sid).await;
-    assert_refused(
-        &events,
-        AGENT_TOOL,
-        "withdrawn for this session by /disable",
     );
 }
 
@@ -256,20 +223,7 @@ async fn a_mode_prompt_rule_on_agent_asks_first() {
 }
 
 /// `agent_send` is graded before the child lookup: the refusal names the
-/// overlay, not the unknown `agent_id`.
-#[tokio::test]
-async fn an_overlay_deny_on_agent_send_refuses_it() {
-    let holly = spawn(AGENT_SEND_TOOL, SEND, table(&[], &[]));
-    let sid = SessionId::new("s1");
-    set_overlay(&holly, &sid, vec![ToolOverlayEntry::deny(AGENT_SEND_TOOL)]).await;
-    let events = run_turn(&holly, &sid).await;
-    assert_refused(
-        &events,
-        AGENT_SEND_TOOL,
-        "withdrawn for this session by /disable",
-    );
-}
-
+/// mode, not the unknown `agent_id`.
 #[tokio::test]
 async fn a_mode_deny_rule_on_agent_send_refuses_it() {
     let holly = spawn(AGENT_SEND_TOOL, SEND, table(&[AGENT_SEND_TOOL], &[]));

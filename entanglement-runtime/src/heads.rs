@@ -301,7 +301,6 @@ async fn launch_tui(
             head.live_aux_models,
             head.reload_rx,
             cwd.to_path_buf(),
-            head.tool_names,
             head.http_client,
             user_config.editor.clone(),
             user_config.tui.clone(),

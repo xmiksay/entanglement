@@ -9,8 +9,8 @@ use super::keybindings::{Action, LeaderResult};
 use super::modal_events::{
     handle_command_palette_event, handle_inspect_event, handle_key_dialog_event,
     handle_mode_picker_event, handle_model_picker_event, handle_mouse, handle_profile_picker_event,
-    handle_question_event, handle_resume_modal_event, handle_session_tools_dialog_event,
-    handle_sessions_modal_event, handle_tools_view_event, DIALOG_PAGE_SIZE,
+    handle_question_event, handle_resume_modal_event, handle_sessions_modal_event,
+    handle_tools_view_event, DIALOG_PAGE_SIZE,
 };
 use super::session_view::ApprovalMode;
 
@@ -145,13 +145,9 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
     if app.showing_settings_dialog() {
         return crate::tui::settings_events::handle_settings_key(app, holly, key).await;
     }
-    // Bare `/enable`'s session-tools checklist (#539).
-    if app.showing_session_tools_dialog() {
-        return handle_session_tools_dialog_event(app, holly, key).await;
-    }
     // `/tools`' read-heavy browser (#560 P9, ADR-0199 part 3).
     if app.showing_tools_view() {
-        return handle_tools_view_event(app, holly, key).await;
+        return handle_tools_view_event(app, key);
     }
     if app.showing_profile_picker() {
         return handle_profile_picker_event(app, key).await;
@@ -189,10 +185,7 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
         return Ok(false);
     }
     // `/mcp list` panel (#373, selectable since #539):
-    // `Up`/`Down`/`j`/`k` move the server selection, `d` withdraws the
-    // highlighted server from the active session (a `mcp__<name>__*` deny
-    // overlay entry — every registered server is on by default, ADR-0226, so
-    // the per-session opt-out is the user control left), `c`/`t` run the
+    // `Up`/`Down`/`j`/`k` move the server selection, `c`/`t` run the
     // OAuth connect/check for it (ADR-0153),
     // `PageUp`/`PageDown` scroll, `Esc` closes.
     if app.showing_mcp_panel() {
@@ -200,12 +193,6 @@ async fn handle_key(app: &mut App, holly: &Holly, key: KeyEvent) -> Result<bool>
             KeyCode::Esc => app.close_mcp_panel(),
             KeyCode::Up | KeyCode::Char('k') => app.mcp_select_prev(),
             KeyCode::Down | KeyCode::Char('j') => app.mcp_select_next(),
-            KeyCode::Char('d') => {
-                if let Some(name) = app.mcp_selected_server() {
-                    let pattern = crate::mcp::tool::server_tools_pattern(&name);
-                    crate::tui::enable_command::upsert_deny(app, holly, pattern).await;
-                }
-            }
             // OAuth row actions (ADR-0153). The panel is closed
             // first: `connect` parks on the browser and reports
             // through transcript status lines, which the panel

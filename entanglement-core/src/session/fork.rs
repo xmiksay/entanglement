@@ -29,7 +29,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::user_fork::ForkSeed;
 use super::Session;
 use crate::id_gen::{IdContext, IdKind};
-use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{CompactionMode, InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
 
 /// One frame on the session→supervisor fork channel: an ordinary `InMsg`
@@ -51,10 +51,6 @@ pub(crate) struct Inherited {
     pub(crate) model: Option<ResolvedModel>,
     /// The source's effective generation params.
     pub(crate) generation: Option<GenerationParams>,
-    /// The source's mode at the fork, which scopes `overlay` (ADR-0207).
-    pub(crate) mode: String,
-    /// The source's live tool overlay (#776).
-    pub(crate) overlay: Vec<ToolOverlayEntry>,
     /// The source's working directory (#764), already validated.
     pub(crate) workdir: Option<String>,
     /// A user fork's verbatim history (#786); `None` for a compaction

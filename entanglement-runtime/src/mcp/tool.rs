@@ -162,18 +162,10 @@ pub(crate) fn namespaced_tool_name(server: &str, tool: &str) -> String {
     entanglement_core::mcp_tool_name(server, tool)
 }
 
-/// The overlay/rule pattern covering every tool of `server` — built from the
-/// registered spelling, so `my.docs` yields `mcp__my_docs__*`. Matches no
-/// other server's tools because the roster refuses names whose prefixes
-/// nest or coincide ([`names_clash`]).
-pub fn server_tools_pattern(server: &str) -> String {
-    format!("{}*", namespaced_tool_name(server, ""))
-}
-
 /// Whether two server names map onto overlapping registered tool names:
 /// identical after sanitizing (`my.docs` / `my_docs`), or one's
 /// `mcp__<name>__` prefix nesting the other's (`a` / `a__b`). Either makes a
-/// tool name — and an overlay or rule pattern like `mcp__a__*` — ambiguous
+/// tool name — and a rule pattern like `mcp__a__*` — ambiguous
 /// between the two, so only the first such name is registered — by the global roster and
 /// within a per-user scope alike.
 pub(crate) fn names_clash(a: &str, b: &str) -> bool {
@@ -289,15 +281,6 @@ mod tests {
             assert_eq!(namespaced_tool_name(server, tool), want);
             assert_eq!(entanglement_core::mcp_tool_name(server, tool), want);
         }
-    }
-
-    #[test]
-    fn a_server_pattern_uses_the_registered_spelling() {
-        let pattern = server_tools_pattern("my.docs");
-        assert_eq!(pattern, "mcp__my_docs__*");
-        let deny = entanglement_core::ToolOverlayEntry::deny(pattern);
-        assert!(deny.matches("mcp__my_docs__read"));
-        assert!(!deny.matches("mcp__other__read"));
     }
 
     #[test]

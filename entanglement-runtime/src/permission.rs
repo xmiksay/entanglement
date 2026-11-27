@@ -32,9 +32,9 @@
 //! Both live in the runtime tool executor's single-threaded loop, folded
 //! from the same lifecycle events as permission dispatch — zero core surface.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use entanglement_core::{AgentCatalog, Permission, PermissionProfile, SessionId, ToolOverlayEntry};
+use entanglement_core::{AgentCatalog, Permission, PermissionProfile, SessionId};
 
 pub use crate::permission_arg::permission_arg;
 pub(crate) use crate::permission_arg::takes_permission_arg;
@@ -159,79 +159,6 @@ pub fn clamp_to_base(
 ) -> Permission {
     let ceiling = crate::mode::Mode::from_permission_profile(base);
     min_permission(perm, ceiling.resolve(tool, capabilities, arg, workdir))
-}
-
-/// The [`PermissionProfile`] an **enable** [`ToolOverlayEntry`] materializes
-/// into for `tool` (ADR-0163, #611 — folds live bash enablement's
-/// `BashGrade::Allow { pattern }` into the generic overlay): `allow: false`
-/// is a flat `Ask`; `allow: true` with no `arg_pattern` is a flat `Allow`;
-/// `allow: true` with `arg_pattern: Some(p)` stays `Ask` by default and adds
-/// an argument-scoped `tool(p): allow` rule (the existing `tool(pattern)`
-/// syntax, #173/ADR-0114) so only matching commands are pre-approved. `tool`
-/// is the *concrete* tool name being dispatched, not the entry's own
-/// name-glob `pattern` — an entry like `mcp__chessbase__*` fans this out over
-/// every tool it matches. `arg_pattern` is ignored when `allow` is `false`:
-/// the entry's own grammar (`--allow [<pattern>]`) never produces that
-/// combination, and narrowing an `Ask` down from itself has no meaning. A
-/// deny entry is never passed here — [`overlay_grade_entry`]'s
-/// `ToolOverlayEntry::find` lookup is enable-only, so a deny entry never
-/// reaches this function. This override deliberately replaces the mode
-/// resolution outright rather than merely widening it — an explicit
-/// `/enable tool X --allow` is the user's own voice and overrides even a
-/// mode `deny` for that session (ADR-0207 §8); the model can't reach this
-/// path, since an enable entry is trusted-frame-only (ADR-0177).
-pub fn overlay_entry_grade(tool: &str, entry: &ToolOverlayEntry) -> PermissionProfile {
-    match (entry.allow, entry.arg_pattern.as_deref()) {
-        (true, Some(pattern)) => PermissionProfile::new(Permission::Ask)
-            .with(format!("{tool}({pattern})"), Permission::Allow),
-        (true, None) => PermissionProfile::new(Permission::Allow),
-        (false, _) => PermissionProfile::new(Permission::Ask),
-    }
-}
-
-/// The overlay entry that decides `tool`'s **grade** for a call resolved
-/// through `chain` (nearest session first, the same ordering
-/// [`ancestor_chain`] produces, #628 closing the ADR-0149 "child sessions"
-/// deferral). The first link, walking outward from the call's own session,
-/// whose overlay carries an enable entry for `tool` wins: a session's own
-/// overlay beats an ancestor's, and a parent's overlay grade reaches its
-/// whole spawn sub-tree. `None` ⇒ no link in the chain has an opinion — the
-/// ordinary mode resolution stands. A deny entry never reaches this lookup:
-/// `ToolOverlayEntry::find` is enable-only, so a session's own `/disable
-/// tool` never resolves through this path.
-pub fn overlay_grade_entry(
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    chain: &[SessionId],
-    tool: &str,
-) -> Option<ToolOverlayEntry> {
-    chain.iter().find_map(|session| {
-        overlays
-            .get(session)
-            .and_then(|entries| ToolOverlayEntry::find(entries, tool))
-            .cloned()
-    })
-}
-
-/// Whether the nearest chain link with an overlay **opinion** — deny or
-/// enable — about `tool` is a deny (#634, ADR-0207 §8 restore): the missing
-/// half of [`overlay_grade_entry`] above, which only ever looks for an
-/// enable entry and silently skips a link that carries only a deny, walking
-/// past it to a farther ancestor's enable instead. Consulting *this*
-/// function first (`tool_runner::dispatch` does, before `overlay_entry` is
-/// even materialized) closes that hole: the nearest opinionated link always
-/// wins, deny or enable, mirroring [`ToolOverlayEntry::disposition`]'s
-/// deny-beats-enable rule within one session's own list, extended down the
-/// spawn sub-tree the same way #628 extended the enable lookup.
-pub fn overlay_denies(
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    chain: &[SessionId],
-    tool: &str,
-) -> bool {
-    chain.iter().find_map(|session| {
-        overlays
-            .get(session)
-            .and_then(|entries| ToolOverlayEntry::disposition(entries, tool))
-    }) == Some(false)
 }
 
 /// The session + its ancestor chain (nearest first), walking `guard`'s parent
@@ -519,52 +446,6 @@ mod tests {
         assert!(!err.contains("valid ids"), "{err}");
     }
 
-    /// #628: `overlay_grade_entry` walks the same ancestor chain the mask
-    /// already does — a parent's overlay grade now reaches a child that has
-    /// none of its own, and the child's own overlay (nearer in the chain)
-    /// still wins when both have an opinion.
-    #[test]
-    fn overlay_grade_entry_reaches_down_the_ancestor_chain() {
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-        let chain_from_child = ancestor_chain(&guard, &child);
-
-        let mut overlays = HashMap::new();
-        overlays.insert(
-            parent.clone(),
-            vec![ToolOverlayEntry {
-                pattern: "mcp__docs__*".into(),
-                allow: true,
-                deny: false,
-                arg_pattern: None,
-            }],
-        );
-
-        // No overlay of its own — the child inherits the parent's entry.
-        assert_eq!(
-            overlay_grade_entry(&overlays, &chain_from_child, "mcp__docs__search"),
-            Some(overlays[&parent][0].clone())
-        );
-        // No link in the chain has an opinion on an unrelated tool.
-        assert!(overlay_grade_entry(&overlays, &chain_from_child, "bash").is_none());
-
-        // The child's own overlay entry, when present, wins over the
-        // parent's (nearest link first).
-        overlays.insert(child.clone(), vec![ToolOverlayEntry::ask("mcp__docs__*")]);
-        let own = overlay_grade_entry(&overlays, &chain_from_child, "mcp__docs__search").unwrap();
-        assert!(!own.allow);
-
-        // From the parent's own chain, only the parent's entry is in scope.
-        let chain_from_parent = ancestor_chain(&guard, &parent);
-        assert_eq!(
-            overlay_grade_entry(&overlays, &chain_from_parent, "mcp__docs__search"),
-            Some(overlays[&parent][0].clone())
-        );
-    }
-
     /// ADR-0207 §7: the sponsored-child exemption (ADR-0138) is retired along
     /// with the sponsored `propose_plan` build handoff — `SpawnGuard` no
     /// longer has any API to mark a session a permission root, so every
@@ -587,55 +468,6 @@ mod tests {
             vec![leaf.clone(), mid.clone(), root.clone()],
             "the walk must reach every ancestor — nothing can mark itself a \
              permission root any more"
-        );
-    }
-
-    /// #634: a matching overlay `deny` entry — inert since ADR-0207 stage 4a
-    /// deleted `tool_mask_source` — must decline the call again. Also pins
-    /// that `overlay_denies` and `overlay_grade_entry` agree: when the
-    /// nearest opinionated link is a deny, the grade lookup is never reached
-    /// (the caller checks `overlay_denies` first), so a farther ancestor's
-    /// enable never wrongly wins.
-    #[test]
-    fn overlay_denies_restores_the_flat_decline() {
-        let session = SessionId::new("s");
-        let guard = SpawnGuard::new();
-        let chain = ancestor_chain(&guard, &session);
-
-        let mut overlays = HashMap::new();
-        assert!(!overlay_denies(&overlays, &chain, "bash"), "no opinion yet");
-
-        overlays.insert(session.clone(), vec![ToolOverlayEntry::deny("bash")]);
-        assert!(overlay_denies(&overlays, &chain, "bash"));
-        // An unrelated tool is untouched.
-        assert!(!overlay_denies(&overlays, &chain, "read"));
-    }
-
-    /// The nearest chain link with *any* opinion wins for deny too — a
-    /// child's own deny is not shadowed by a parent's enable, and a parent's
-    /// deny reaches a child with no overlay of its own (mirroring
-    /// `overlay_grade_entry_reaches_down_the_ancestor_chain` for the enable
-    /// case).
-    #[test]
-    fn overlay_denies_reaches_down_the_ancestor_chain() {
-        let parent = SessionId::new("parent");
-        let child = SessionId::new("child");
-        let mut guard = SpawnGuard::new();
-        guard.record_start(parent.clone(), None);
-        guard.record_start(child.clone(), Some(parent.clone()));
-        let chain_from_child = ancestor_chain(&guard, &child);
-
-        let mut overlays = HashMap::new();
-        overlays.insert(parent.clone(), vec![ToolOverlayEntry::deny("bash")]);
-        // No overlay of its own — the child inherits the parent's deny.
-        assert!(overlay_denies(&overlays, &chain_from_child, "bash"));
-
-        // The child's own enable is nearer, so it wins over the parent's deny.
-        overlays.insert(child.clone(), vec![ToolOverlayEntry::allow("bash")]);
-        assert!(!overlay_denies(&overlays, &chain_from_child, "bash"));
-        assert_eq!(
-            overlay_grade_entry(&overlays, &chain_from_child, "bash"),
-            Some(overlays[&child][0].clone())
         );
     }
 
@@ -947,8 +779,8 @@ mod tests {
     /// coverage-preserving fragment kept from the retired
     /// `workdir_scoped_rule_resolves_through_the_agent_chain` (deleted with
     /// `effective_permission`/`permission_for`, ADR-0207 stage 4b): `clamp_to_base`
-    /// itself is still very much alive, on the overlay-grade path in both
-    /// the dispatch seam (`dispatch::grade::grade_call`).
+    /// itself is still very much alive, on the mode resolver's ceiling path
+    /// (`policy::ModeResolver`).
     #[test]
     fn clamp_to_base_honors_workdir_scoped_ceiling() {
         let deny_etc =

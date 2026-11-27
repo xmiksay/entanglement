@@ -99,7 +99,7 @@ fn is_stale(entry: &str) -> bool {
 /// Why a rule whose tool part is a *known* spelling still never matches: a
 /// non-maskable name, a tool-name glob — rule keys match the tool part
 /// exactly, only a bare `*` is a wildcard (the core matcher's
-/// `rule_matches`; name globs are the session overlay's alone) — or an
+/// `rule_matches`) — or an
 /// argument scope on a tool that never has an argument (#878: the matcher
 /// sees `None`, so `mcp__gh__x(foo)` is as inert as a typo), a workdir scope
 /// on a tool that never has a workdir (#881, `read{/tmp/*}`), or a scope the
@@ -549,7 +549,7 @@ mod tests {
     }
 
     /// #843: rule keys match the tool part exactly, so a server-wide
-    /// `mcp__gh__*` rule denies nothing — only the overlay globs names.
+    /// `mcp__gh__*` rule denies nothing.
     #[test]
     fn a_tool_name_glob_rule_warns() {
         let layers = vec![layer(

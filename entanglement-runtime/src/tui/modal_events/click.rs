@@ -19,13 +19,6 @@ pub(super) async fn click_modal(app: &mut App, holly: &Holly, column: u16, row: 
     if app.showing_settings_dialog() {
         return crate::tui::settings_events::click_settings(app, column, row);
     }
-    if app.showing_session_tools_dialog() {
-        let area = app.session_tools_dialog_rect();
-        if let Some(idx) = list_row_index(area, row, app.session_tools_dialog().rows().len()) {
-            app.session_tools_dialog_state().select(Some(idx));
-        }
-        return;
-    }
     if app.showing_sessions_modal() {
         let area = app.sessions_modal_rect();
         let len = app.sessions_with_depth().len();
@@ -231,10 +224,6 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
             crate::tui::mcp_command::send_mcp_list(app, holly).await;
         } else if cmd == crate::tui::commands::Command::Allow {
             app.set_input_text("/allow ".to_string());
-        } else if cmd == crate::tui::commands::Command::Enable {
-            app.open_session_tools_dialog();
-        } else if cmd == crate::tui::commands::Command::Disable {
-            app.set_input_text("/disable ".to_string());
         } else if cmd == crate::tui::commands::Command::Stop {
             let target = app.active_session_id().clone();
             crate::tui::stop_command::request_stop(app, holly, target).await;

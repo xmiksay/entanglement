@@ -34,7 +34,7 @@
 //! per-task `broadcast` subscription that could lag and silently drop a decision,
 //! parking the request forever.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use entanglement_core::SessionId;
@@ -58,8 +58,6 @@ pub use call_grader::grade_in_scope;
 mod builder;
 mod inputs;
 mod lifecycle;
-mod mode_epochs;
-mod overlay_warn;
 mod wrappers;
 pub use builder::{ToolExecutor, ToolExecutorBuilder};
 pub use inputs::{DiscoverySurface, EscapeRoot};
@@ -79,6 +77,16 @@ mod dispatch;
 pub(crate) use dispatch::grade::resolve_effective;
 #[cfg(feature = "rhai")]
 pub(crate) use dispatch::{Call, Dispatcher, Outcome, Posture, ScriptCall, Via};
+
+/// Lock the executor's per-session mode map. It holds plain values, valid
+/// whatever a panicking holder did, so a poisoned lock is read through.
+pub(crate) fn lock_modes(
+    perm_modes: &Mutex<HashMap<SessionId, String>>,
+) -> std::sync::MutexGuard<'_, HashMap<SessionId, String>> {
+    perm_modes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// The executor body behind [`ToolExecutorBuilder::spawn`] (#724). The
 /// per-seam semantics and defaults live on the builder's setters; this only
@@ -126,7 +134,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             perm_modes.clone(),
             mode_table.clone(),
             tools.clone(),
-            base.clone(),
+            base,
             escape_root.as_ref().map(|er| er.root.clone()),
         ))
     });
@@ -247,7 +255,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         // The ladder's long-lived shared state (issue #451), built once here
         // by moving the locals above: the lifecycle loop, the background
         // listeners and every ladder handler read them off this one struct.
-        let mode_epochs = mode_epochs::ModeEpochs::of(holly.clone());
         let ctx = LadderCtx {
             holly,
             registry,
@@ -259,7 +266,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             resolver,
             agents,
             perm_modes,
-            mode_epochs,
             mode_table,
             plan_files,
             plan_root,
@@ -271,7 +277,6 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             mcp_scopes,
             advertising,
             escape_root,
-            base,
             grants,
             mcp_http,
             active_skill,

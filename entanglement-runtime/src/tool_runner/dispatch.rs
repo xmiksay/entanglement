@@ -6,8 +6,8 @@
 //! script over the bridge (`crate::script`), so core never sees a result for
 //! an id it never parked on.
 //!
-//! The ladder itself lives in [`gates`] (the `Control` bypass, overlay
-//! deny, mode grade + grants, hooks, escape-root, the credentialed-`http`
+//! The ladder itself lives in [`gates`] (the `Control` bypass,
+//! mode grade + grants, hooks, escape-root, the credentialed-`http`
 //! gate), unknown/lazy-MCP resolution in [`resolve`], the approval park in
 //! [`decision`], the run-against-the-registry step in [`execute`].
 
@@ -21,9 +21,7 @@ mod script;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use entanglement_core::{
-    ContentPart, Holly, PermissionProfile, SessionId, ToolEnvelope, ToolOverlayEntry,
-};
+use entanglement_core::{ContentPart, Holly, SessionId, ToolEnvelope};
 
 use crate::arg_validate::LoopBreaker;
 use crate::attendance::Attendance;
@@ -63,10 +61,6 @@ pub(crate) struct Dispatcher {
     pub hooks: Arc<Hooks>,
     pub pending: PendingDecisions,
     pub escape_root: Option<EscapeRoot>,
-    /// The tool overlays of the chain's sessions (#539/#628/#634), looked up
-    /// per call since one script calls many tools.
-    pub overlays: HashMap<SessionId, Vec<ToolOverlayEntry>>,
-    pub ceiling: PermissionProfile,
     pub advertising: SharedAdvertisingState,
     pub validation: Arc<LoopBreaker>,
     pub mcp_avail: Arc<AvailableMcp>,
@@ -79,13 +73,6 @@ pub(crate) struct Dispatcher {
     /// Every session's mode as the executor folded it — a script re-reads
     /// its session's before each nested call (ADR-0241, ADR-0243).
     pub perm_modes: Arc<Mutex<HashMap<SessionId, String>>>,
-    /// Every compaction lineage's overlay epoch, as the executor folded its
-    /// modes (ADR-0243).
-    pub mode_epochs: super::mode_epochs::ModeEpochs,
-    /// Each `overlays` entry's lineage head and that lineage's epoch when the
-    /// entry was taken: the overlay is mode-scoped, so a script drops an
-    /// entry once its lineage epoch moved (ADR-0243).
-    pub overlay_epochs: super::mode_epochs::Snapshot,
     /// Read only for an explicit `http(...)` rule (ADR-0227).
     pub mode_table: Arc<ModeTable>,
     pub limits: Limits,
@@ -132,7 +119,7 @@ pub(crate) enum Via<'a> {
 /// What a call came to. `None` from [`Dispatcher::run`] means a `Stop`
 /// unwound it: core cancels the turn on the same Stop, so nothing is owed.
 pub(crate) enum Outcome {
-    /// A gate declined it (mode deny, overlay withdrawal, hook veto,
+    /// A gate declined it (mode deny, hook veto,
     /// rejection, unknown tool, unreachable from a script…) — it never ran.
     Refused(String),
     /// A script's nested call was cut off by the script's budget mid-run: it

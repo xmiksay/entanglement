@@ -12,7 +12,6 @@ pub enum RowId {
     /// Permission mode (#560 P12, ADR-0207 §12), Session tab.
     PermMode,
     Gen(GenField),
-    Tool(usize),
     Aux(Purpose),
     /// Headers, hints and disabled read-only lines — never focusable.
     Note,
@@ -81,7 +80,6 @@ impl SettingsDialog {
                 },
             ],
             Tab::Generation => self.generation_rows(agent),
-            Tab::Tools => self.tools_rows(),
             Tab::Aux => {
                 let mut rows = vec![RowView {
                     disabled: Some(AUX_PERSIST_REASON),
@@ -124,30 +122,6 @@ impl SettingsDialog {
         ));
         if self.generation.caps().thinking_required {
             rows.push(note("this model always thinks (thinking required)"));
-        }
-        rows
-    }
-
-    pub(super) fn tools_rows(&self) -> Vec<RowView> {
-        let t = &self.tools;
-        let mut rows = vec![note(
-            "── tools this session · Space: toggle, a: auto-allow ──",
-        )];
-        for (i, r) in t.rows().iter().enumerate() {
-            let tag = match (r.checked, r.profile_default, r.allow) {
-                (true, false, true) => "  +session (allow)",
-                (true, false, false) => "  +session",
-                (false, true, _) => "  -session",
-                _ => "",
-            };
-            rows.push(RowView {
-                changed: t.row_changed(i),
-                ..row(
-                    RowId::Tool(i),
-                    &r.name,
-                    format!("{}{tag}", checkbox(r.checked)),
-                )
-            });
         }
         rows
     }

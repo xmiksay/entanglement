@@ -172,11 +172,6 @@ impl SessionView {
             // A cache-keyed knob change warns once and excuses the next full
             // miss (`generation.rs`); `App` owns the `/set`/`/show` line (#376).
             OutEvent::GenerationChanged { generation, .. } => self.fold_generation(generation),
-            // The live tool overlay (#539): the event loop renders the
-            // confirmation status line and tracks the per-session list on the
-            // `App` (for `/enable`/`/disable` to compute replacements) — no
-            // per-session view state to fold here.
-            OutEvent::ToolOverlayChanged { .. } => false,
             // Display metadata: the ack carries full merged state — overwrite
             // both fields (the resume path replays these records through this
             // same fold, so a restored view keeps its name/action for free).

@@ -23,7 +23,6 @@ impl OutEvent {
             | OutEvent::ModelChanged { session, .. }
             | OutEvent::GenerationChanged { session, .. }
             | OutEvent::SessionMetaChanged { session, .. }
-            | OutEvent::ToolOverlayChanged { session, .. }
             | OutEvent::Plan { session, .. }
             | OutEvent::TextDelta { session, .. }
             | OutEvent::ReasoningDelta { session, .. }
@@ -96,7 +95,6 @@ impl OutEvent {
             | OutEvent::ModelChanged { .. }
             | OutEvent::GenerationChanged { .. }
             | OutEvent::SessionMetaChanged { .. }
-            | OutEvent::ToolOverlayChanged { .. }
             // Live-only script activity (#821): display data, not content.
             | OutEvent::NestedCall { .. }
             | OutEvent::NestedCallSummary { .. } => None,

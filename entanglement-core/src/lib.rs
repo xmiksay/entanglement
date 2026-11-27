@@ -63,6 +63,6 @@ pub use protocol::{
     FileChangeKind, FileRevertReport, InMsg, McpAction, McpAuthAction, McpAuthStatus,
     McpServerSpec, McpServerStatus, ModelChoice, OperationInfo, OperationKind, OperationStatus,
     OutEvent, PendingApproval, PendingQuestion, Permission, PermissionProfile, Question,
-    QuestionOption, Questions, RevertSkip, SessionId, SessionInfo, ToolEnvelope, ToolOverlayEntry,
-    UsagePurpose, RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS,
+    QuestionOption, Questions, RevertSkip, SessionId, SessionInfo, ToolEnvelope, UsagePurpose,
+    RETIRED_IN_MSG_KINDS, RETIRED_OUT_EVENT_KINDS,
 };

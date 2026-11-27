@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn bash_is_registered_unconditionally_at_startup() {
         // ADR-0195: `bash` is an always-registered built-in — no env var, no
-        // `/enable` needed. What a run may do with it is the permission
+        // toggle needed. What a run may do with it is the permission
         // modes' + the config ceiling's job, not the registry's.
         let names = tool_names();
         assert!(names.contains(&"bash".to_string()), "{names:?}");

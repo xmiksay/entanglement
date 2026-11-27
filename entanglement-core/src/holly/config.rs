@@ -20,7 +20,7 @@ use super::{AgentCatalog, UnknownSession, DEFAULT_AGENT};
 /// session (#308). Its output **replaces** the engine-global
 /// [`EngineConfig::tool_specs`][EngineConfig::tool_specs] for that session.
 /// Nothing downstream filters the result — the session's permission mode
-/// and tool overlay are dispatch-only — so this resolver is the single seam
+/// is dispatch-only — so this resolver is the single seam
 /// that shapes a session's base advertised surface. Consulted
 /// fresh at every turn build, so an embedder that mutates its backing store —
 /// e.g. a per-user MCP-server set — sees the change on the *next* turn without
@@ -82,7 +82,7 @@ pub struct EngineConfig {
     /// ADR-0076). When set, it is consulted at every turn build and its output
     /// **replaces** the engine-global [`tool_specs`][Self::tool_specs] for that
     /// session. Its output is advertised as-is (the session's permission mode
-    /// and tool overlay enforce at dispatch, never here), so a resolver that
+    /// enforces at dispatch, never here), so a resolver that
     /// must keep a tool off one tenant's wire has to omit it — denying it will
     /// not.
     /// This is the seam a multi-tenant embedder needs: one `Holly`

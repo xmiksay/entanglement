@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::{Session, SessionCmd, SessionStart};
-use crate::protocol::{InMsg, OutEvent, SessionId, ToolOverlayEntry};
+use crate::protocol::{InMsg, OutEvent, SessionId};
 use crate::EngineConfig;
 
 /// Most events a teardown tail keeps. A teardown finishes one command and
@@ -26,21 +26,19 @@ pub(crate) type Tail = Arc<[OutEvent]>;
 /// predecessor's tail.
 pub(crate) type Records = Arc<[(Option<InMsg>, OutEvent)]>;
 
-/// A hibernating task's last mode and tool overlay: the authoritative
-/// state a successor starts from, where folding events could reconstruct it
+/// A hibernating task's last mode: the authoritative state a successor
+/// starts from, where folding events could reconstruct it
 /// wrongly (a head-appended mode, a same-value repetition the tail match
 /// skips).
 #[derive(Clone, Debug)]
 pub(crate) struct Final {
     pub(crate) mode: String,
-    pub(crate) overlay: Vec<ToolOverlayEntry>,
 }
 
 impl Final {
     pub(super) fn of(s: &Session) -> Self {
         Self {
             mode: s.mode.clone(),
-            overlay: s.tool_overlay.clone(),
         }
     }
 }
@@ -174,9 +172,8 @@ pub(super) async fn ready(
 /// that read part of the tail) and is folded again; that is idempotent. A
 /// run of seq-less events folded twice in a row leaves the state it left
 /// once: each sets fields to values carried by the event itself (`Status`
-/// and `SessionHibernated` close an already closed turn), except the
-/// overlay drop a `ModeChanged` makes, and mode and overlay come from the
-/// old task's [`Final`] state instead of the fold.
+/// and `SessionHibernated` close an already closed turn), and the mode comes
+/// from the old task's [`Final`] state instead of the fold.
 fn unseen(tail: &[OutEvent], replayed: u64) -> &[OutEvent] {
     let cut = tail
         .iter()
@@ -186,10 +183,10 @@ fn unseen(tail: &[OutEvent], replayed: u64) -> &[OutEvent] {
 
 /// Fold what the old task handed over into a resumed start (#906,
 /// ADR-0246). The tail: re-replay the resume's records with its unseen
-/// suffix through [`Session::replay`]. Its final state: the mode and overlay
-/// it ended with, taken as they are, so the start-up switch to
-/// `start.initial_mode` clears the overlay exactly when a later replay of
-/// the log (the old task's events, then that `ModeChanged`) does. The
+/// suffix through [`Session::replay`]. Its final state: the mode it ended
+/// with, taken as it is, so the start-up switch to `start.initial_mode`
+/// reads exactly as a later replay of the log (the old task's events, then
+/// that `ModeChanged`) does. The
 /// workdir the supervisor re-validated on top of the replay carries over;
 /// the lineage needs no carrying, as the re-replay rebuilds the same parent
 /// and children from the same records (the tail holds only this session's
@@ -211,7 +208,6 @@ pub(super) fn fold_tail(
     }
     if let Some(last) = exited.last {
         initial.mode = last.mode;
-        initial.tool_overlay = last.overlay;
     }
 }
 
@@ -272,7 +268,6 @@ mod tests {
         let tail: Tail = vec![done(3)].into();
         let last = Final {
             mode: "plan".into(),
-            overlay: Vec::new(),
         };
         let handed = Exited {
             tail: Some(tail),
@@ -363,15 +358,14 @@ mod tests {
         let prior = Exited {
             tail: Some(vec![done(7)].into()),
             last: Some(Final {
-                mode: "plan".into(),
-                overlay: vec![ToolOverlayEntry::deny("bash")],
+                mode: "research".into(),
             }),
         };
         let task = tokio::spawn(async move { Ending::NeverRan(Some(prior)) });
         let exited = collect_tail(&SessionId::new("s"), task, tap).await;
         assert_eq!(exited.tail.map(|t| t.len()), Some(1));
         let last = exited.last.expect("final state passed on");
-        assert_eq!(last.overlay, [ToolOverlayEntry::deny("bash")]);
+        assert_eq!(last.mode, "research");
     }
 
     /// A lagged tap drops the whole tail, but the final state still goes.
@@ -384,7 +378,6 @@ mod tests {
             }
             Ending::Hibernated(Final {
                 mode: "plan".into(),
-                overlay: Vec::new(),
             })
         });
         let exited = collect_tail(&SessionId::new("s"), task, tap).await;
@@ -434,17 +427,13 @@ mod tests {
         assert_eq!(tail.len(), 1, "{tail:?}");
     }
 
-    /// The old task's final mode and overlay replace what the fold rebuilt:
-    /// here its tail was dropped (the deny it took during the teardown is
-    /// not in it), but its final state still carries the deny.
+    /// The old task's final mode replaces what the fold rebuilt: here its
+    /// tail holds no `ModeChanged` for the switch it made while tearing
+    /// down, but its final state still carries it.
     #[test]
-    fn the_final_state_replaces_the_folded_overlay() {
+    fn the_final_state_replaces_the_folded_mode() {
         let cfg = EngineConfig::default();
         let sid = SessionId::new("s");
-        let deny = || OutEvent::ToolOverlayChanged {
-            session: sid.clone(),
-            entries: vec![ToolOverlayEntry::deny("bash")],
-        };
         let started = OutEvent::SessionStarted {
             session: sid.clone(),
             parent: None,
@@ -455,11 +444,11 @@ mod tests {
             ts: 0,
             user: None,
         };
-        let records: Records = [started, mode("build"), deny(), mode("plan")]
+        let records: Records = [started, mode("build"), mode("plan")]
             .map(|ev| (None, ev))
             .into();
         let replayed = Session::replay(&records, &cfg, &sid).expect("replay");
-        assert!(replayed.tool_overlay.is_empty(), "the switch cleared it");
+        assert_eq!(replayed.mode, "plan");
         let hibernated = OutEvent::SessionHibernated {
             session: sid.clone(),
             ts: 1,
@@ -484,14 +473,13 @@ mod tests {
                 last,
             };
             fold_tail(&sid, &mut start, Some(exited), &cfg);
-            start.initial_session.expect("session").tool_overlay
+            start.initial_session.expect("session").mode
         };
-        assert!(start(None).is_empty(), "the fold alone has no deny");
+        assert_eq!(start(None), "plan", "the fold alone");
         let last = Final {
-            mode: "plan".into(),
-            overlay: vec![ToolOverlayEntry::deny("bash")],
+            mode: "research".into(),
         };
-        assert_eq!(start(Some(last)), [ToolOverlayEntry::deny("bash")]);
+        assert_eq!(start(Some(last)), "research");
     }
 
     #[tokio::test]

@@ -6,9 +6,7 @@
 //! `plan` class). The spawning pair climbs the dispatch ladder first
 //! ([`gate`], ADR-0232) — a spawn starts a session that runs tools.
 
-use std::collections::HashMap;
-
-use entanglement_core::{SessionId, ToolOverlayEntry};
+use entanglement_core::SessionId;
 
 use crate::attendance::Expiry;
 use crate::cancel::TaskCanceller;
@@ -54,7 +52,6 @@ async fn gate(
 pub(super) async fn spawn(
     ctx: &LadderCtx,
     spawn_guard: &mut SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: SessionId,
     request_id: String,
     input: String,
@@ -67,7 +64,7 @@ pub(super) async fn spawn(
     // guard is loop state) and released if the ladder refuses.
     // Subscribe (after the gate, inside the task) *before* the child is
     // spawned so its `Done` can't race ahead of the watcher.
-    let dispatcher = super::graded::dispatcher(ctx, spawn_guard, overlays, &session);
+    let dispatcher = super::graded::dispatcher(ctx, spawn_guard, &session);
     let blocking = !crate::subagent::is_background(&input);
     let target = crate::subagent::target_agent(&input);
     // The child's optional model override (#560 P12, ADR-0207 §12): resolved
@@ -175,7 +172,6 @@ pub(super) async fn spawn(
 pub(super) async fn agent_send(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: SessionId,
     request_id: String,
     input: String,
@@ -188,7 +184,7 @@ pub(super) async fn agent_send(
     // approval park must not lag the receiver) but before the follow-up is
     // sent, mirroring `Spawn`, so the child's events can't race ahead of the
     // watcher.
-    let dispatcher = super::graded::dispatcher(ctx, spawn_guard, overlays, &session);
+    let dispatcher = super::graded::dispatcher(ctx, spawn_guard, &session);
     let registry = ctx.registry.clone();
     let retained = ctx.retained.clone();
     let holly = ctx.holly.clone();

@@ -100,21 +100,6 @@ pub(crate) fn render_text<W: Write>(out: &mut W, ev: &OutEvent) -> Result<()> {
             name.as_deref().unwrap_or("-"),
             action.as_deref().unwrap_or("-")
         )?,
-        // Live tool overlay (#539): render the effective pattern list so a
-        // one-shot run driven by an embedder shows what was injected.
-        OutEvent::ToolOverlayChanged { entries, .. } => {
-            let list: Vec<String> = entries
-                .iter()
-                .map(|e| {
-                    if e.allow {
-                        format!("{} (allow)", e.pattern)
-                    } else {
-                        e.pattern.clone()
-                    }
-                })
-                .collect();
-            writeln!(out, "# tools enabled: {}", list.join(", "))?
-        }
         OutEvent::Plan { content, .. } => writeln!(out, "▸ plan:\n{content}")?,
         OutEvent::TextDelta { text, .. } => writeln!(out, "> {text}")?,
         OutEvent::ReasoningDelta { text, .. } => writeln!(out, "· {text}")?,

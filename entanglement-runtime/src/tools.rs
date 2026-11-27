@@ -304,7 +304,7 @@ impl ToolRegistry {
     ///
     /// Sorted by name (#566): the backing `HashMap` has no stable iteration
     /// order, so an unsorted list reshuffles on every registry mutation (MCP
-    /// add/remove, live bash enable, a tool overlay) — busting a provider's
+    /// add/remove) — busting a provider's
     /// cached prefix for the *entire* tools array instead of appending, and
     /// differing across process restarts so a resumed session inside the
     /// cache TTL never re-hits. A stable name order keeps unrelated

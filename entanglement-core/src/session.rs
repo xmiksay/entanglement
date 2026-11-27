@@ -180,11 +180,10 @@ pub(crate) async fn session_loop(
                 }
             }
             // Live mode switch (ADR-0207): applied immediately, turn live or
-            // not — unlike `SetModel`/`SetGeneration`/
-            // `SetToolOverlay` below, a mode is never deferred. Those defer
-            // because they touch something a live round is actively using
-            // (the backend, generation knobs riding the in-flight request,
-            // the advertised tool array) — a mid-round edit there would be
+            // not — unlike `SetModel`/`SetGeneration` below, a mode is never
+            // deferred. Those defer because they touch something a live round
+            // is actively using (the backend, generation knobs riding the
+            // in-flight request) — a mid-round edit there would be
             // incoherent or bust the provider cache. A mode is neither: it is
             // a **label** the runtime's own `perm_modes` fold reads only at
             // the moment it grades the *next* tool call (`tool_runner.rs`),
@@ -225,13 +224,12 @@ pub(crate) async fn session_loop(
             ) => {
                 let _ = immediate::try_apply(cmd, immediate::fields!(s), &session, &events);
             }
-            // A deferrable command (`SetModel`/`SetGeneration`/`SetToolOverlay`/
-            // `Oneshot`) arriving during a live turn is stashed and replays
+            // A deferrable command (`SetModel`/`SetGeneration`/`Oneshot`/
+            // `RevertFiles`/`Fork`/`SetWorkdir`) arriving during a live turn is stashed and replays
             // once the turn ends (stash replay).
             Some(
                 cmd @ (SessionCmd::SetModel(..)
                 | SessionCmd::SetGeneration(_)
-                | SessionCmd::SetToolOverlay(_)
                 | SessionCmd::Oneshot(..)
                 | SessionCmd::RevertFiles(_)
                 | SessionCmd::Fork(_)
@@ -252,14 +250,6 @@ pub(crate) async fn session_loop(
             // `SetMode`/`SetModel`.
             Some(SessionCmd::SetGeneration(overrides)) => {
                 commands::set_generation(&mut s, &session, &events, overrides);
-            }
-            // Live tool-overlay replacement (#539, ADR-0149): like
-            // `SetGeneration` there is nothing to fail against — always
-            // succeeds, always confirms with the full effective list. Deferred
-            // during a live turn (stash replay) so the advertised tool surface
-            // never changes under a round already in flight.
-            Some(SessionCmd::SetToolOverlay(entries)) => {
-                commands::set_tool_overlay(&mut s, &session, &events, entries);
             }
             Some(SessionCmd::Oneshot(op, args)) => {
                 forked =

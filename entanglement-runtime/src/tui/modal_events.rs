@@ -22,7 +22,7 @@ mod question;
 pub(super) use mouse::handle_mouse;
 pub(super) use pickers::{
     handle_key_dialog_event, handle_mode_picker_event, handle_model_picker_event,
-    handle_profile_picker_event, handle_session_tools_dialog_event, handle_tools_view_event,
+    handle_profile_picker_event, handle_tools_view_event,
 };
 pub(super) use question::handle_question_event;
 
@@ -124,16 +124,6 @@ pub(super) async fn handle_command_palette_event(
                     // A bare `/allow` has no path to grant (#486): prefill the
                     // input so Enter routes through `allow_command::send_allow`.
                     app.set_input_text("/allow ".to_string());
-                } else if cmd == crate::tui::commands::Command::Enable {
-                    // The palette carries no trailing args (#539), so a picked
-                    // `/enable` opens the session-tools checklist — the same
-                    // default a bare typed `/enable` falls back to.
-                    app.open_session_tools_dialog();
-                } else if cmd == crate::tui::commands::Command::Disable {
-                    // A bare `/disable` clears the whole overlay — prefill the
-                    // input instead so a palette pick can't wipe it by accident
-                    // (the `/allow` "no sensible default" reasoning, #486).
-                    app.set_input_text("/disable ".to_string());
                 } else if cmd == crate::tui::commands::Command::Stop {
                     // Lifecycle commands (#6): the palette carries no `--all`
                     // flag, so a picked `/stop` acts on the active session only

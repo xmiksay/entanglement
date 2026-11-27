@@ -14,24 +14,18 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use entanglement_core::{Permission, PermissionProfile, SessionId, ToolOverlayEntry};
+use entanglement_core::{Permission, SessionId};
 
 use super::dispatch::grade::{grade_call, GradeInputs};
 use crate::policy::{GrantStore, PermissionResolver};
-use crate::tools::ToolRegistry;
 
-/// The owned twin of [`GradeInputs`], plus the overlay *deny* the
-/// dispatcher checks before grading.
+/// The owned twin of [`GradeInputs`].
 pub(crate) struct CallGrader {
-    pub tools: ToolRegistry,
     pub resolver: Arc<dyn PermissionResolver>,
     pub chain: Vec<SessionId>,
     pub grants: Arc<dyn GrantStore>,
     pub session: SessionId,
     pub mode: String,
-    pub overlay_entry: Option<ToolOverlayEntry>,
-    pub overlay_denied: bool,
-    pub ceiling: PermissionProfile,
     pub root: Option<PathBuf>,
     /// The call is a nested call of a trusted or **Run all** script
     /// (ADR-0228): a target it reaches mid-call (a redirect hop) passes an
@@ -43,18 +37,12 @@ impl CallGrader {
     /// Grade `(tool, input)` as `dispatch` would grade the same call, minus
     /// what can't apply mid-call (hooks, the escape-root gate, parking).
     pub(crate) async fn grade(&self, tool: &str, input: &str) -> Permission {
-        if self.overlay_denied {
-            return Permission::Deny;
-        }
         let inputs = GradeInputs {
-            tools: &self.tools,
             resolver: &*self.resolver,
             chain: &self.chain,
             grants: &*self.grants,
             session: &self.session,
             mode: &self.mode,
-            overlay_entry: self.overlay_entry.as_ref(),
-            ceiling: &self.ceiling,
             root: self.root.as_deref(),
             // A mid-call target is a fetch, never a file write.
             floor: None,
@@ -90,7 +78,10 @@ pub async fn grade_in_scope(tool: &str, input: &str) -> Option<(Permission, Stri
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    use entanglement_core::PermissionProfile;
+
     use super::*;
+    use crate::tools::ToolRegistry;
 
     /// A grader over a single-mode table, for tests that drive a tool
     /// directly but need the in-call grading seam.
@@ -109,14 +100,10 @@ pub(crate) mod test_support {
                 PermissionProfile::new(Permission::Allow),
                 None,
             )),
-            tools,
             chain: vec![session.clone()],
             grants: Arc::new(crate::policy::DefaultGrantStore::load_from(None)),
             session,
             mode: name,
-            overlay_entry: None,
-            overlay_denied: false,
-            ceiling: PermissionProfile::new(Permission::Allow),
             root: None,
             run_all: false,
         }
@@ -128,6 +115,7 @@ mod tests {
     use super::test_support::grader_for;
     use super::*;
     use crate::mode::{Limits, Mode, Rules};
+    use crate::tools::ToolRegistry;
 
     fn mode() -> Mode {
         Mode {
@@ -162,7 +150,7 @@ mod tests {
     }
 
     /// A trusted / **Run all** script's call passes an `Ask` hop like the
-    /// call itself did; a `Deny` and an overlay deny still stop it.
+    /// call itself did; a `Deny` still stops it.
     #[tokio::test]
     async fn run_all_passes_an_ask_but_never_a_deny() {
         let mut grader = grader_for(mode(), ToolRegistry::new());
@@ -170,17 +158,5 @@ mod tests {
         let graded = scope(grader, async { (grade("make").await, grade("rm x").await) }).await;
         assert_eq!(graded.0.map(|g| g.0), Some(Permission::Allow));
         assert_eq!(graded.1.map(|g| g.0), Some(Permission::Deny));
-        let mut grader = grader_for(mode(), ToolRegistry::new());
-        (grader.run_all, grader.overlay_denied) = (true, true);
-        let graded = scope(grader, grade("make")).await;
-        assert_eq!(graded.map(|g| g.0), Some(Permission::Deny));
-    }
-
-    #[tokio::test]
-    async fn an_overlay_deny_refuses_every_target() {
-        let mut grader = grader_for(mode(), ToolRegistry::new());
-        grader.overlay_denied = true;
-        let graded = scope(grader, grade("ls")).await;
-        assert_eq!(graded.map(|g| g.0), Some(Permission::Deny));
     }
 }

@@ -33,14 +33,6 @@ impl App {
                     description: "Planning agent".to_string(),
                 },
             ],
-            vec![
-                "read".to_string(),
-                "grep".to_string(),
-                "glob".to_string(),
-                "edit".to_string(),
-                "write".to_string(),
-                "bash".to_string(),
-            ],
         );
         // Never the developer's real user agents/skills/commands (#773).
         app.inspect.user_layer =
@@ -52,13 +44,10 @@ impl App {
     /// old `mode ∈ {primary, all}` filter — any agent may be a session root)
     /// the (read-only, ADR-0207 §9) `/agent` picker lists, in the order the
     /// caller (the runtime head) loaded them from the `AgentCatalog`.
-    /// `tool_roster` is the tool-name roster (#330) `/tools` and the bare
-    /// `/enable` checklist offer — every overlay-maskable name (#843).
     pub fn new(
         initial_session: SessionId,
         catalog: Catalog,
         entry_profiles: Vec<AgentInfo>,
-        tool_roster: Vec<String>,
     ) -> Self {
         // Fall back to `general` if a custom registry somehow exposed no entry
         // agent, so the picker is never empty (it indexes unconditionally).
@@ -149,9 +138,6 @@ impl App {
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),
             mcp_panel: crate::tui::mcp_panel::McpPanel::default(),
             mcp_handles: None,
-            tool_overlays: HashMap::new(),
-            session_tools_dialog: crate::tui::session_tools_dialog::SessionToolsDialog::new(),
-            tool_roster,
             advertising: None,
             tools_view: crate::tui::tools_view::ToolsView::new(),
             model_info: ModelInfo {

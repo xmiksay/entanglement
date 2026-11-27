@@ -6,13 +6,12 @@
 //! routes (`orchestration::spawn`/`agent_send`) borrow [`dispatcher`] for
 //! the same ladder before they launch (ADR-0232).
 
-use std::collections::HashMap;
 #[cfg(feature = "rhai")]
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "rhai")]
 use std::sync::Arc;
 
-use entanglement_core::{SessionId, ToolEnvelope, ToolOverlayEntry};
+use entanglement_core::{SessionId, ToolEnvelope};
 
 use crate::cancel::TaskCanceller;
 use crate::permission::ancestor_chain;
@@ -23,8 +22,7 @@ use super::LadderCtx;
 
 /// Snapshot everything a call needs before spawning, so it stays ordered
 /// with the lifecycle events the loop already folded: the ancestor chain
-/// (ADR-0024), the chain's overlays (#539/#628/#634) with each entry's
-/// lineage epoch (ADR-0243), the session's mode and its limits (ADR-0207
+/// (ADR-0024), the session's mode and its limits (ADR-0207
 /// §8/§11), and the registry (#372 — a brief read lock, never held across an
 /// `.await`). An unseen session's empty mode name never matches a grant, and
 /// its resolver grade fails closed (#156). Shared with the spawning routes,
@@ -32,16 +30,10 @@ use super::LadderCtx;
 pub(super) fn dispatcher(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: &SessionId,
 ) -> Dispatcher {
     let chain = ancestor_chain(spawn_guard, session);
-    let overlays: HashMap<_, _> = chain
-        .iter()
-        .filter_map(|s| overlays.get(s).map(|o| (s.clone(), o.clone())))
-        .collect();
-    let overlay_epochs = ctx.mode_epochs.snapshot(&ctx.perm_modes, overlays.keys());
-    let mode = crate::tool_runner::mode_epochs::lock_modes(&ctx.perm_modes)
+    let mode = crate::tool_runner::lock_modes(&ctx.perm_modes)
         .get(session)
         .cloned()
         .unwrap_or_default();
@@ -67,8 +59,6 @@ pub(super) fn dispatcher(
         hooks: ctx.hooks.clone(),
         pending: ctx.pending.clone(),
         escape_root: ctx.escape_root.clone(),
-        overlays,
-        ceiling: ctx.base.clone(),
         advertising: ctx.advertising.clone(),
         validation: ctx.validation.clone(),
         mcp_avail: ctx.mcp_avail.clone(),
@@ -78,8 +68,6 @@ pub(super) fn dispatcher(
         session: session.clone(),
         mode,
         perm_modes: ctx.perm_modes.clone(),
-        mode_epochs: ctx.mode_epochs.clone(),
-        overlay_epochs,
         mode_table: ctx.mode_table.clone(),
         limits,
         attendance: ctx.attendance.clone(),
@@ -96,13 +84,12 @@ pub(super) fn dispatcher(
 pub(super) async fn rhai(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     session: SessionId,
     seq: u64,
     request_id: String,
     input: String,
 ) {
-    let dispatcher = dispatcher(ctx, spawn_guard, overlays, &session);
+    let dispatcher = dispatcher(ctx, spawn_guard, &session);
     let host_ns: Vec<_> = ctx
         .host_namespaces
         .iter()
@@ -149,7 +136,6 @@ pub(super) async fn rhai(
 pub(super) async fn permission(
     ctx: &LadderCtx,
     spawn_guard: &SpawnGuard,
-    overlays: &HashMap<SessionId, Vec<ToolOverlayEntry>>,
     tool: String,
     // The call as the model emitted it when core unwrapped an `mcp`
     // envelope (ADR-0226) — for the duplicate-key re-scan.
@@ -159,7 +145,7 @@ pub(super) async fn permission(
     request_id: String,
     input: String,
 ) {
-    let dispatcher = dispatcher(ctx, spawn_guard, overlays, &session);
+    let dispatcher = dispatcher(ctx, spawn_guard, &session);
     let call = Call {
         request_id,
         tool,

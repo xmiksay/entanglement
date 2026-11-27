@@ -44,7 +44,7 @@ impl Supervisor {
         }
         // A lineage is linear (ADR-0243): a second successor of one session
         // would move the first successor's lineage head, which the runtime
-        // keys a running script's overlay epochs by.
+        // keys a resumed sub-agent's handle by.
         if let Some(source) = predecessor
             .as_ref()
             .filter(|p| self.session_meta.has_successor(p))

@@ -28,8 +28,6 @@ pub enum Command {
     Show,
     Mcp,
     Allow,
-    Enable,
-    Disable,
     Tools,
     Stop,
     Name,
@@ -67,8 +65,6 @@ impl Command {
             Command::Show => "show",
             Command::Mcp => "mcp",
             Command::Allow => "allow",
-            Command::Enable => "enable",
-            Command::Disable => "disable",
             Command::Tools => "tools",
             Command::Stop => "stop",
             Command::Name => "name",
@@ -107,14 +103,8 @@ impl Command {
             Command::Allow => {
                 "Allow a directory for read/grep/glob for the rest of this session"
             }
-            Command::Enable => {
-                "Enable tools for this session past the permission mode (bare = checklist dialog; mcp <server> | tool <name> [--allow [<pattern>]])"
-            }
-            Command::Disable => {
-                "Disable tools for this session (mcp <server> | tool <name>; bare = reset to mode defaults)"
-            }
             Command::Tools => {
-                "Browse this session's tool surface — host tools, MCP servers, skills (filter as you type, Tab cycles category, Enter enables the highlighted row)"
+                "Browse this session's tool surface — host tools, MCP servers, skills (filter as you type, Tab cycles category)"
             }
             Command::Stop => {
                 "Stop/cancel the current session's in-flight turn (--all for every live session)"
@@ -168,8 +158,6 @@ pub fn all_commands() -> Vec<Command> {
         Command::Show,
         Command::Mcp,
         Command::Allow,
-        Command::Enable,
-        Command::Disable,
         Command::Tools,
         Command::Stop,
         Command::Name,

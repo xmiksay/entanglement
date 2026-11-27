@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use entanglement_core::{AgentCatalog, EngineConfig, ToolSpec};
+use entanglement_core::{AgentCatalog, EngineConfig};
 use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 
 use crate::factories::build_model_resolver;
@@ -17,7 +17,7 @@ use crate::tool_runner::EscapeRoot;
 
 mod default_tools;
 use crate::{
-    config, discover, extra_roots, file_backup, host, mcp, policy, retained_output, script_ops,
+    config, extra_roots, file_backup, host, mcp, policy, retained_output, script_ops,
     session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
 use default_tools::{register_default_tools, DefaultTools};
@@ -72,7 +72,6 @@ pub(crate) async fn build_config(
     ModelInfo,
     String,
     SharedRegistry,
-    Vec<String>,
     mcp::ActiveServers,
     Arc<mcp::AvailableMcp>,
     EscapeRoot,
@@ -238,20 +237,12 @@ pub(crate) async fn build_config(
     // envelope). `boot` installs a resolver that snapshots exactly this per
     // session; `tool_specs` carries it for an embedder that wires none.
     let agent_specs = subagent::agent_specs();
-    cfg.tool_specs =
-        tool_advertising::surface::build_surface(registered_specs.clone(), agent_specs.clone());
-    let tool_names = toggle_roster(
-        registered_specs
-            .into_iter()
-            .chain(discover::runtime_owned_specs())
-            .chain(agent_specs),
-    );
+    cfg.tool_specs = tool_advertising::surface::build_surface(registered_specs, agent_specs);
     (
         cfg,
         model_info,
         provider_name,
         tools,
-        tool_names,
         mcp_active,
         mcp_available,
         escape_root,
@@ -261,53 +252,4 @@ pub(crate) async fn build_config(
         scripts,
         workdirs,
     )
-}
-
-/// The roster `/tools`, the bare `/enable` checklist and the `/set` Tools tab
-/// offer: every tool a session could reach or a rule could name — the hidden
-/// script-only ones (`glob`/`grep`) included, since an overlay entry
-/// still grades their rhai bindings — but no name an entry can never match
-/// (#843, `tool_names::NON_MASKABLE_TOOLS`). Sorted, deduped.
-fn toggle_roster(specs: impl IntoIterator<Item = ToolSpec>) -> Vec<String> {
-    let mut names: Vec<String> = specs
-        .into_iter()
-        .map(|s| s.name)
-        .filter(|name| !crate::tool_names::is_non_maskable(name))
-        .collect();
-    names.sort();
-    names.dedup();
-    names
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tool_names::{DISCOVERY_TOOLS, MCP_TOOL};
-
-    #[test]
-    fn the_toggle_roster_leaves_out_every_non_maskable_name() {
-        let specs = discover::runtime_owned_specs()
-            .into_iter()
-            .chain(subagent::agent_specs())
-            .chain(["read", "glob_json", "load_skill"].map(|name| ToolSpec::new(name, "")));
-        let roster = toggle_roster(specs);
-        let bookkeeping = [
-            "poll",
-            "ask_user",
-            "update_tasks",
-            "request_mode",
-            "propose_plan",
-        ];
-        for gone in DISCOVERY_TOOLS
-            .iter()
-            .chain(&[MCP_TOOL, "glob_json"])
-            .chain(&bookkeeping)
-        {
-            assert!(!roster.iter().any(|n| n == gone), "{gone}: {roster:?}");
-        }
-        // #849: spawning is graded, so `/disable agent` has something to do.
-        for kept in ["read", "agent", "agent_send"] {
-            assert!(roster.iter().any(|n| n == kept), "{kept}: {roster:?}");
-        }
-    }
 }

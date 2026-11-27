@@ -1,6 +1,6 @@
 //! Bare `/set`'s tabbed session-settings dialog: Session (agent + model),
-//! Generation (only the knobs the selected model accepts), Tools (the
-//! per-session overlay) and Aux (per-purpose pins). Pure state —
+//! Generation (only the knobs the selected model accepts) and Aux
+//! (per-purpose pins). Pure state —
 //! `app/settings.rs` seeds it and runs the confirmed plan, `modals/settings.rs`
 //! draws it, `settings_events.rs` routes keys and clicks.
 //!
@@ -13,17 +13,15 @@ mod aux;
 mod generation;
 mod rows;
 mod session;
-mod tools;
 
 #[cfg(test)]
 mod tests;
 
-pub use apply::{run_plan, ApplyStep, SettingsEffects, ToolsChange};
+pub use apply::{run_plan, ApplyStep, SettingsEffects};
 pub use aux::AuxTab;
 pub use generation::GenField;
 pub use rows::{RowId, RowView};
 pub use session::{mode_names, model_options, SessionTab};
-pub use tools::ToolsTab;
 
 use entanglement_provider::GenerationParams;
 use ratatui::widgets::ListState;
@@ -34,18 +32,16 @@ use generation::GenerationTab;
 pub enum Tab {
     Session,
     Generation,
-    Tools,
     Aux,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Session, Tab::Generation, Tab::Tools, Tab::Aux];
+    pub const ALL: [Tab; 3] = [Tab::Session, Tab::Generation, Tab::Aux];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Session => "Session",
             Tab::Generation => "Generation",
-            Tab::Tools => "Tools",
             Tab::Aux => "Aux",
         }
     }
@@ -66,33 +62,25 @@ pub const AUX_PERSIST_REASON: &str = "aux pins are process-wide and always persi
 pub struct SettingsDialog {
     tab: Tab,
     /// Focus per tab, as an index into that tab's focusable rows.
-    focus: [usize; 4],
+    focus: [usize; 3],
     list: ListState,
-    /// "Save as default" for Session, Generation; Aux is always on and Tools
-    /// has nothing left to save as default (ADR-0207).
+    /// "Save as default" for Session, Generation; Aux is always on.
     persist: [bool; 2],
     session: SessionTab,
     generation: GenerationTab,
-    tools: ToolsTab,
     aux: AuxTab,
 }
 
 impl SettingsDialog {
-    pub fn new(
-        session: SessionTab,
-        current: GenerationParams,
-        tools: ToolsTab,
-        aux: AuxTab,
-    ) -> Self {
+    pub fn new(session: SessionTab, current: GenerationParams, aux: AuxTab) -> Self {
         let caps = session.final_model().caps;
         Self {
             tab: Tab::Session,
-            focus: [0; 4],
+            focus: [0; 3],
             list: ListState::default(),
             persist: [false; 2],
             session,
             generation: GenerationTab::new(current, caps),
-            tools,
             aux,
         }
     }
@@ -122,7 +110,6 @@ impl SettingsDialog {
     pub fn persist(&self, tab: Tab) -> bool {
         match tab {
             Tab::Aux => true,
-            Tab::Tools => false,
             Tab::Session => self.persist[0],
             Tab::Generation => self.persist[1],
         }
@@ -173,8 +160,7 @@ impl SettingsDialog {
     pub fn activate(&mut self, forward: bool) {
         match self.focused_id() {
             // Session (0) and Generation (1) are the only tabs with a
-            // `Persist` row now (Aux is always-on, Tools has nothing left to
-            // save as default, ADR-0207) — `self.tab.index()` is always a
+            // `Persist` row (Aux is always-on) — `self.tab.index()` is always a
             // valid `persist` slot whenever this row is actually focused.
             RowId::Persist if matches!(self.tab, Tab::Session | Tab::Generation) => {
                 let i = self.tab.index();
@@ -186,15 +172,8 @@ impl SettingsDialog {
             }
             RowId::PermMode => self.session.cycle_mode(forward),
             RowId::Gen(f) => self.generation.cycle(f, forward),
-            RowId::Tool(i) => self.tools.toggle(i),
             RowId::Aux(p) => self.aux.cycle(p, forward),
             RowId::Persist | RowId::Note => {}
-        }
-    }
-
-    pub fn toggle_allow(&mut self) {
-        if let RowId::Tool(i) = self.focused_id() {
-            self.tools.toggle_allow(i);
         }
     }
 
@@ -216,7 +195,6 @@ impl SettingsDialog {
     pub fn pending(&self) -> Vec<String> {
         let mut out = self.session.pending();
         out.extend(self.generation.pending());
-        out.extend(self.tools.pending());
         out.extend(self.aux.pending());
         out
     }
@@ -267,7 +245,6 @@ impl SettingsDialog {
                 persist_for: keep(1),
             });
         }
-        plan.extend(self.tools.overlay_step());
         plan.extend(
             self.aux
                 .changes()

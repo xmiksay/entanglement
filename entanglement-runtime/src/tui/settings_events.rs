@@ -31,7 +31,6 @@ pub(super) async fn handle_settings_key(
         KeyCode::Down | KeyCode::Char('j') => dialog.move_focus(1),
         KeyCode::Left | KeyCode::Char('h') => dialog.activate(false),
         KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => dialog.activate(true),
-        KeyCode::Char('a') => dialog.toggle_allow(),
         KeyCode::PageUp => dialog.page(false),
         KeyCode::PageDown => dialog.page(true),
         _ => {}

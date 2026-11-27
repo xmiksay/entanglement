@@ -32,8 +32,8 @@ use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 // generated `mcp::` namespace against a stub server, `http()` grading.
 #[path = "rhai/unified.rs"]
 mod unified;
-// #843: a per-tool mode deny and an overlay deny refuse an `mcp` envelope
-// call and a script's `mcp::` binding identically.
+// #843: a per-tool mode deny refuses an `mcp` envelope call and a script's
+// `mcp::` binding identically.
 #[cfg(all(feature = "mcp-http", feature = "serve"))]
 #[path = "rhai/mcp_parity.rs"]
 mod mcp_parity;
@@ -49,7 +49,7 @@ mod connect_budget;
 #[path = "rhai/path_args.rs"]
 mod path_args;
 // The shared harness of the ADR-0228 launch tests, and the launch-gate
-// tests themselves (unattended, overlay, hooks, workdir, background).
+// tests themselves (unattended, hooks, workdir, background).
 #[path = "rhai/launch_gate.rs"]
 mod launch_gate;
 #[path = "rhai/launch_harness.rs"]
@@ -71,14 +71,13 @@ mod background_move;
 // successor.
 #[path = "rhai/background_follow.rs"]
 mod background_follow;
-// ...and per call reads the session's current mode and mode-scoped overlay.
+// ...and per call reads the session's current mode.
 #[path = "rhai/background_follow_mode.rs"]
 mod background_follow_mode;
 // ...its limits, and never a successor that is not live.
 #[path = "rhai/background_follow_live.rs"]
 mod background_follow_live;
-// ADR-0243: every script run re-reads its session's mode per call, and drops
-// an overlay entry once that session switched mode, ancestors included.
+// ADR-0243: every script run re-reads its session's mode per call.
 #[path = "rhai/script_live_authority.rs"]
 mod script_live_authority;
 // #884: a card parked after its session retired still gets a real seq.
@@ -94,7 +93,7 @@ mod background_chain;
 // `SKILL.md`/`lib.rhai` always asks — inside a Run-all script too.
 #[path = "rhai/trusted_writes.rs"]
 mod trusted_writes;
-// ADR-0228: the launch graded like any tool (overlay, path rules, grants),
+// ADR-0228: the launch graded like any tool (mode rules, path rules, grants),
 // and `auto`'s `default: allow`.
 #[path = "rhai/launch_grading.rs"]
 mod launch_grading;

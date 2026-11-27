@@ -13,12 +13,19 @@
 use super::{InMsg, OutEvent};
 
 /// `InMsg` kinds retired since 0.6.0: the live persona switch (`set_agent`,
-/// ADR-0207 §9 — an agent is fixed for a session's life) and the session-less
-/// bash toggles (ADR-0163 — live bash enablement is a tool-overlay entry).
-pub const RETIRED_IN_MSG_KINDS: &[&str] = &["set_agent", "bash_enable", "bash_disable"];
+/// ADR-0207 §9 — an agent is fixed for a session's life), the session-less
+/// bash toggles and the per-session tool overlay that replaced them (#923 —
+/// the permission mode is the one path).
+pub const RETIRED_IN_MSG_KINDS: &[&str] = &[
+    "set_agent",
+    "bash_enable",
+    "bash_disable",
+    "set_tool_overlay",
+];
 
-/// `OutEvent` kinds retired since 0.6.0: the bash toggle's acknowledgement.
-pub const RETIRED_OUT_EVENT_KINDS: &[&str] = &["bash_changed"];
+/// `OutEvent` kinds retired since 0.6.0: the bash toggle's and the tool
+/// overlay's acknowledgements.
+pub const RETIRED_OUT_EVENT_KINDS: &[&str] = &["bash_changed", "tool_overlay_changed"];
 
 #[cfg(test)]
 mod tests {

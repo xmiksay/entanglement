@@ -1,21 +1,13 @@
 //! The `/set` dialog's apply pipeline: a plan of steps in the settled order
-//! (model → generation → tools → aux — no `agent` step, ADR-0207
+//! (model → mode → generation → aux — no `agent` step, ADR-0207
 //! §9: the agent row is read-only display, there is no live switch), executed
 //! through a side-effect seam so the order and stop-on-failure rule are
 //! testable without an engine. Each live effect reuses the single-purpose
 //! command's own message/store path (`app/settings.rs`).
 
-use entanglement_core::ToolOverlayEntry;
 use entanglement_provider::GenerationParams;
 
 use crate::config::aux_models::Purpose;
-
-/// The Tools tab's overlay edit, as one step.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ToolsChange {
-    /// The full-replacement overlay.
-    pub entries: Vec<ToolOverlayEntry>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplyStep {
@@ -29,15 +21,12 @@ pub enum ApplyStep {
     /// Permission mode (#560 P12, ADR-0207 §12) — session-only, no persist
     /// flag: unlike a model pin, a mode has nothing to save per agent (it
     /// isn't a profile fact any more, ADR-0207 §9).
-    PermMode {
-        mode: String,
-    },
+    PermMode { mode: String },
     /// Persisted on the confirming `GenerationChanged` (ADR-0095).
     Generation {
         overrides: GenerationParams,
         persist_for: Option<String>,
     },
-    Tools(ToolsChange),
     Aux {
         purpose: Purpose,
         provider: String,
@@ -84,7 +73,6 @@ impl ApplyStep {
                     saved(persist_for, "defaults")
                 )
             }
-            ApplyStep::Tools(t) => format!("tool overlay ({} entries)", t.entries.len()),
             ApplyStep::Aux {
                 purpose,
                 provider,

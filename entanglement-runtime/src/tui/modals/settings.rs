@@ -124,7 +124,7 @@ pub fn draw_settings_dialog(f: &mut Frame, app: &mut App) {
     let footer = Paragraph::new(vec![
         Line::from(Span::styled(pending_text, theme.fg(Slot::Warning))),
         Line::from(Span::styled(
-            "↑↓ move · ←→/Space change · a auto-allow · PgUp/PgDn",
+            "↑↓ move · ←→/Space change · PgUp/PgDn",
             Style::default().dim(),
         )),
     ])
@@ -168,7 +168,6 @@ mod tests {
         for needle in [
             "Session",
             "Generation",
-            "Tools",
             "Aux",
             "agent",
             "model",
