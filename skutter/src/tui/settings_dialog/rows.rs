@@ -3,7 +3,7 @@
 //! `settings_dialog.rs` (#745).
 
 use super::{aux, GenField, SettingsDialog, Tab, AUX_PERSIST_REASON};
-use crate::config::aux_models::Purpose;
+use crate::aux_llm::Purpose;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowId {

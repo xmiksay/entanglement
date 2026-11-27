@@ -117,7 +117,7 @@ pub struct App {
     // `aux-models.yml`, threaded in from the head so `/aux-model <purpose>
     // <provider>/<model>` persists back to disk. `None` store and a
     // path-less file in tests.
-    aux_models: Option<std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>>,
+    aux_models: Option<std::sync::Arc<std::sync::Mutex<crate::aux_llm::AuxModelStore>>>,
     aux_models_path: crate::config::aux_models::AuxModelsPath,
 
     // Shared HTTP transport (#rate-limit-status): the same per-endpoint pool the

@@ -2,7 +2,7 @@
 //! persistence, not an engine op, so there is no wire round-trip and no
 //! confirm-on-event pairing (unlike `/model`'s `pending_model_persist`).
 
-use crate::config::aux_models::Purpose;
+use crate::aux_llm::Purpose;
 
 use super::App;
 
@@ -11,7 +11,7 @@ impl App {
     /// loaded from (Issue 5), so `/aux-model` persists back to disk.
     pub fn set_aux_models(
         &mut self,
-        store: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
+        store: std::sync::Arc<std::sync::Mutex<crate::aux_llm::AuxModelStore>>,
         path: crate::config::aux_models::AuxModelsPath,
     ) {
         self.aux_models = Some(store);
@@ -90,7 +90,7 @@ impl App {
     /// config dir is available (tests / a head that didn't wire it).
     pub(crate) fn aux_models(
         &self,
-    ) -> Option<&std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>> {
+    ) -> Option<&std::sync::Arc<std::sync::Mutex<crate::aux_llm::AuxModelStore>>> {
         self.aux_models.as_ref()
     }
 }

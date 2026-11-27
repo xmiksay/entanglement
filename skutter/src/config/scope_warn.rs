@@ -161,8 +161,11 @@ mod tests {
     use super::super::{ConfigLayer, RawLayer};
     use super::*;
 
-    /// The executor registers `http` itself (with its gate); this stand-in
-    /// declares the same `METHOD url` text argument.
+    /// The real `http_tool::HttpTool` is crate-private to the runtime and
+    /// registered only by the executor build (with its gate), so this
+    /// stand-in mirrors its `permission_scope` (a `METHOD url` text
+    /// argument). Drift is caught against the real tool by
+    /// `services::tests::the_scope_check_sees_the_http_tool_the_executor_registers`.
     struct Http;
 
     #[async_trait::async_trait]

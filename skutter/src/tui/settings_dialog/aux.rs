@@ -2,7 +2,7 @@
 //! `aux-models.yml` store `/aux-model` writes (ADR-0154). Those pins are
 //! process-wide and always persisted — there is no session-only variant.
 
-use crate::config::aux_models::Purpose;
+use crate::aux_llm::Purpose;
 
 pub const PURPOSES: [Purpose; 3] = [Purpose::Summarize, Purpose::SessionTitle, Purpose::Narrate];
 

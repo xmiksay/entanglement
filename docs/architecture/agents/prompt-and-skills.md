@@ -211,8 +211,9 @@
   never see a command; `pipe`/`serve` carry frames, not typed text, and do
   not expand. A user command named like a built-in TUI command
   (`RESERVED_NAMES`, pinned to the TUI roster by a unit test) is dropped with
-  a load warning in every head. The runtime's definitions watcher fingerprints
-  the command dirs and the TUI reloads the registry on each of its notices
+  a load warning in every head. `skutter`'s definitions watcher
+  (`skutter::watch`, #967) fingerprints the command dirs and the TUI reloads
+  the registry on each of its notices
   (`slash_commands::reload_on`; a malformed command file keeps the previous
   registry and shows its own warning, while the agents and skills that did
   reload still refresh the roster); `skutter inspect commands [name]` lists name, layer, source and

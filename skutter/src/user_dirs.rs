@@ -65,6 +65,24 @@ pub(crate) fn user_layer(env: &str) -> UserLayer {
     )
 }
 
+/// The user skills layer ([`SKILLS_DIR_ENV`] else the real dirs).
+#[track_caller]
+pub(crate) fn skills_layer() -> UserLayer {
+    user_layer(SKILLS_DIR_ENV)
+}
+
+/// The user agents layer ([`AGENTS_DIR_ENV`] else the real dirs).
+#[track_caller]
+pub(crate) fn agents_layer() -> UserLayer {
+    user_layer(AGENTS_DIR_ENV)
+}
+
+/// The user slash-commands layer ([`COMMANDS_DIR_ENV`] else the real dirs).
+#[track_caller]
+pub(crate) fn commands_layer() -> UserLayer {
+    user_layer(COMMANDS_DIR_ENV)
+}
+
 /// [`user_layer`] over an injected env lookup and `(home, config)` dirs —
 /// the latter consulted only when the override is unset. The definitions
 /// watcher maps the same way, so it watches exactly the dirs loaded.

@@ -9,7 +9,7 @@
 //! it instead of the primary model. No wire traffic — this is head-side
 //! persistence, not an engine op.
 
-use crate::config::aux_models::{AuxModelStore, Purpose};
+use crate::aux_llm::{AuxModelStore, Purpose};
 
 use super::app::App;
 

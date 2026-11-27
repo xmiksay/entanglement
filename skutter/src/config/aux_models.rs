@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
-pub use entanglement_runtime::aux_llm::{AuxModelStore, Purpose};
+use entanglement_runtime::aux_llm::{AuxModelStore, Purpose};
 use serde::{Deserialize, Serialize};
 
 use super::atomic::atomic_write;

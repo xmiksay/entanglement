@@ -191,7 +191,7 @@ pub struct CommandResolution {
 /// file in a native dir aborts; a malformed foreign file is warned and skipped
 /// (ADR-0074).
 pub fn resolve_registry(root: &Path) -> Result<Vec<CommandResolution>> {
-    resolve_registry_in(root, &crate::user_dirs::user_layer(COMMANDS_DIR_ENV))
+    resolve_registry_in(root, &crate::user_dirs::commands_layer())
 }
 
 /// [`resolve_registry`] with an explicit user layer (#773).

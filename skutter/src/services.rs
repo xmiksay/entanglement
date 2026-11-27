@@ -32,7 +32,7 @@ pub(crate) struct Head {
     pub(crate) live_commands: crate::slash_commands::LiveCommands,
     pub(crate) live_agent_models: Arc<Mutex<config::agent_models::AgentModelStore>>,
     pub(crate) live_agent_generation: Arc<Mutex<config::agent_generation::AgentGenerationStore>>,
-    pub(crate) live_aux_models: Arc<Mutex<config::aux_models::AuxModelStore>>,
+    pub(crate) live_aux_models: Arc<Mutex<crate::aux_llm::AuxModelStore>>,
     pub(crate) reload_rx: tokio::sync::mpsc::UnboundedReceiver<watch::ReloadNotice>,
     pub(crate) http_client: HttpClient,
     pub(crate) mcp: mcp::McpHandles,
@@ -186,7 +186,7 @@ pub(crate) fn start(
         .rhai_trusted(user_config.rhai_trusted.clone())
         .skill_dirs(entanglement_runtime::skills::skill_dirs(
             cwd,
-            &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
+            &crate::user_dirs::skills_layer(),
         ))
         .jobs(jobs)
         .retained(retained)

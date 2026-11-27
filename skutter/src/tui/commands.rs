@@ -226,7 +226,7 @@ pub fn parse_name_args(text: &str) -> Option<String> {
 /// the discoverability affordance the `/show` command uses for generation.
 pub fn parse_aux_model_args(
     text: &str,
-) -> Result<Option<(crate::config::aux_models::Purpose, String, String)>, String> {
+) -> Result<Option<(crate::aux_llm::Purpose, String, String)>, String> {
     let rest = text.trim().strip_prefix("/aux-model").unwrap_or("").trim();
     if rest.is_empty() || rest == "list" {
         return Ok(None);
@@ -235,7 +235,7 @@ pub fn parse_aux_model_args(
     let purpose_str = parts
         .next()
         .ok_or("usage: /aux-model <purpose> <provider>/<model>")?;
-    let purpose = crate::config::aux_models::Purpose::parse(purpose_str).ok_or_else(|| {
+    let purpose = crate::aux_llm::Purpose::parse(purpose_str).ok_or_else(|| {
         format!("unknown purpose `{purpose_str}` (expected summarize | session_title | narrate)")
     })?;
     let pair = parts
@@ -519,19 +519,19 @@ mod tests {
         let (p, prov, model) = parse_aux_model_args("/aux-model summarize zai/glm-4.5-flash")
             .unwrap()
             .unwrap();
-        assert_eq!(p, crate::config::aux_models::Purpose::Summarize);
+        assert_eq!(p, crate::aux_llm::Purpose::Summarize);
         assert_eq!(prov, "zai");
         assert_eq!(model, "glm-4.5-flash");
         // `title` is accepted as the friendly alias of `session_title`.
         let (p, _, _) = parse_aux_model_args("/aux-model title ollama/llama3.1")
             .unwrap()
             .unwrap();
-        assert_eq!(p, crate::config::aux_models::Purpose::SessionTitle);
+        assert_eq!(p, crate::aux_llm::Purpose::SessionTitle);
         // `narrate` (#635) is recognized too.
         let (p, _, _) = parse_aux_model_args("/aux-model narrate zai/glm-4.5-flash")
             .unwrap()
             .unwrap();
-        assert_eq!(p, crate::config::aux_models::Purpose::Narrate);
+        assert_eq!(p, crate::aux_llm::Purpose::Narrate);
         // Bare /aux-model and /aux-model list → Ok(None) (render current pins).
         assert_eq!(parse_aux_model_args("/aux-model").unwrap(), None);
         assert_eq!(parse_aux_model_args("/aux-model list").unwrap(), None);

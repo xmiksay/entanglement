@@ -247,10 +247,7 @@ fn everything_changed() -> SettingsDialog {
     focus(&mut d, RowId::Gen(GenField::MaxTokens));
     d.activate(true);
     d.set_tab(Tab::Aux);
-    focus(
-        &mut d,
-        RowId::Aux(crate::config::aux_models::Purpose::Narrate),
-    );
+    focus(&mut d, RowId::Aux(crate::aux_llm::Purpose::Narrate));
     d.activate(true);
     d
 }

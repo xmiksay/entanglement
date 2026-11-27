@@ -44,7 +44,7 @@ pub(crate) struct Engine {
     pub(crate) live_profiles: Arc<RwLock<AgentCatalog>>,
     pub(crate) live_agent_models: Arc<Mutex<config::agent_models::AgentModelStore>>,
     pub(crate) live_agent_generation: Arc<Mutex<config::agent_generation::AgentGenerationStore>>,
-    pub(crate) live_aux_models: Arc<Mutex<config::aux_models::AuxModelStore>>,
+    pub(crate) live_aux_models: Arc<Mutex<crate::aux_llm::AuxModelStore>>,
     pub(crate) aux_registry: crate::aux_llm::AuxLlmRegistry,
     pub(crate) advertising_state: Arc<tool_advertising::AdvertisingState>,
 }
@@ -63,11 +63,8 @@ pub(crate) async fn boot(
     // malformed SKILL.md is a loud error. The model learns them from
     // `list_skills` (ADR-0226 — the roster left the system prompt).
     let skill_registry = std::sync::Arc::new(
-        skills::load_registry_in(
-            cwd,
-            &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
-        )
-        .context("loading skill definitions")?,
+        skills::load_registry_in(cwd, &crate::user_dirs::skills_layer())
+            .context("loading skill definitions")?,
     );
     // The runtime's own live-reloadable mirror (#329, ADR-0084): a definitions
     // watcher swaps this for a freshly-loaded registry on a debounced dir
@@ -86,7 +83,7 @@ pub(crate) async fn boot(
     // The skill registry also resolves per-agent `skills:` preload bodies (#117).
     let mut profiles = agents::load_registry_in(
         cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::AGENTS_DIR_ENV),
+        &crate::user_dirs::agents_layer(),
         &prompt_ctx,
         &skill_registry,
         &mcp_capabilities,

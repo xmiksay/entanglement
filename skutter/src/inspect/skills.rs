@@ -19,20 +19,14 @@ use crate::skills::{self, SkillResolution};
 /// Dispatch the three inspection views (see the module doc for precedence).
 pub fn inspect_skills(cwd: &Path, name: Option<&str>, disclosures: bool) -> Result<()> {
     if disclosures {
-        let registry = skills::load_registry_in(
-            cwd,
-            &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
-        )
-        .context("loading skill definitions")?;
+        let registry = skills::load_registry_in(cwd, &crate::user_dirs::skills_layer())
+            .context("loading skill definitions")?;
         print!("{}", render_disclosures(&registry.disclosures()));
         return Ok(());
     }
 
-    let resolved = skills::resolve_registry_in(
-        cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
-    )
-    .context("resolving skill registry")?;
+    let resolved = skills::resolve_registry_in(cwd, &crate::user_dirs::skills_layer())
+        .context("resolving skill registry")?;
     match name {
         Some(name) => {
             // Resolve with provenance so the dry-run shows the layer winner (the

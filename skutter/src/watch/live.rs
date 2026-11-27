@@ -91,17 +91,14 @@ impl LiveDefinitions {
 /// fingerprint check has already confirmed something on disk actually
 /// changed, so every call here is expected to produce a real notice.
 pub(super) fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
-    let new_skills = crate::skills::load_registry_in(
-        cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
-    )?;
+    let new_skills = crate::skills::load_registry_in(cwd, &crate::user_dirs::skills_layer())?;
     let prompt_ctx = match &live.sessions {
         Some(sessions) => PromptContext::load_with(cwd, sessions),
         None => PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd)),
     };
     let mut new_profiles = crate::agents::load_registry_in(
         cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::AGENTS_DIR_ENV),
+        &crate::user_dirs::agents_layer(),
         &prompt_ctx,
         &new_skills,
         &live.mcp_capabilities,

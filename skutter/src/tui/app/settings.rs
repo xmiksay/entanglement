@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 
 use super::settings_apply::LiveEffects;
 use super::App;
-use crate::config::aux_models::Purpose;
+use crate::aux_llm::Purpose;
 use crate::tui::settings_dialog::{
     mode_names, model_options, run_plan, AuxTab, Confirm, SessionTab, SettingsDialog,
 };

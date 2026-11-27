@@ -85,7 +85,7 @@ pub async fn tui(
     agent_generation: std::sync::Arc<
         std::sync::Mutex<crate::config::agent_generation::AgentGenerationStore>,
     >,
-    aux_models: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
+    aux_models: std::sync::Arc<std::sync::Mutex<crate::aux_llm::AuxModelStore>>,
     mut reload_rx: tokio::sync::mpsc::UnboundedReceiver<crate::watch::ReloadNotice>,
     root: std::path::PathBuf,
     http_client: HttpClient,

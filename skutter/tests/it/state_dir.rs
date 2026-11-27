@@ -14,12 +14,13 @@ use std::time::Duration;
 use std::sync::Arc;
 
 use entanglement_core::{ApprovalScope, StoredAuth, TokenSet, TokenStore};
+use entanglement_runtime::aux_llm::Purpose;
 use entanglement_runtime::extra_roots::{AlwaysRoots, ExtraRootStore};
 use entanglement_runtime::mcp::McpToolCache;
 use serde_json::Value;
 use skutter::config::agent_generation::AgentGenerationStore;
 use skutter::config::agent_models::AgentModelStore;
-use skutter::config::aux_models::{AuxModelsPath, Purpose};
+use skutter::config::aux_models::AuxModelsPath;
 use skutter::config::state_dir::{self, MCP_TOKENS_FILE, MCP_TOOLS_FILE, STATE_DIR_ENV};
 use skutter::state::{FileExtraRoots, FileMcpToolCache, McpTokenStore};
 

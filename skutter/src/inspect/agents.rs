@@ -27,16 +27,13 @@ use crate::system_prompt::PromptContext;
 /// source). With a `name`, print the full resolved agent — identity,
 /// prompt length — plus which lower-layer definitions it overrode.
 pub fn inspect_agents(cwd: &Path, name: Option<&str>) -> Result<()> {
-    let skill_registry = skills::load_registry_in(
-        cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
-    )
-    .context("loading skill definitions")?;
+    let skill_registry = skills::load_registry_in(cwd, &crate::user_dirs::skills_layer())
+        .context("loading skill definitions")?;
     let ctx = PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd));
 
     let resolved = agents::resolve_registry_in(
         cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::AGENTS_DIR_ENV),
+        &crate::user_dirs::agents_layer(),
         &ctx,
         &skill_registry,
     )

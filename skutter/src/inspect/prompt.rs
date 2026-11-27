@@ -22,16 +22,13 @@ use crate::system_prompt::PromptContext;
 /// Load registries for `cwd` (no engine), resolve `agent`, and print its
 /// assembled system prompt — or, with `parts`, the per-slice breakdown.
 pub fn inspect_prompt(cwd: &Path, agent: &str, parts: bool) -> Result<()> {
-    let skill_registry = skills::load_registry_in(
-        cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
-    )
-    .context("loading skill definitions")?;
+    let skill_registry = skills::load_registry_in(cwd, &crate::user_dirs::skills_layer())
+        .context("loading skill definitions")?;
     let ctx = PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd));
 
     let report = agents::prompt_report_in(
         cwd,
-        &crate::user_dirs::user_layer(crate::user_dirs::AGENTS_DIR_ENV),
+        &crate::user_dirs::agents_layer(),
         agent,
         &ctx,
         &skill_registry,
