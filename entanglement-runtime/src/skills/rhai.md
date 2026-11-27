@@ -84,7 +84,7 @@ call in the same run; any other target asks again.
 - `edit(path, old, new)`, `edit(path, old, new, replace_all)`
 - `write(path, content)`
 - `bash(command)`, `bash(command, workdir)` — `sh -c`, only when the host has
-  `bash` registered/enabled; otherwise an unknown-function error, not a
+  `bash` registered; otherwise an unknown-function error, not a
   graded-then-refused binding.
 
 `workdir` (on `bash`) is what a workdir-scoped permission rule

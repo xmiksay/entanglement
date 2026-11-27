@@ -183,9 +183,9 @@
 # every call it makes is allowed — prompts, paths outside the project root
 # and authenticated `http()` calls included. Only explicit denies still stop
 # it (a mode `deny:` rule — of `rhai` itself too — the `permissions:`
-# ceiling, a /disable, a pre_tool_use hook). Any other script is graded like
-# any tool call: allowed, it runs asking per command; asked, it is shown
-# once: run all, ask per command, or reject. Allowed in this file AND in a
+# ceiling, a pre_tool_use hook). Any other script is graded like any tool
+# call: allowed, it runs asking per command; asked, it is shown once: run
+# all, ask per command, or reject. Allowed in this file AND in a
 # project's `.entanglement/config.yml`; the lists add up. Project entries
 # are relative to the project root, user entries to this file's folder (`~`
 # expands). A folder from THIS file is not trusted in a mode the project's

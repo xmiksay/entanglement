@@ -20,9 +20,9 @@ use entanglement_provider::ToolSpec;
 /// ladder always has been. WHY: every mid-session change to this array (a
 /// skill mask) invalidated the provider's prompt cache from the tools block
 /// onward — i.e. the whole prompt. A surface that is stable within a session
-/// keeps that cache warm; the only
-/// thing traded away is "the model cannot even attempt the call", and every
-/// attempt is now visibly declined at dispatch instead.
+/// keeps that cache warm; the only thing traded away is "the model cannot
+/// even attempt the call", and every attempt is now visibly declined at
+/// dispatch instead.
 ///
 /// The base tool schemas are engine-global (`tool_specs`) unless a
 /// per-session `tool_spec_resolver` is wired (#308, ADR-0076): a multi-tenant
