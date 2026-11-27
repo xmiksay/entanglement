@@ -315,8 +315,8 @@ names no host tool. Site and nexial use none of the moved items; nexial's
 - **New API:** `ToolExecutorBuilder::root(PathBuf)` — the project root a
   path argument grades relative to and plans live under;
   `policy::AskReason { text, card, grant }`, `policy::AskGrant { tool,
-  arg }`, `Grade::ask(text, card)` and `Grade::ask_keyed(text, card,
-  grant)`;
+  arg }` and `Grade::ask_keyed(text, card, grant)` (an unkeyed reasoned
+  ask is `Grade::Ask(Some(AskReason { grant: None, .. }))`);
   `Tool::script_unbounded()` (default `false`: a script's nested call is
   cut at the script's budget); `tool_names::LIBRARY_TOOL_NAMES`;
   `tools::text_parts` is public.

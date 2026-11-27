@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use entanglement_core::{CardReason, InMsg, OutEvent, Permission, SessionId};
 use entanglement_runtime::mode::Limits;
-use entanglement_runtime::policy::{Grade, PermissionResolver};
+use entanglement_runtime::policy::{AskReason, Grade, PermissionResolver};
 use entanglement_runtime::ToolRegistry;
 
 use crate::unattended_mode::{
@@ -22,10 +22,11 @@ impl PermissionResolver for Reasoned {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
         match self.0.resolve(session, tool, input).await {
             Grade::Deny(why) => Grade::Deny(why),
-            _ => Grade::ask(
-                "accesses a path outside the project root: /elsewhere",
-                CardReason::RootEscape,
-            ),
+            _ => Grade::Ask(Some(AskReason {
+                text: "accesses a path outside the project root: /elsewhere".into(),
+                card: CardReason::RootEscape,
+                grant: None,
+            })),
         }
     }
 }

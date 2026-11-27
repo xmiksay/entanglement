@@ -28,7 +28,6 @@ name = "mcp_http"
 path = "examples/mcp_http.rs"
 required-features = ["mcp-http"]
 
-
 [features]
 default = ["provider", "mcp-http", "rhai"]
 # The provider-backed aux-LLM helpers (session titles, the narrator, the
@@ -55,10 +54,10 @@ entanglement-core = { workspace = true }
 entanglement-provider = { workspace = true, optional = true }
 # Per-crate feature trim (#502, ADR-0135): `rt`+`rt-multi-thread`+`macros`
 # back the examples' `#[tokio::main]` (multi-threaded by default);
-# `sync`/`time` the mpsc/broadcast/oneshot/watch
-# + sleep/timeout/interval usage throughout; `fs`/`process`/`io-util` the
-# file backups, mcp stdio and the exec helpers' piping; `net` the MCP transport tests' stub servers. The `tokio`
-# dev-dependency adds only `test-util`.
+# `sync`/`time` the mpsc/broadcast/oneshot/watch + sleep/timeout/interval
+# usage throughout; `fs`/`process`/`io-util` the file backups, mcp stdio and
+# the exec helpers' piping; `net` the MCP transport tests' stub servers. The
+# `tokio` dev-dependency adds only `test-util`.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util"] }
 anyhow = { workspace = true }
 serde = { workspace = true }

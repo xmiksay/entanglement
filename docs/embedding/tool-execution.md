@@ -32,7 +32,7 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 | `grants(Arc<dyn GrantStore>)` | `InMemoryGrantStore` — `Always` grants last for the executor's lifetime; the library never writes a grants file (#966) |
 | `mode_table(Arc<ModeTable>)` | `ModeTable::builtin()` |
 | `perm_modes(..)` / `active(..)` | private maps. **A custom `.resolver(..)` (or sandbox resolver) that reads a mode map must get the same `Arc` via `.perm_modes(..)`** — otherwise the executor folds `ModeChanged` into its private map and your resolver silently grades from a map that never changes |
-| `root(PathBuf)` | none — path arguments grade verbatim and plans resolve against the cwd. The library keeps no containment: a tool that must stay inside a root checks it itself or through your resolver (`skutter`'s `host::EscapeResolver` returns `Grade::ask(..)` for an out-of-root path, #968) |
+| `root(PathBuf)` | none — path arguments grade verbatim and plans resolve against the cwd. The library keeps no containment: a tool that must stay inside a root checks it itself or through your resolver (`skutter`'s `host::EscapeResolver` returns `Grade::ask_keyed(..)` for an out-of-root path, #968) |
 | `jobs` / `retained` / `scripts` / `plan_files` | private registries (share them with your exec tool/plans watcher if you wire those) |
 | `mcp_scopes(Arc<McpScopes>)` | none — single-user MCP |
 | `http_gate(Arc<HttpGate>)` | no `http` tool — set it to enable the script `http()` binding; the builder registers the tool over this gate (ADR-0227) |

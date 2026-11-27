@@ -25,7 +25,7 @@ The session's permission **mode** (`research` | `plan` | `build` | `auto`;
 "always allow" grants, a ceiling and the embedder's `PermissionResolver`
 govern every tool — an agent profile is identity only (prompt + model pin)
 and carries no authority (ADR-0207). A resolver may deny or ask for its own
-reason (`Grade::deny`, `Grade::ask`), which the model or the approval card
+reason (`Grade::deny`, `Grade::Ask(Some(AskReason))`), which the model or the approval card
 then shows. The library runs no lifecycle hooks (#964).
 Every session advertises one surface, identical on every wire and pinned for
 the session (ADR-0226): the registered tools that set `Tool::advertised`

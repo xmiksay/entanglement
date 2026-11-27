@@ -54,17 +54,10 @@ impl Grade {
         Grade::Deny(Some(reason.into()))
     }
 
-    /// An `Ask` whose card says `text` and carries `card`.
-    pub fn ask(text: impl Into<String>, card: CardReason) -> Self {
-        Grade::Ask(Some(AskReason {
-            text: text.into(),
-            card,
-            grant: None,
-        }))
-    }
-
-    /// [`Grade::ask`] answered only by a grant on `grant`, never on the
-    /// call's own `(tool, argument)`.
+    /// An `Ask` whose card says `text` and carries `card`, answered only by
+    /// a grant on `grant`, never on the call's own `(tool, argument)`. An
+    /// ask the call's own grant answers is `Grade::Ask(Some(AskReason {
+    /// grant: None, .. }))`.
     pub fn ask_keyed(text: impl Into<String>, card: CardReason, grant: AskGrant) -> Self {
         Grade::Ask(Some(AskReason {
             text: text.into(),
@@ -110,8 +103,12 @@ mod tests {
             assert_eq!(Grade::from(p).permission(), p);
         }
         assert_eq!(Grade::deny("no").permission(), Permission::Deny);
+        let grant = AskGrant {
+            tool: "t#k".into(),
+            arg: "a".into(),
+        };
         assert_eq!(
-            Grade::ask("why", CardReason::RootEscape).permission(),
+            Grade::ask_keyed("why", CardReason::RootEscape, grant).permission(),
             Permission::Ask
         );
         assert_eq!(Grade::from(Permission::Deny), Grade::Deny(None));
