@@ -32,21 +32,15 @@ child (the runtime's `agent` tool) and a **compaction successor** — every
 compaction forks one (`predecessor: Some(source)`,
 [ADR-0205](../adr/archive/0205-every-compaction-forks-a-successor-session.md)), a root
 when its source was one and a child of the source's parent when the source was
-a sub-agent ([ADR-0234](../adr/archive/0234-live-sub-agents-survive-compaction.md)). Both go
-through `EngineConfig::id_gen` with an `IdContext` naming their lineage, and
-the default `DefaultIdGen` copies the parent's — else the predecessor's —
-prefix up to and including the first `:` ([ADR-0211](../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)):
+a sub-agent ([ADR-0234](../adr/archive/0234-live-sub-agents-survive-compaction.md)). Both are
+minted by `mint_id` with their parent — else their source — as the lineage,
+and it copies that id's prefix up to and including the first `:` ([ADR-0211](../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)):
 the child or successor of `acme:s-6a70…` is `acme:s-6a71…`. So `tenant_of`
-holds for the whole lineage **by construction, with the default generator**.
-A root with no `:` mints unprefixed descendants, as before.
-
-If you install your own `IdGen` (a DB sequence, UUIDs, a different tenant
-encoding), the prefix is yours to keep: `next(kind, ctx)` receives
-`ctx.parent`/`ctx.predecessor`/`ctx.user`, and `ctx.inherited_prefix()` gives
-the default's answer to reuse. A generator that ignores the context breaks
-prefix filtering for every child and successor. When your head mints an id in
-a lineage itself, call `Holly::next_id_in(kind, &IdContext::child_of(&parent))`
-rather than `next_id`, which mints with an empty context.
+holds for the whole lineage **by construction**; id generation is not
+pluggable, so nothing can break it. A root with no `:` mints unprefixed
+descendants, as before. When your head mints an id in a lineage itself, call
+`mint_id(kind, Some(&parent))`; `SessionId::new_uuid()` is `mint_id` with no
+lineage.
 
 **Ownership filtering on `subscribe()`.** `Holly::subscribe()` is one
 broadcast fan-out of **every** tenant's events — there is no

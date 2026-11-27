@@ -195,7 +195,7 @@ the code, never as a description of current behaviour — that is
 | [0161](0161-unified-async-work-background-flag-and-one-poll.md) | Unified async work: a `background` flag on every launcher, one `poll` to join | current; partly superseded by 0185; amended by 0166, 0190; changed by #916 | — |
 | [0162](0162-agent-send-supervising-a-sub-agent.md) | `agent_send` — supervising a sub-agent instead of replacing it | current | — |
 | [0163](0163-live-bash-enablement-is-a-tool-overlay-entry.md) | Live bash enablement is a tool-overlay entry, not its own message pair | superseded by 0195; removed by #923 | — |
-| [0164](0164-short-sortable-kind-tagged-ids.md) | Short, sortable, kind-tagged ids behind a pluggable generator | current; amended by 0211 | — |
+| [0164](0164-short-sortable-kind-tagged-ids.md) | Short, sortable, kind-tagged ids behind a pluggable generator | current; amended by 0211; changed by #928 (the generator is no longer pluggable) | — |
 | [0165](0165-background-bash-jobs-are-bounded-by-timeout.md) | Background `bash` jobs are bounded by `timeout`, not exempt from it | current | — |
 | [0166](0166-migration-note-and-startup-warning-for-stale-tool-names.md) | Migration note + startup warning for stale tool names in masks and permission rules | current | — |
 | [0167](0167-embedded-research-agent-profile.md) | Embedded `research` agent profile — a global read-only Q&A entry agent | superseded by 0207 (`research` is a mode, not an agent; previously unmarked) | — |
@@ -242,7 +242,7 @@ the code, never as a description of current behaviour — that is
 | [0208](0208-pause-resume-a-hold-between-cancel-and-hibernate.md) | `PauseSession`/`ResumeSession` — a hold between cancel and hibernate | current; removed by #921 | — |
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247; changed by #924 | — |
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246; changed by #923; changed by #927 (`Refuse` removed) | — |
-| [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current | — |
+| [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current; changed by #928 (no `IdGen`/`IdContext`; `mint_id` keeps the prefix) | — |
 | [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236 | — |
 | [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918; changed by #919; changed by #920 | — |
 | [0214](0214-retired-agent-logs-resume-as-general.md) | Logs naming a retired agent resume as `general` | current; amended by 0215 | — |

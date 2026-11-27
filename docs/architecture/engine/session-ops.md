@@ -135,21 +135,19 @@ catalog no longer knows — falls back **field-by-field to the session's own
 and strictly better than a fixed primary model, since a live `/model` switch
 keeps applying to compaction whenever no pin is set.
 
-**Id generation — the `id_gen` seam** ([ADR-0164](../../adr/archive/0164-short-sortable-kind-tagged-ids.md)).
-`EngineConfig.id_gen: Arc<dyn IdGen>` mints every session id, background-job
-id, and runtime-minted request/correlation id — never `Option`, unlike the
-resolver seams above, since there is always a scheme rather than an
-opt-in override. `IdGen::next(kind: IdKind, ctx: &IdContext) -> String`
-defaults to `DefaultIdGen`: `<kind>-<epoch-seconds hex><2-hex process salt><3-hex
-counter>`, 15 characters (`s-`/`j-`/`r-`/`o-`/`x-` for `Session`/`Job`/
+**Id generation** ([ADR-0164](../../adr/archive/0164-short-sortable-kind-tagged-ids.md)).
+One built-in function, `mint_id(kind: IdKind, lineage: Option<&SessionId>) ->
+String` (`ids.rs`), mints every session id, background-job id, and
+runtime-minted request/correlation id; it is not pluggable (#928). The
+format is `<kind>-<epoch-seconds hex><2-hex process salt><3-hex counter>`,
+15 characters (`s-`/`j-`/`r-`/`o-`/`x-` for `Session`/`Job`/
 `Request`/`Output`/`Script` — the last per #637,
 [ADR-0185](../../adr/archive/0185-rhai-joins-background-and-poll.md)), with a
-process-global `(last_second, counter)` pair (module statics, not per-instance
-state) that makes "never twice" structural rather than probabilistic within
+process-global `(last_second, counter)` pair (module statics)
+that makes "never twice" structural rather than probabilistic within
 one process, and waits for the next second rather than repeating on the
-4096/s counter budget. `Holly::next_id(kind)` clones the configured generator
-out at spawn time so any in-process embedder/head mints through the *same*
-generator (and, if overridden, the same policy) the engine itself would use.
+4096/s counter budget. Engine and heads call the same function, so there is
+one scheme in the process.
 Scope is deliberately narrow: a `ToolCall.id` is provider-supplied on the wire
 and is never run through this — reformatting it broke Gemini (#444).
 `SessionId::new_uuid()` keeps its name for call-site compatibility but now
@@ -157,20 +155,14 @@ mints the `s-` scheme, not a UUID; legacy UUID-form ids coexist indefinitely
 since `SessionId` is an opaque `String` newtype and the two shapes cannot
 collide.
 
-**Lineage context and tenant prefixes** (✅ #722,
-[ADR-0211](../../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)). Every
-mint carries a borrowed, `#[non_exhaustive]` `IdContext { parent, predecessor,
-user }` (`IdContext::default()` / `child_of` / `successor_of` / `with_user`).
-`DefaultIdGen` prepends `ctx.inherited_prefix()` — everything up to and
-including the first `:` of the parent's id, else the predecessor's — so a
-sub-agent child (the runtime's `agent` tool, `subagent.rs`, via
-`Holly::next_id_in(kind, &IdContext::child_of(&parent))`) and a compaction
-successor (`session/fork.rs`, `IdContext::successor_of(source)` with the
-source's user) of `t1:s-…` are `t1:s-…` too; an unprefixed lineage mints the
-plain 15-char form. `Holly::next_id_in` fills a missing `user` from the
-lineage's directory entry. Jobs, scripts, retained outputs, request ids and
-fresh roots mint with an empty context. An overriding `IdGen` owns the whole
-format and may reuse `inherited_prefix`.
+**Tenant prefixes** (✅ #722,
+[ADR-0211](../../adr/archive/0211-idgen-context-and-tenant-prefix-inheritance.md)).
+`mint_id` prepends the `lineage` id's tenant prefix — everything up to and
+including its first `:` — so a sub-agent child (the runtime's `agent` tool,
+`subagent.rs`, `mint_id(kind, Some(&parent))`) and a compaction successor or
+fork (`session/fork.rs` / `session/user_fork.rs`, `Some(source)`) of `t1:s-…`
+are `t1:s-…` too; an unprefixed lineage mints the plain 15-char form. Jobs,
+scripts, retained outputs, request ids and fresh roots mint with `None`.
 
 **`Holly::session_info(&SessionId) -> Option<SessionInfo>`** reads the
 supervisor's live-session directory (`holly/directory.rs`, the same records

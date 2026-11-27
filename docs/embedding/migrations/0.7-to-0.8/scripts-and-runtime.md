@@ -45,3 +45,25 @@ a module. What changes:
 - **Instead:** refuse ids your head does not know before calling
   `Holly::send`, or install a `Resume` loader whose `load` returns
   `Ok(None)` for every id you want refused.
+
+## The custom `IdGen` trait removed (#928)
+
+Ids come from one built-in function, `entanglement_core::mint_id(kind,
+lineage)`, with the same ADR-0164 `<kind>-<hex>` format and the same
+ADR-0211 tenant-prefix inheritance as the old `DefaultIdGen`. Neither site
+nor nexial installed a generator; both mint roots with
+`SessionId::new_uuid()`, which is unchanged. What changes:
+
+- **Removed API:** the `IdGen` trait, `DefaultIdGen`, the
+  `EngineConfig::id_gen` field, `IdContext` (`child_of`, `successor_of`,
+  `with_user`, `inherited_prefix`), `Holly::next_id` and
+  `Holly::next_id_in`, and the `entanglement_core::id_gen` module (now
+  `ids`). An `EngineConfig` struct update drops the field.
+- **Behaviour kept:** sub-agent children, compaction successors and forks of
+  a `{tenant}:` id keep its prefix, so a `tenant_of` filter still holds for
+  the whole lineage.
+- **Instead:** `holly.next_id(kind)` → `mint_id(kind, None)`;
+  `holly.next_id_in(kind, &IdContext::child_of(&parent))` →
+  `mint_id(kind, Some(&parent))`. An embedder that needs ids in its own
+  scheme mints its root ids itself (`SessionId::new(..)`); ids the engine
+  mints always use the built-in format.

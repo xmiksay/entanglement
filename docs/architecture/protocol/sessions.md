@@ -77,8 +77,7 @@ orphaned — running with no consumer for its answers and burning provider token
 to un-polled `agent { background: true }` children, ADR-0026 — collected via `poll`, #605.) Session ids are single-use: after
 `SessionEnded`, mint a fresh id — `SessionId::new_uuid()` (kept name for
 call-site compatibility; it mints the ADR-0164 `s-<hex>` scheme, not an actual
-UUID) or, when a `Holly` handle is in scope, `Holly::next_id(IdKind::Session)`
-to go through the engine's *configured* [`IdGen`](../../adr/archive/0164-short-sortable-kind-tagged-ids.md)
+UUID; it is `mint_id(IdKind::Session, None)`, [ADR-0164](../../adr/archive/0164-short-sortable-kind-tagged-ids.md))
 — rather than reuse a closed id (which would restart `seq` at 0). The supervisor routes to sessions with a
 non-blocking `try_send` + bounded retry, shedding to a saturated session rather
 than parking its single loop and stalling every other session.

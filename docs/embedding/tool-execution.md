@@ -108,7 +108,7 @@ Send `InMsg::ForkSession { session, at_turn }` over `Holly::send` (it is
 wire-refused). The fork announces itself with `SessionStarted` and then
 `SessionForked`, which carries its seed history, so whatever sink you use
 already persists a fork log that replays exactly. A `{tenant}:` prefix carries
-over through `IdContext::successor_of`.
+over: the fork's id is minted in its source's lineage.
 
 **Migrating from the positional constructors** (deprecated in 0.7, removed
 after): `spawn_tool_executor(h, t, a, b)` →
