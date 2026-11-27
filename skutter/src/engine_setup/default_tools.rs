@@ -212,5 +212,9 @@ mod tests {
                 "the rhai spec never lists `{name}`"
             );
         }
+        assert!(
+            rhai.description.contains("escape-root gate"),
+            "the escape-root guidance left the rhai spec"
+        );
     }
 }

@@ -27,7 +27,10 @@ pub const READ: ScriptBinding = text(
         &[("path", Str)],
         &[("path", Str), ("offset", Int), ("limit", Int)],
     ],
-    r#"read(path) / read(path, offset, limit) -> "{lineno}: {line}" text, NOT parseable as JSON/YAML"#,
+    // The escape-root note rides on `read`, the first file binding a model
+    // reaches for: the library's intro only says "any check the host adds".
+    r#"read(path) / read(path, offset, limit) -> "{lineno}: {line}" text, NOT parseable as JSON/YAML
+every file binding's path outside the project root passes the escape-root gate (it asks) before it runs"#,
 );
 
 /// Graded as `read` inside the root ([`super::read::ReadRawTool`]).

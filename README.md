@@ -185,8 +185,10 @@ clash; `skutter inspect commands` lists what resolved. Beyond the root-contained
 and graded by the session's mode like everything else; it is the one exec
 tool. `glob` and `grep` are registered but never advertised: they are
 script-only `rhai` bindings, each call graded under its own name. The sandboxed `rhai`
-scripting tool ships in every default build (droppable via
-`--no-default-features`, #502) — every call a script makes goes through the
+scripting tool is native in every build, `--no-default-features` included
+(#933). The library binds no file or process function; `skutter`'s host
+tools declare `read`/`glob`/`grep`/`edit`/`write`/`bash` as script
+functions. Every call a script makes goes through the
 same permission path as a direct one, MCP tools are callable as
 `mcp::<server>::<tool>(…)`, a skill can ship a `lib.rhai`, and `http()` can
 attach credentials the user maps per host in `config.yml` `http_auth:` (never

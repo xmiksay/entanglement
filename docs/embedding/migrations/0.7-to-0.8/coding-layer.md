@@ -81,8 +81,8 @@ The functions a 0.7 script called — `read`, `read_raw`, `glob`, `grep`,
 `skutter`'s host tools, so a `skutter` script calls exactly what it called
 before. `http()`, the `mcp::`/`skill::`/host namespaces and the JSON/YAML
 converters stay in the library. Site and nexial build with
-`default-features = false` and register no `rhai` binding: the only change
-for them is that `rhai` is now compiled in.
+`default-features = false` and register no `rhai` binding, but `rhai` is now
+compiled into their build and reachable (see the library behaviour below).
 
 - **Removed API:** the `rhai` Cargo feature (`default` is
   `["provider", "mcp-http"]`; `--no-default-features` keeps `rhai`);
@@ -92,7 +92,9 @@ for them is that `rhai` is now compiled in.
   returns one is a plain script function under its own name: one overload
   per parameter list, each positional argument sent under its input key, an
   optional JSON reply and an optional budget key (the run's remaining
-  seconds). Its `doc` line joins the `rhai` spec. A wrapping tool must
+  seconds). Its `doc` line joins the `rhai` spec. A tool name that is not a
+  Rhai function name, or that is `http` or a converter, is skipped with a
+  warning. A wrapping tool must
   forward the method (`skutter`'s hook wrapper does).
 - **Changed API:** `discover::runtime_owned_specs(&ToolRegistry)` and
   `script::rhai_spec(&ToolRegistry)` take the registry whose bindings the
@@ -100,9 +102,21 @@ for them is that `rhai` is now compiled in.
 - **Changed behaviour (library):** a script calling `read(...)`, `bash(...)`
   or any other unbound name gets an unknown-function error, even when a tool
   of that name is registered without a binding. The spec and the
-  unknown-name hint list only the functions the run binds.
+  unknown-name hint list only the functions the run binds. A
+  `--no-default-features` build now routes and grades a model-issued `rhai`
+  call (graded by your resolver as a Read+Write+Exec tool) and runs it,
+  where 0.7 refused it as an unknown tool; the script reaches the `mcp::`
+  namespaces, `skill::` libraries and, when the http gate is registered,
+  `http()`. `discover::runtime_owned_specs`/`build_surface` now always
+  include the `rhai` spec, so an embedder using them advertises `rhai` to
+  its model.
+- **If you don't want scripting:** filter the `rhai` spec out of the
+  surface you advertise and deny `rhai` in your `PermissionResolver`.
 - **Changed behaviour (`skutter`):** none — `skutter::host::script_bindings`
-  declares the 0.7 set, `bash` with its budget-derived `timeout`.
+  declares the 0.7 set, `bash` with its budget-derived `timeout`. The
+  `rhai` spec text the model sees changed once (host bindings listed
+  alphabetically, the intro names "any check the host adds"), which busts
+  the prompt cache on the first session after the upgrade.
 - **Instead:** to give scripts a file or command function, implement
   `script_binding` on the tool that does the work; for a per-session
   function set, register a host namespace (ADR-0249).
