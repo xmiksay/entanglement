@@ -35,9 +35,8 @@ pub enum Capability {
 /// Capabilities for the runtime-owned pseudo-tools `tool_runner::Intercept::classify`
 /// routes before they ever reach the [`ToolRegistry`] — they have no `impl Tool`
 /// to ask, so this is the only place their capability can live. `rhai` is the
-/// one multi-capability member: a sandboxed script binds the read/write/exec
-/// quintet-plus-exec pair (`tool_names::BINDING_TOOLS`), so it can do all
-/// three; `propose_plan` is `Plan`, not `Control`, because plan authorship is
+/// one multi-capability member: a sandboxed script binds file and exec
+/// tools (`tool_names::BINDING_TOOLS`), so it can do all three; `propose_plan` is `Plan`, not `Control`, because plan authorship is
 /// itself the thing a mode grants or refuses (ADR-0207 §7) — everything else
 /// here is pure session/tool orchestration that reads, writes or executes
 /// nothing on its own. `request_mode` is genuinely `Control` (ADR-0207 §10):
@@ -72,38 +71,10 @@ pub fn capability_of(name: &str, registry: &ToolRegistry) -> Option<&'static [Ca
 /// rule reaches them) but are graded like any tool (ADR-0232): a spawn
 /// starts a session that runs tools, unlike the bookkeeping and discovery
 /// tools, which only read or report state already authorized.
-/// `capabilities` is `name`'s resolved set ([`capability_of`] or, with no
-/// registry in hand, [`static_capability_of`]).
+/// `capabilities` is `name`'s resolved set ([`capability_of`]).
 pub fn bypasses_grading(name: &str, capabilities: Option<&[Capability]>) -> bool {
     !matches!(name, AGENT_TOOL | AGENT_SEND_TOOL)
         && capabilities == Some([Capability::Control].as_slice())
-}
-
-/// [`capability_of`] for call sites that have no live [`ToolRegistry`] in
-/// hand: `skutter inspect modes` (#560, ADR-0207 stage 6c) deliberately runs
-/// with "no engine" (matching every other `inspect` subcommand). It only
-/// ever needs the fixed, always-registered host tools
-/// ([`crate::tool_names::BINDING_TOOLS`]), `apply_patch`, `web_fetch`,
-/// `http` and `load_skill` (`Control` since ADR-0226: a catalog read) —
-/// a closed set whose capability is a compile-time fact of each `Tool` impl,
-/// not something registration state could change — so hardcoding it here
-/// (mirroring [`runtime_owned`]'s own style) is precise, not a guess, and
-/// costs no second source of truth: growing the *real* per-tool capability
-/// declarations would still require touching this table by hand exactly
-/// like `runtime_owned`'s already does for the pseudo-tools.
-pub fn static_capability_of(name: &str) -> Option<&'static [Capability]> {
-    if let Some(c) = runtime_owned(name) {
-        return Some(c);
-    }
-    match name {
-        "read" | "glob" | "grep" => Some(&[Capability::Read]),
-        "load_skill" => Some(&[Capability::Control]),
-        "edit" | "write" | "apply_patch" => Some(&[Capability::Write]),
-        // `web_fetch`/`http` are outbound network, graded like `curl` (#736,
-        // ADR-0220; ADR-0227).
-        "bash" | "web_fetch" | "http" => Some(&[Capability::Exec]),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -154,8 +125,8 @@ mod tests {
     /// ADR-0232: spawning is graded; every other Control tool bypasses.
     #[test]
     fn only_the_spawning_pair_of_control_tools_is_graded() {
-        let ungraded = |name| bypasses_grading(name, static_capability_of(name));
-        for graded in [AGENT_TOOL, AGENT_SEND_TOOL, PROPOSE_PLAN_TOOL, "read"] {
+        let ungraded = |name| bypasses_grading(name, runtime_owned(name));
+        for graded in [AGENT_TOOL, AGENT_SEND_TOOL, PROPOSE_PLAN_TOOL] {
             assert!(!ungraded(graded), "{graded}");
         }
         for bypass in [
@@ -166,27 +137,12 @@ mod tests {
         ] {
             assert!(ungraded(bypass), "{bypass}");
         }
-        assert!(ungraded("load_skill"));
+        assert!(!bypasses_grading("peek", Some(&[Capability::Read])));
     }
 
     #[test]
     fn unknown_name_is_not_runtime_owned() {
         assert_eq!(runtime_owned("not_a_real_tool"), None);
-    }
-
-    #[test]
-    fn static_capability_of_covers_binding_tools_with_no_registry() {
-        for tool in crate::tool_names::BINDING_TOOLS {
-            assert!(
-                static_capability_of(tool).is_some(),
-                "{tool} must resolve with no live registry"
-            );
-        }
-        assert_eq!(
-            static_capability_of("write"),
-            Some([Capability::Write].as_slice())
-        );
-        assert_eq!(static_capability_of("not_a_real_tool"), None);
     }
 
     #[test]

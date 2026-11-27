@@ -4,17 +4,18 @@
 //! A script inside a trusted folder runs force-allowed with no card, and a
 //! skill's `lib.rhai`/`SKILL.md` is code and instructions every later
 //! session loads — so writing one is as good as running it.
-//! [`floored_write`] lets the dispatch grade floor a `write`/`edit`/
-//! `apply_patch` of such a file at `Ask`: the agent cannot author trusted
-//! code unseen. `bash` and MCP filesystem servers are not covered (neither
-//! names its target in a form that can be checked reliably), which is why a
-//! trusted folder must not be agent-writable.
+//! [`floored_write`] lets the dispatch grade floor a write of such a file —
+//! a call to any registered tool that declares `Capability::Write` and an
+//! [`ArgKind::Path`] argument — at `Ask`: the agent cannot author trusted
+//! code unseen. A shell command and MCP filesystem servers are not covered
+//! (neither names its target in a form that can be checked reliably), which
+//! is why a trusted folder must not be agent-writable.
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
-/// The path-taking file-mutation host tools.
-const MUTATING_TOOLS: &[&str] = &["write", "edit", "apply_patch"];
+use crate::capability::Capability;
+use crate::tools::{ArgKind, ToolRegistry};
 
 /// The files that make up a skill's behavior: its instructions and its
 /// script library.
@@ -116,17 +117,25 @@ pub(crate) fn contains<'a>(dirs: impl IntoIterator<Item = &'a PathBuf>, canon: &
 }
 
 /// Whether `(tool, input)` mutates a `*.rhai` file inside a trusted folder,
-/// or a `SKILL.md`/`lib.rhai` inside a skill layer dir. A relative `path`
-/// resolves against `root`. A target that cannot be resolved counts as
-/// inside (fail closed) — it only ever costs a prompt.
-pub(crate) fn floored_write(tool: &str, input: &str, root: &Path, trust: &Trust) -> bool {
-    if !MUTATING_TOOLS.contains(&tool) {
+/// or a `SKILL.md`/`lib.rhai` inside a skill layer dir. A mutation is a call
+/// to a tool in `tools` that declares `Capability::Write` and a path
+/// argument; the written file is that argument, a relative one resolved
+/// against `root`. A target that cannot be resolved counts as inside (fail
+/// closed) — it only ever costs a prompt.
+pub(crate) fn floored_write(
+    tools: &ToolRegistry,
+    tool: &str,
+    input: &str,
+    root: &Path,
+    trust: &Trust,
+) -> bool {
+    let Some(t) = tools.get(tool) else {
+        return false;
+    };
+    if !t.capabilities().contains(&Capability::Write) || t.permission_scope().arg != ArgKind::Path {
         return false;
     }
-    let Some(path) = serde_json::from_str::<serde_json::Value>(input)
-        .ok()
-        .and_then(|v| v.get("path")?.as_str().map(PathBuf::from))
-    else {
+    let Some(path) = t.permission_arg(input) else {
         return false;
     };
     let abs = lexical(&root.join(path));
@@ -223,36 +232,85 @@ mod tests {
         }
     }
 
+    /// A stub tool with a `path` argument and the given capability.
+    struct PathTool(&'static str, &'static [Capability]);
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for PathTool {
+        fn name(&self) -> std::borrow::Cow<'static, str> {
+            self.0.into()
+        }
+        fn capabilities(&self) -> &'static [Capability] {
+            self.1
+        }
+        fn permission_scope(&self) -> crate::tools::PermissionScope {
+            crate::tools::PermissionScope::arg(ArgKind::Path)
+        }
+        fn escape_target(&self, input: &str) -> Option<String> {
+            crate::path_grading::str_arg(input, "path")
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    /// Two writing stubs, a reading one, and a writer with no path argument.
+    fn tools() -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        reg.register(PathTool("put", &[Capability::Write]));
+        reg.register(PathTool("patch", &[Capability::Write]));
+        reg.register(PathTool("peek", &[Capability::Read]));
+        reg.register(Pathless);
+        reg
+    }
+
+    struct Pathless;
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for Pathless {
+        fn name(&self) -> std::borrow::Cow<'static, str> {
+            "pathless".into()
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
     fn writes(f: &Fx, tool: &str, path: &str) -> bool {
         let input = serde_json::json!({ "path": path, "content": "x" }).to_string();
-        floored_write(tool, &input, &f.root, &f.trust)
+        floored_write(&tools(), tool, &input, &f.root, &f.trust)
     }
 
     #[test]
     fn a_rhai_file_inside_a_trusted_folder_is_caught_for_every_mutating_tool() {
         let f = fx();
-        for tool in ["write", "edit", "apply_patch"] {
+        for tool in ["put", "patch"] {
             assert!(writes(&f, tool, "scripts/ok.rhai"), "{tool} existing");
             assert!(writes(&f, tool, "scripts/new.RHAI"), "{tool} new");
             assert!(writes(&f, tool, "scripts/deep/er/new.rhai"), "{tool} deep");
             let abs = f.root.join("scripts/./x/../ok.rhai");
             assert!(writes(&f, tool, abs.to_str().unwrap()), "{tool} absolute");
         }
-        assert!(!writes(&f, "read", "scripts/ok.rhai"), "read is no write");
+        assert!(!writes(&f, "peek", "scripts/ok.rhai"), "a read is no write");
+        assert!(
+            !writes(&f, "pathless", "scripts/ok.rhai"),
+            "no path argument"
+        );
+        assert!(!writes(&f, "unregistered", "scripts/ok.rhai"));
     }
 
     #[test]
     fn other_files_and_other_folders_are_not() {
         let f = fx();
-        assert!(!writes(&f, "write", "scripts/notes.md"));
-        assert!(!writes(&f, "write", "other/x.rhai"));
-        assert!(!writes(&f, "write", "scripts/../other/x.rhai"));
+        assert!(!writes(&f, "put", "scripts/notes.md"));
+        assert!(!writes(&f, "put", "other/x.rhai"));
+        assert!(!writes(&f, "put", "scripts/../other/x.rhai"));
         let none = Fx {
             trust: Trust::default(),
             ..fx()
         };
-        assert!(!writes(&none, "write", "scripts/ok.rhai"));
-        assert!(!writes(&none, "write", ".entanglement/skills/git/SKILL.md"));
+        assert!(!writes(&none, "put", "scripts/ok.rhai"));
+        assert!(!writes(&none, "put", ".entanglement/skills/git/SKILL.md"));
     }
 
     #[test]
@@ -265,7 +323,7 @@ mod tests {
             ".agents/skills/x/lib.rhai",
             ".agents/skills/x/skill.md",
         ] {
-            assert!(writes(&f, "edit", path), "{path}");
+            assert!(writes(&f, "patch", path), "{path}");
         }
         for path in [
             ".entanglement/skills/git/notes.md",
@@ -273,7 +331,7 @@ mod tests {
             "docs/SKILL.md",
             "lib.rhai",
         ] {
-            assert!(!writes(&f, "write", path), "{path}");
+            assert!(!writes(&f, "put", path), "{path}");
         }
     }
 
@@ -323,13 +381,13 @@ mod tests {
         link(&f.root.join("scripts/ok.rhai"), "other/in.rhai");
         link(&f.root.join("scripts/later.rhai"), "other/dangling.rhai");
         link(&f.root.join("scripts"), "other/dir");
-        assert!(writes(&f, "write", "other/in.rhai"));
-        assert!(writes(&f, "write", "other/dangling.rhai"));
-        assert!(writes(&f, "write", "other/dir/new.rhai"));
+        assert!(writes(&f, "put", "other/in.rhai"));
+        assert!(writes(&f, "put", "other/dangling.rhai"));
+        assert!(writes(&f, "put", "other/dir/new.rhai"));
         // Inside → out of it.
         link(&f.root.join("other/out.rhai"), "scripts/out.rhai");
         std::fs::write(f.root.join("other/out.rhai"), "1").unwrap();
-        assert!(!writes(&f, "write", "scripts/out.rhai"));
+        assert!(!writes(&f, "put", "scripts/out.rhai"));
     }
 
     #[test]

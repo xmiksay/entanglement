@@ -27,8 +27,8 @@
 //! module implements didn't pin a tiebreak; this file does, deliberately,
 //! so two rules of equal specificity never depend on declaration order.
 //!
-//! **`bash` compound commands** (`&&`/`||`/`;`/`|`/`&`, ADR-0197) are split
-//! and graded per segment; a command the splitter can't fully account for
+//! **Compound commands** — a [`ArgKind::Command`] argument split on
+//! `&&`/`||`/`;`/`|`/`&` (ADR-0197) — are graded per segment; a command the splitter can't fully account for
 //! ([`crate::shell_split::SplitOutcome::Opaque`]) grades at the mode's
 //! `default` outright — no whole-string fallback guess.
 //!
@@ -46,6 +46,7 @@ use entanglement_core::{Permission, PermissionProfile};
 use crate::capability::Capability;
 use crate::permission::min_permission;
 use crate::shell_split::{self, SplitOutcome};
+use crate::tools::ArgKind;
 
 mod rank;
 use rank::best_entry;
@@ -198,8 +199,8 @@ pub const PRECEDENCE: &str = "A rule naming the tool outranks a capability-class
     stricter wins); within each kind the longest key wins; ties go to the stricter grade.";
 
 /// The grade one call resolves to under `rules` + `default`, and the rule
-/// that decided it (`None`: the default did). `bash` with a command grades
-/// per compound segment (ADR-0197): split on top-level `&&`/`||`/`;`/`|`/
+/// that decided it (`None`: the default did). A [`ArgKind::Command`]
+/// argument grades per compound segment (ADR-0197): split on top-level `&&`/`||`/`;`/`|`/
 /// `&`, grade each segment and fold to the most restrictive — any segment
 /// `Deny` denies the whole command, all-`Allow` is `Allow`; the deciding rule is the one of the
 /// first segment at the folded grade. A simple command is one segment.
@@ -213,13 +214,14 @@ fn decide<'a>(
     tool_name: &str,
     capabilities: &[Capability],
     arg: Option<&str>,
+    kind: ArgKind,
     workdir: Option<&str>,
 ) -> (Permission, Option<&'a Entry>) {
     let single = |arg: Option<&str>| {
         best_entry(rules, tool_name, capabilities, arg, workdir)
             .map_or((default, None), |e| (e.grade, Some(e)))
     };
-    let command = arg.filter(|_| tool_name == "bash");
+    let command = arg.filter(|_| kind == ArgKind::Command);
     let Some(command) = command else {
         return single(arg);
     };
@@ -240,16 +242,17 @@ fn decide<'a>(
 }
 
 /// Resolve the grade for one call under a mode's `default` + [`Rules`]
-/// (ADR-0207 §4), per compound segment for `bash` ([`decide`]).
+/// (ADR-0207 §4), per compound segment for a command argument ([`decide`]).
 pub fn resolve(
     rules: &Rules,
     default: Permission,
     tool_name: &str,
     capabilities: &[Capability],
     arg: Option<&str>,
+    kind: ArgKind,
     workdir: Option<&str>,
 ) -> Permission {
-    decide(rules, default, tool_name, capabilities, arg, workdir).0
+    decide(rules, default, tool_name, capabilities, arg, kind, workdir).0
 }
 
 /// The key and grade of the rule that decided [`resolve`]'s grade, when it
@@ -264,9 +267,10 @@ pub(crate) fn deciding_rule(
     tool_name: &str,
     capabilities: &[Capability],
     arg: Option<&str>,
+    kind: ArgKind,
     workdir: Option<&str>,
 ) -> Option<(String, Permission)> {
-    decide(rules, default, tool_name, capabilities, arg, workdir)
+    decide(rules, default, tool_name, capabilities, arg, kind, workdir)
         .1
         .filter(|e| rank::names_tool(e, tool_name) && rule_tool_name(&e.key) != e.key)
         .map(|e| (e.key.clone(), e.grade))
@@ -311,6 +315,7 @@ mod tests {
                 "write",
                 &[Capability::Write],
                 Some(".entanglement/plans/phase1.md"),
+                ArgKind::Path,
                 None
             ),
             Permission::Allow,
@@ -325,6 +330,7 @@ mod tests {
                 "write",
                 &[Capability::Write],
                 Some("README.md"),
+                ArgKind::Path,
                 None
             ),
             Permission::Deny
@@ -341,6 +347,7 @@ mod tests {
                 "bash",
                 &[Capability::Exec],
                 Some("rm -rf x"),
+                ArgKind::Command,
                 None
             ),
             Permission::Deny
@@ -352,6 +359,7 @@ mod tests {
                 "bash",
                 &[Capability::Exec],
                 Some("ls"),
+                ArgKind::Command,
                 None
             ),
             Permission::Allow
@@ -368,6 +376,7 @@ mod tests {
                 "edit",
                 &[Capability::Write],
                 None,
+                ArgKind::None,
                 None
             ),
             Permission::Deny
@@ -384,6 +393,7 @@ mod tests {
                 "edit",
                 &[Capability::Write],
                 None,
+                ArgKind::None,
                 None
             ),
             Permission::Deny
@@ -400,6 +410,7 @@ mod tests {
                 "edit",
                 &[Capability::Write],
                 None,
+                ArgKind::None,
                 None
             ),
             Permission::Ask
@@ -416,6 +427,7 @@ mod tests {
                 "bash",
                 &[Capability::Exec],
                 Some("curl x"),
+                ArgKind::Command,
                 None
             ),
             Permission::Ask
@@ -435,6 +447,7 @@ mod tests {
                 "edit",
                 &[Capability::Write],
                 None,
+                ArgKind::None,
                 None
             ),
             Permission::Deny
@@ -456,7 +469,17 @@ mod tests {
             ],
             &["rhai".to_string()],
         );
-        let g = |arg| resolve(&rules, Permission::Deny, "rhai", &caps, arg, None);
+        let g = |arg| {
+            resolve(
+                &rules,
+                Permission::Deny,
+                "rhai",
+                &caps,
+                arg,
+                ArgKind::Path,
+                None,
+            )
+        };
         assert_eq!(g(None), Permission::Ask);
         assert_eq!(g(Some("ok/x.rhai")), Permission::Allow);
         assert_eq!(g(Some("other/x.rhai")), Permission::Ask);
@@ -468,6 +491,7 @@ mod tests {
                 "edit",
                 &[Capability::Write],
                 None,
+                ArgKind::None,
                 None
             ),
             Permission::Deny,
@@ -488,7 +512,7 @@ mod tests {
         // named allow.
         let creds = r(&["*(*credentials*)"], &["bash(cat*)"]);
         let g = |rules: &Rules, tool, caps: &[Capability], arg| {
-            resolve(rules, Permission::Ask, tool, caps, arg, None)
+            resolve(rules, Permission::Ask, tool, caps, arg, ArgKind::Text, None)
         };
         assert_eq!(
             g(&creds, "bash", &exec, Some("cat ~/.aws/credentials")),
@@ -542,6 +566,7 @@ mod tests {
                 "bash",
                 &[Capability::Exec],
                 Some("find . && rm x"),
+                ArgKind::Command,
                 None
             ),
             Permission::Deny
@@ -558,6 +583,7 @@ mod tests {
                 "bash",
                 &[Capability::Exec],
                 Some("find . > out.txt"),
+                ArgKind::Command,
                 None
             ),
             Permission::Ask,
@@ -570,6 +596,7 @@ mod tests {
                 "bash",
                 &[Capability::Exec],
                 Some("find . > out.txt"),
+                ArgKind::Command,
                 None
             ),
             Permission::Deny,
@@ -586,7 +613,15 @@ mod tests {
         let g = |deny: &[&str], allow: &[&str]| {
             let s = |l: &[&str]| l.iter().map(|k| k.to_string()).collect::<Vec<_>>();
             let rules = Rules::from_lists(&s(deny), &s(allow), &[]);
-            resolve(&rules, Permission::Ask, "propose_plan", &plan, None, None)
+            resolve(
+                &rules,
+                Permission::Ask,
+                "propose_plan",
+                &plan,
+                None,
+                ArgKind::None,
+                None,
+            )
         };
         assert_eq!(g(&["plan"], &["propose_plan"]), Permission::Deny);
         assert_eq!(g(&["propose_plan"], &["plan"]), Permission::Allow);
@@ -604,7 +639,15 @@ mod tests {
         let rules = Rules::from_lists(&["agent".to_string()], &["control".to_string()], &[]);
         let control = [Capability::Control];
         assert_eq!(
-            resolve(&rules, Permission::Ask, "agent", &control, None, None),
+            resolve(
+                &rules,
+                Permission::Ask,
+                "agent",
+                &control,
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Deny
         );
     }
@@ -619,7 +662,15 @@ mod tests {
             &[],
         );
         let g = |rules: &Rules, caps: &[Capability]| {
-            resolve(rules, Permission::Ask, "mixed", caps, None, None)
+            resolve(
+                rules,
+                Permission::Ask,
+                "mixed",
+                caps,
+                None,
+                ArgKind::None,
+                None,
+            )
         };
         let write_control = [Capability::Write, Capability::Control];
         let exec_control = [Capability::Exec, Capability::Control];

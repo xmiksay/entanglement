@@ -32,7 +32,7 @@ use entanglement_core::{ApprovalScope, Permission, PermissionProfile, SessionId}
 
 use crate::capability;
 use crate::mode::ModeTable;
-use crate::permission::{clamp_to_base, permission_workdir};
+use crate::permission::{clamp_to_base, permission_scope, permission_workdir};
 use crate::permission_path::grading_arg;
 use crate::tools::SharedRegistry;
 
@@ -153,10 +153,11 @@ impl ModeResolver {
         input: &str,
         caps: &[capability::Capability],
     ) -> Permission {
-        let (arg, workdir) = {
+        let (arg, kind, workdir) = {
             let registry = self.registry.read().expect("tool registry lock poisoned");
             (
                 grading_arg(&registry, tool, input, self.root.as_deref()),
+                permission_scope(&registry, tool).arg,
                 permission_workdir(&registry, tool, input),
             )
         };
@@ -177,13 +178,14 @@ impl ModeResolver {
             tracing::warn!(%session, mode = %mode_name, "unknown permission mode; denying");
             return Permission::Deny;
         };
-        let own = mode.resolve(tool, caps, arg.as_deref(), workdir.as_deref());
+        let own = mode.resolve(tool, caps, arg.as_deref(), kind, workdir.as_deref());
         clamp_to_base(
             own,
             &self.base,
             tool,
             caps,
             arg.as_deref(),
+            kind,
             workdir.as_deref(),
         )
     }

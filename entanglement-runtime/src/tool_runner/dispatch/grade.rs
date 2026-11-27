@@ -45,9 +45,9 @@ pub(crate) struct GradeInputs<'a> {
 /// The grade `(tool, input)` resolves to, plus the argument it was graded
 /// on: the mode grade clamped across the ancestor chain — a `Deny` returned
 /// as resolved, with its reason (#964) — then
-/// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Last, a
-/// `write`/`edit`/`apply_patch` of a `*.rhai` file inside a `rhai.trusted`
-/// folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored at `Ask`
+/// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Last, a write
+/// ([`crate::rhai_trust::floored_write`]) of a `*.rhai` file inside a
+/// `rhai.trusted` folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored at `Ask`
 /// whatever allowed it (ADR-0228: such a file later runs or loads unasked,
 /// so authoring one is never unseen); a `Deny` stays `Deny`. The
 /// escape-root gate stays with the caller.
@@ -70,9 +70,9 @@ pub(crate) async fn grade_call(
         g.mode,
     );
     let perm = if perm == Permission::Allow
-        && g.floor
-            .is_some_and(|(trust, root)| crate::rhai_trust::floored_write(tool, input, root, trust))
-    {
+        && g.floor.is_some_and(|(trust, root)| {
+            crate::rhai_trust::floored_write(g.tools, tool, input, root, trust)
+        }) {
         Permission::Ask
     } else {
         perm
@@ -80,17 +80,15 @@ pub(crate) async fn grade_call(
     (perm.into(), arg)
 }
 
-/// The grade identity of a call: a script-facing read variant grades as the
-/// tool it rides on — `read_raw` → `read` (ADR-0098), `glob_json`/`grep_json`
-/// → `glob`/`grep` (ADR-0206) — so a structured-output escape hatch is never
-/// a permission escape hatch. Everything else grades under its own name.
-pub(crate) fn graded_name(tool: &str) -> &str {
-    match tool {
-        "read_raw" => "read",
-        "glob_json" => "glob",
-        "grep_json" => "grep",
-        other => other,
-    }
+/// The name a call grades under: the target its tool's
+/// [`call_grading`][crate::tools::Tool::call_grading] names (an envelope
+/// tool's target, a script-only read variant's base tool), else its own —
+/// so rules, grants and repeat tracking all key on one identity.
+pub(crate) fn graded_name(tools: &ToolRegistry, tool: &str, input: &str) -> String {
+    tools
+        .get(tool)
+        .and_then(|t| t.call_grading(input))
+        .map_or_else(|| tool.to_string(), |cg| cg.name)
 }
 
 /// Upgrade a resolved `Ask` to `Allow` when `(session, tool, arg)` is already

@@ -27,6 +27,8 @@ pub mod serve;
 pub mod slash_commands;
 // The file-backed stores behind the library's in-memory seams (#966).
 pub mod state;
+// The compile-time tool vocabulary for engine-free views and config checks.
+pub mod tool_vocab;
 mod user_dirs;
 // The definitions watcher: live reload of what `skutter` loads from disk.
 pub mod watch;

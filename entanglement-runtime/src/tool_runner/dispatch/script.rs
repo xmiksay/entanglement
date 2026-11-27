@@ -194,9 +194,6 @@ fn rekey(chain: &mut [SessionId], from: &SessionId, to: &SessionId) {
     }
 }
 
-/// Tools never cut by the bridge clock (see [`Via::budget`]).
-const UNBOUNDED: &[&str] = &["bash", "write", "edit", "apply_patch"];
-
 /// How much of the script's budget is left for it after a nested call is cut.
 const GRACE: Duration = Duration::from_millis(300);
 
@@ -207,13 +204,11 @@ fn cache_key(tool: &str, input: &str) -> String {
 impl Via<'_> {
     /// The bridge-level timeout a nested call runs under: the script's
     /// remaining budget less a grace margin, so the script still gets to
-    /// handle the error before its own deadline ends it. Exempt: `bash`,
-    /// whose own `timeout` parameter is already derived from the
-    /// budget (#419), and the file-mutating tools, which a dropped future
-    /// could cut between backup and write (ADR-0212).
-    pub(super) fn budget(&self, tool: &str) -> Option<Duration> {
+    /// handle the error before its own deadline ends it. Exempt: a tool
+    /// that declares itself [`script_unbounded`](crate::tools::Tool::script_unbounded).
+    pub(super) fn budget(&self, unbounded: bool) -> Option<Duration> {
         match self {
-            Via::Script(sc) if !UNBOUNDED.contains(&tool) => Some(
+            Via::Script(sc) if !unbounded => Some(
                 sc.deadline
                     .saturating_duration_since(Instant::now())
                     .saturating_sub(GRACE),
@@ -287,19 +282,17 @@ mod tests {
     }
 
     #[test]
-    fn bash_keeps_its_own_timeout() {
+    fn an_unbounded_tool_keeps_its_own_timeout() {
         let sc = ScriptCall::new(
             false,
             Posture::AskPerCommand,
             Instant::now() + Duration::from_secs(5),
         );
         let via = Via::Script(&sc);
-        for exempt in ["bash", "write", "edit", "apply_patch"] {
-            assert!(via.budget(exempt).is_none(), "{exempt}");
-        }
+        assert!(via.budget(true).is_none());
         assert!(via
-            .budget("read")
+            .budget(false)
             .is_some_and(|d| d <= Duration::from_secs(5)));
-        assert!(Via::Model.budget("read").is_none());
+        assert!(Via::Model.budget(false).is_none());
     }
 }

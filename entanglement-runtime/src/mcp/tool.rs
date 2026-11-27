@@ -208,6 +208,7 @@ pub(crate) fn dead_client() -> Arc<McpClient> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ArgKind;
 
     fn def(name: &str) -> McpToolDef {
         McpToolDef {
@@ -373,17 +374,35 @@ mod tests {
             capability_of("mcp__search__mystery", &registry).expect("unannotated tool registered");
 
         assert_eq!(
-            research.resolve("mcp__search__webSearch", read_caps, None, None),
+            research.resolve(
+                "mcp__search__webSearch",
+                read_caps,
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Allow,
             "a read-annotated MCP tool must run in research mode"
         );
         assert_eq!(
-            research.resolve("mcp__search__mystery", unannotated_caps, None, None),
+            research.resolve(
+                "mcp__search__mystery",
+                unannotated_caps,
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Deny,
             "an unannotated MCP tool is class-denied write, so research refuses it"
         );
         assert_eq!(
-            build.resolve("mcp__search__mystery", unannotated_caps, None, None),
+            build.resolve(
+                "mcp__search__mystery",
+                unannotated_caps,
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Allow,
             "the same unannotated tool is allowed under build"
         );

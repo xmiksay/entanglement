@@ -174,6 +174,15 @@ pub trait Tool: Send + Sync {
         }
     }
 
+    /// Whether a `rhai` script's nested call to this tool runs past the
+    /// script's remaining time budget instead of being cut at it: a tool
+    /// that bounds itself (a command with its own timeout derived from the
+    /// budget, #419), or one a dropped future could leave half-done (a file
+    /// write cut between backup and write, ADR-0212). Default `false`.
+    fn script_unbounded(&self) -> bool {
+        false
+    }
+
     /// Whether the spec joins the one surface every session is advertised
     /// ([`crate::tool_advertising::surface`]). Default `false`: registered is
     /// callable (by a script, by name), not model-facing.

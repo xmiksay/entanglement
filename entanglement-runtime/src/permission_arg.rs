@@ -70,7 +70,7 @@ pub fn permission_workdir(tools: &ToolRegistry, tool: &str, input: &str) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_names::{is_non_maskable, known_tool_names};
+    use crate::tool_names::{is_non_maskable, LIBRARY_TOOL_NAMES};
 
     /// One input carrying every field any tool's argument or workdir reads,
     /// so each tool that declares one yields it from this input.
@@ -83,9 +83,11 @@ mod tests {
     #[test]
     fn the_declared_scope_matches_what_is_extracted() {
         let tools = crate::host::every_tool("/p".into());
-        for tool in known_tool_names()
+        let names = tools.names();
+        for tool in names
             .iter()
-            .copied()
+            .map(String::as_str)
+            .chain(LIBRARY_TOOL_NAMES.iter().copied())
             .chain(["mcp__gh__create"])
         {
             let scope = permission_scope(&tools, tool);
@@ -114,10 +116,20 @@ mod tests {
     #[test]
     fn every_maskable_known_tool_takes_an_argument() {
         let tools = crate::host::every_tool("/p".into());
-        for tool in known_tool_names() {
+        let names = tools.names();
+        for tool in names
+            .iter()
+            .map(String::as_str)
+            .chain(LIBRARY_TOOL_NAMES.iter().copied())
+        {
+            // A tool graded as another (`call_grading`) is never graded
+            // under its own name either.
+            let graded_as_itself = tools
+                .get(tool)
+                .is_none_or(|t| t.call_grading("{}").is_none());
             assert_eq!(
                 permission_scope(&tools, tool).arg != ArgKind::None,
-                !is_non_maskable(tool),
+                !is_non_maskable(tool) && graded_as_itself,
                 "{tool}: maskable but declares no argument — implement \
                  `Tool::permission_scope`, or exempt it here if it truly takes none"
             );
@@ -283,6 +295,7 @@ mod tests {
                 tool,
                 &control,
                 arg.as_deref(),
+                ArgKind::Text,
                 None,
             )
         };

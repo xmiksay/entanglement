@@ -11,7 +11,7 @@
 //! unchanged rather than inventing a second vocabulary check. A *known* name
 //! dispatch never grades under its own name (`mcp`, the discovery tools, the
 //! script-only read variants `read_raw`/`*_json`, the bookkeeping Control
-//! tools — `tool_names::NON_MASKABLE_TOOLS`, #843/#849) is the same
+//! tools — `tool_vocab::non_maskable_reason`, #843/#849) is the same
 //! invisible no-op and warns with the reason instead. For `propose_plan`
 //! the no-op is enforced, not incidental: the matcher skips a rule naming a
 //! non-maskable tool (`mode::rules`), so only its `plan` class grades it.
@@ -24,7 +24,7 @@ use serde_yaml::{Mapping, Value};
 use super::scope_warn::{is_scoped, ScopedRule};
 use super::RawLayer;
 use crate::mode::{capability_class, rule_tool_name};
-use crate::tool_names::{is_recognized_mask_entry, non_maskable_reason};
+use crate::tool_vocab::{is_recognized_mask_entry, non_maskable_reason};
 
 /// The three rule-list keys a `modes:` mode entry (`mode::ModeTuning`) and
 /// the `permissions:` ceiling (`config::ceiling::RawCeiling`) both carry.

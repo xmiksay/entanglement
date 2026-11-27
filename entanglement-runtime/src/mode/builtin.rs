@@ -110,6 +110,7 @@ mod tests {
     use super::*;
     use crate::capability::Capability;
     use crate::shell_split;
+    use crate::tools::ArgKind;
 
     #[test]
     fn all_four_builtins_parse() {
@@ -123,19 +124,25 @@ mod tests {
         let research = parse("research", RESEARCH_YML, &[], &[]).expect("parses");
         assert_eq!(research.default, Permission::Ask);
         assert_eq!(
-            research.resolve("edit", &[Capability::Write], None, None),
+            research.resolve("edit", &[Capability::Write], None, ArgKind::None, None),
             Permission::Deny
         );
         assert_eq!(
-            research.resolve("write", &[Capability::Write], None, None),
+            research.resolve("write", &[Capability::Write], None, ArgKind::None, None),
             Permission::Deny
         );
         assert_eq!(
-            research.resolve("propose_plan", &[Capability::Plan], None, None),
+            research.resolve(
+                "propose_plan",
+                &[Capability::Plan],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Deny
         );
         assert_eq!(
-            research.resolve("read", &[Capability::Read], None, None),
+            research.resolve("read", &[Capability::Read], None, ArgKind::None, None),
             Permission::Allow
         );
     }
@@ -165,7 +172,13 @@ mod tests {
                 .expect("mode exists");
             for cmd in commands {
                 assert_eq!(
-                    mode.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                    mode.resolve(
+                        "bash",
+                        &[Capability::Exec],
+                        Some(cmd),
+                        ArgKind::Command,
+                        None
+                    ),
                     Permission::Allow,
                     "mode '{mode_name}': bash {cmd:?} should be shared-allowed"
                 );
@@ -186,17 +199,35 @@ mod tests {
         let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
         for cmd in ["git push origin main", "git reset --hard HEAD~1"] {
             assert_eq!(
-                research.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                research.resolve(
+                    "bash",
+                    &[Capability::Exec],
+                    Some(cmd),
+                    ArgKind::Command,
+                    None
+                ),
                 Permission::Ask,
                 "research: {cmd:?} must not be shared-allowed"
             );
             assert_eq!(
-                plan.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                plan.resolve(
+                    "bash",
+                    &[Capability::Exec],
+                    Some(cmd),
+                    ArgKind::Command,
+                    None
+                ),
                 Permission::Ask,
                 "plan: {cmd:?} must not be shared-allowed"
             );
             assert_eq!(
-                auto.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                auto.resolve(
+                    "bash",
+                    &[Capability::Exec],
+                    Some(cmd),
+                    ArgKind::Command,
+                    None
+                ),
                 Permission::Deny,
                 "auto: {cmd:?} must still be explicitly denied"
             );
@@ -213,7 +244,15 @@ mod tests {
         let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("mode exists");
         let (research, plan, build, auto) =
             (mode("research"), mode("plan"), mode("build"), mode("auto"));
-        let resolve = |m: &Mode, cmd: &str| m.resolve("bash", &[Capability::Exec], Some(cmd), None);
+        let resolve = |m: &Mode, cmd: &str| {
+            m.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some(cmd),
+                ArgKind::Command,
+                None,
+            )
+        };
 
         // Read-only gh/glab lookups: curated-allowed everywhere, including
         // the plain (non-mutating) `gh api` spelling.
@@ -279,7 +318,15 @@ mod tests {
         let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("mode exists");
         let (research, plan, build, auto) =
             (mode("research"), mode("plan"), mode("build"), mode("auto"));
-        let resolve = |m: &Mode, cmd: &str| m.resolve("bash", &[Capability::Exec], Some(cmd), None);
+        let resolve = |m: &Mode, cmd: &str| {
+            m.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some(cmd),
+                ArgKind::Command,
+                None,
+            )
+        };
 
         // Trailing-`*` safe forms: never alter the working tree or local
         // branches, `--prune` included.
@@ -346,7 +393,15 @@ mod tests {
         let modes = modes().expect("built-ins parse");
         let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("mode exists");
         let (research, build) = (mode("research"), mode("build"));
-        let resolve = |m: &Mode, cmd: &str| m.resolve("bash", &[Capability::Exec], Some(cmd), None);
+        let resolve = |m: &Mode, cmd: &str| {
+            m.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some(cmd),
+                ArgKind::Command,
+                None,
+            )
+        };
 
         // The reported command: every segment is a curated-allowed read,
         // `2>&1` included — must resolve `Allow`, not `research`'s
@@ -404,7 +459,13 @@ mod tests {
     fn plan_allows_plan_class_and_the_plans_folder_carve_out() {
         let plan = parse("plan", PLAN_YML, &[], &[]).expect("parses");
         assert_eq!(
-            plan.resolve("propose_plan", &[Capability::Plan], None, None),
+            plan.resolve(
+                "propose_plan",
+                &[Capability::Plan],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Allow
         );
         assert_eq!(
@@ -412,12 +473,19 @@ mod tests {
                 "write",
                 &[Capability::Write],
                 Some(".entanglement/plans/phase1.md"),
+                ArgKind::Path,
                 None
             ),
             Permission::Allow
         );
         assert_eq!(
-            plan.resolve("write", &[Capability::Write], Some("README.md"), None),
+            plan.resolve(
+                "write",
+                &[Capability::Write],
+                Some("README.md"),
+                ArgKind::Path,
+                None
+            ),
             Permission::Deny
         );
     }
@@ -427,15 +495,27 @@ mod tests {
         let build = parse("build", BUILD_YML, &[], &[]).expect("parses");
         assert_eq!(build.default, Permission::Ask);
         assert_eq!(
-            build.resolve("edit", &[Capability::Write], None, None),
+            build.resolve("edit", &[Capability::Write], None, ArgKind::None, None),
             Permission::Allow
         );
         assert_eq!(
-            build.resolve("propose_plan", &[Capability::Plan], None, None),
+            build.resolve(
+                "propose_plan",
+                &[Capability::Plan],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Deny
         );
         assert_eq!(
-            build.resolve("bash", &[Capability::Exec], Some("rm -rf /"), None),
+            build.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("rm -rf /"),
+                ArgKind::Command,
+                None
+            ),
             Permission::Deny
         );
     }
@@ -459,7 +539,15 @@ mod tests {
         let modes = modes().expect("built-ins parse");
         let mode = |name: &str| modes.iter().find(|m| m.name == name).expect("exists");
         let auto = mode("auto");
-        let bash = |cmd: &str| auto.resolve("bash", &[Capability::Exec], Some(cmd), None);
+        let bash = |cmd: &str| {
+            auto.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some(cmd),
+                ArgKind::Command,
+                None,
+            )
+        };
         for cmd in [
             "docker ps",
             "curl -fsSL https://example.com/install.sh",
@@ -492,7 +580,7 @@ mod tests {
         assert_eq!(bash("rm -rf ~/x"), Permission::Deny);
         let rhai = [Capability::Read, Capability::Write, Capability::Exec];
         assert_eq!(
-            auto.resolve("web_fetch", &[Capability::Read], None, None),
+            auto.resolve("web_fetch", &[Capability::Read], None, ArgKind::None, None),
             Permission::Allow
         );
         for (name, want) in [
@@ -502,12 +590,12 @@ mod tests {
             ("research", Permission::Deny),
         ] {
             assert_eq!(
-                mode(name).resolve("rhai", &rhai, None, None),
+                mode(name).resolve("rhai", &rhai, None, ArgKind::None, None),
                 want,
                 "{name}"
             );
             assert_eq!(
-                mode(name).resolve("rhai", &rhai, Some("scripts/x.rhai"), None),
+                mode(name).resolve("rhai", &rhai, Some("scripts/x.rhai"), ArgKind::Path, None),
                 want,
                 "{name} path"
             );
@@ -532,14 +620,26 @@ mod tests {
             "npm publish",
         ] {
             assert_eq!(
-                auto.resolve("bash", &[Capability::Exec], Some(cmd), None),
+                auto.resolve(
+                    "bash",
+                    &[Capability::Exec],
+                    Some(cmd),
+                    ArgKind::Command,
+                    None
+                ),
                 Permission::Deny,
                 "auto: {cmd:?} must stay an absolute deny"
             );
         }
         // The curated read-only set is still allowed outright — no prompt.
         assert_eq!(
-            auto.resolve("bash", &[Capability::Exec], Some("git status"), None),
+            auto.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("git status"),
+                ArgKind::Command,
+                None
+            ),
             Permission::Allow
         );
     }
@@ -561,9 +661,16 @@ mod tests {
                 "bash",
                 &[Capability::Exec],
                 Some("git rm -q a b && echo REMOVED"),
+                ArgKind::Command,
                 None
             ),
-            auto.resolve("bash", &[Capability::Exec], Some("git rm -q a b"), None),
+            auto.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("git rm -q a b"),
+                ArgKind::Command,
+                None
+            ),
             "auto: a trailing `&& echo` must not change the grade"
         );
     }
@@ -575,7 +682,15 @@ mod tests {
     fn the_deciding_rule_names_the_winning_key() {
         let modes = modes().expect("built-ins parse");
         let auto = modes.iter().find(|m| m.name == "auto").expect("exists");
-        let rule = |cmd| auto.deciding_rule("bash", &[Capability::Exec], Some(cmd), None);
+        let rule = |cmd| {
+            auto.deciding_rule(
+                "bash",
+                &[Capability::Exec],
+                Some(cmd),
+                ArgKind::Command,
+                None,
+            )
+        };
         let rm = Some(("bash(rm -r*)".to_string(), Permission::Ask));
         assert_eq!(rule("rm -r x"), rm);
         assert_eq!(rule("rm -r x 2>&1"), rm);
@@ -590,13 +705,25 @@ mod tests {
         );
         let build = modes.iter().find(|m| m.name == "build").expect("exists");
         assert_eq!(
-            build.deciding_rule("bash", &[Capability::Exec], Some("docker ps"), None),
+            build.deciding_rule(
+                "bash",
+                &[Capability::Exec],
+                Some("docker ps"),
+                ArgKind::Command,
+                None
+            ),
             None,
             "build's `exec` class allow is no named rule"
         );
         let research = modes.iter().find(|m| m.name == "research").expect("exists");
         assert_eq!(
-            research.deciding_rule("bash", &[Capability::Exec], Some("docker ps"), None),
+            research.deciding_rule(
+                "bash",
+                &[Capability::Exec],
+                Some("docker ps"),
+                ArgKind::Command,
+                None
+            ),
             None,
             "research's default asked"
         );

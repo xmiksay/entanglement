@@ -22,7 +22,7 @@ use super::{glob, list_files_with_extra_roots, FileList};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::path_grading::SessionWorkdirs;
-use crate::tools::Tool;
+use crate::tools::{CallGrading, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
@@ -201,6 +201,14 @@ impl Tool for GlobJsonTool {
 
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("glob_json")
+    }
+    /// Graded as `glob`, the tool it rides on (ADR-0098/0206): a
+    /// structured-output variant is never a permission escape hatch.
+    fn call_grading(&self, _input: &str) -> Option<CallGrading> {
+        Some(CallGrading {
+            name: "glob".to_string(),
+            capabilities: &[Capability::Read],
+        })
     }
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Read]

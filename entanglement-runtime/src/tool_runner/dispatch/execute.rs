@@ -108,7 +108,8 @@ impl Dispatcher {
             session,
             call_grader::scope(grader, tools.execute(&tool_call, session)),
         );
-        let execution = match via.budget(&tool) {
+        let unbounded = tools.get(&tool).is_some_and(|t| t.script_unbounded());
+        let execution = match via.budget(unbounded) {
             Some(budget) => match tokio::time::timeout(budget, run).await {
                 Ok(execution) => execution,
                 Err(_) => {

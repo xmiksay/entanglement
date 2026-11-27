@@ -168,7 +168,7 @@ impl Dispatcher {
                         self.grants
                             .record(
                                 &earner,
-                                graded_name(&call.tool),
+                                &graded_name(&self.tools, &call.tool, &call.input),
                                 arg.as_deref(),
                                 scope,
                                 &self.mode,

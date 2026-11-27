@@ -36,6 +36,7 @@ use entanglement_core::{Permission, PermissionProfile};
 use serde::Deserialize;
 
 use crate::capability::Capability;
+use crate::tools::ArgKind;
 
 /// Deserialize the config-surface spelling of a grade: `allow`/`deny`/
 /// `prompt`. `prompt` is the YAML word for core's `Permission::Ask`
@@ -129,12 +130,15 @@ impl Mode {
     /// Resolve the grade for one call under this mode. `capabilities` is the
     /// tool's own [`Capability`] slice ([`crate::capability::capability_of`]);
     /// `arg`/`workdir` are the same per-call scoping inputs
-    /// `PermissionProfile::resolve_scoped` already takes (ADR-0051/ADR-0116).
+    /// `PermissionProfile::resolve_scoped` already takes (ADR-0051/ADR-0116);
+    /// `kind` is the tool's declared argument kind — a
+    /// [`ArgKind::Command`] grades per compound segment (ADR-0197).
     pub fn resolve(
         &self,
         tool_name: &str,
         capabilities: &[Capability],
         arg: Option<&str>,
+        kind: ArgKind,
         workdir: Option<&str>,
     ) -> Permission {
         rules::resolve(
@@ -143,6 +147,7 @@ impl Mode {
             tool_name,
             capabilities,
             arg,
+            kind,
             workdir,
         )
     }
@@ -154,6 +159,7 @@ impl Mode {
         tool_name: &str,
         capabilities: &[Capability],
         arg: Option<&str>,
+        kind: ArgKind,
         workdir: Option<&str>,
     ) -> Option<(String, Permission)> {
         rules::deciding_rule(
@@ -162,6 +168,7 @@ impl Mode {
             tool_name,
             capabilities,
             arg,
+            kind,
             workdir,
         )
     }
@@ -214,22 +221,34 @@ mod tests {
         let research = table.get("research").expect("research exists");
 
         assert_eq!(
-            research.resolve("edit", &[Capability::Write], None, None),
+            research.resolve("edit", &[Capability::Write], None, ArgKind::None, None),
             Permission::Deny,
             "edit -> Deny (Write is class-denied)"
         );
         assert_eq!(
-            research.resolve("read", &[Capability::Read], None, None),
+            research.resolve("read", &[Capability::Read], None, ArgKind::None, None),
             Permission::Allow,
             "read -> Allow (Read is class-allowed)"
         );
         assert_eq!(
-            research.resolve("bash", &[Capability::Exec], Some("find ."), None),
+            research.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("find ."),
+                ArgKind::Command,
+                None
+            ),
             Permission::Allow,
             "bash find . -> Allow (bash(find *) scoped rule)"
         );
         assert_eq!(
-            research.resolve("bash", &[Capability::Exec], Some("curl x"), None),
+            research.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("curl x"),
+                ArgKind::Command,
+                None
+            ),
             Permission::Ask,
             "bash curl x -> Ask (the default)"
         );
@@ -273,12 +292,12 @@ mod tests {
         let profile = PermissionProfile::new(Permission::Allow).with("write", Permission::Deny);
         let ceiling = Mode::from_permission_profile(&profile);
         assert_eq!(
-            ceiling.resolve("edit", &[Capability::Write], None, None),
+            ceiling.resolve("edit", &[Capability::Write], None, ArgKind::None, None),
             Permission::Deny,
             "edit is Write-capable even though the ceiling rule is spelled `write`"
         );
         assert_eq!(
-            ceiling.resolve("read", &[Capability::Read], None, None),
+            ceiling.resolve("read", &[Capability::Read], None, ArgKind::None, None),
             Permission::Allow
         );
     }
@@ -297,12 +316,19 @@ mod tests {
                 "write",
                 &[Capability::Write],
                 Some(".entanglement/plans/phase1.md"),
+                ArgKind::Path,
                 None
             ),
             Permission::Allow
         );
         assert_eq!(
-            ceiling.resolve("write", &[Capability::Write], Some("README.md"), None),
+            ceiling.resolve(
+                "write",
+                &[Capability::Write],
+                Some("README.md"),
+                ArgKind::Path,
+                None
+            ),
             Permission::Deny
         );
     }

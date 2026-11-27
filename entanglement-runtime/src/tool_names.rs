@@ -110,10 +110,9 @@ pub const DISCOVERY_TOOLS: &[&str] = &[
 
 /// The names a mode/ceiling rule can spell but never match (#843, #849): the
 /// six discovery tools and the bookkeeping Control tools take a bypass
-/// before any rule is read (ADR-0226 Maskability, ADR-0232), core unwraps the
-/// `mcp` envelope to `mcp__<server>__<tool>` before dispatch, and the
-/// script-only read variants grade as the tool they ride on
-/// (`dispatch::grade::graded_name`). `propose_plan` is graded, but only by
+/// before any rule is read (ADR-0226 Maskability, ADR-0232), and core unwraps
+/// the `mcp` envelope to `mcp__<server>__<tool>` before dispatch.
+/// `propose_plan` is graded, but only by
 /// its `plan` class — a rule naming it is skipped by the matcher
 /// (`mode::rules`), so the class is the one gate. A config rule naming one
 /// warns ([`non_maskable_reason`]). `agent`/`agent_send` are absent on
@@ -126,9 +125,6 @@ pub const NON_MASKABLE_TOOLS: &[&str] = &[
     LIST_MCP_TOOL,
     MCP_TOOLS_TOOL,
     MCP_TOOL,
-    "read_raw",
-    "glob_json",
-    "grep_json",
     POLL_TOOL,
     ASK_USER_TOOL,
     UPDATE_TASKS_TOOL,
@@ -153,12 +149,6 @@ pub fn non_maskable_reason(tool: &str) -> Option<String> {
                      `mcp__<server>__<tool>` name — name those, or remove the \
                      server from config"
             .to_string(),
-        "read_raw" => "`read_raw` is graded as the `read` tool — name `read(<pattern>)` \
-                       (the tool); a bare `read` rule is the whole read class \
-                       (read/grep/glob)"
-            .to_string(),
-        "glob_json" => "`glob_json` is graded as `glob` — name `glob` instead".to_string(),
-        "grep_json" => "`grep_json` is graded as `grep` — name `grep` instead".to_string(),
         POLL_TOOL | ASK_USER_TOOL | UPDATE_TASKS_TOOL => format!(
             "`{tool}` is session bookkeeping — it only collects or reports work already \
              authorized, so it is always available, not maskable (ADR-0232)"
@@ -191,29 +181,16 @@ pub fn is_capability_name(name: &str) -> bool {
     CAPABILITIES.contains(&name)
 }
 
-/// The compile-time vocabulary of literal tool names a mask entry or
-/// permission rule key can spell out (#623): the root-contained quintet plus
-/// `apply_patch`, `bash`, [`RHAI_TOOL`], and every runtime-owned tool.
-/// Deliberately independent of what's *actually registered* this run —
-/// `bash`/`rhai` are env/feature-gated and MCP tools connect after profiles
-/// load — so a config naming a real but currently-inactive tool never
-/// false-positives here. Two consumers: [`is_recognized_mask_entry`], and —
-/// via [`known_tool_names`] — the engine-free roster `skutter inspect agents`
-/// grades a profile against (it has no `ToolRegistry` to ask). Not the
-/// advertised roster (see `ToolRegistry::specs`/`names` for that).
-const KNOWN_TOOL_NAMES: &[&str] = &[
-    "read",
-    "glob",
-    "grep",
-    "edit",
-    "write",
-    "apply_patch",
-    "bash",
+/// Every tool name the library itself routes or registers — the
+/// executor's own routes and the registry tools it ships (`load_skill`,
+/// `http`). An embedder's stale-rule check joins its own tools' names to
+/// this list.
+pub const LIBRARY_TOOL_NAMES: &[&str] = &[
     RHAI_TOOL,
-    "web_fetch",
     ASK_USER_TOOL,
     POLL_TOOL,
     PROPOSE_PLAN_TOOL,
+    REQUEST_MODE_TOOL,
     AGENT_TOOL,
     AGENT_SEND_TOOL,
     UPDATE_TASKS_TOOL,
@@ -224,100 +201,24 @@ const KNOWN_TOOL_NAMES: &[&str] = &[
     LIST_MCP_TOOL,
     MCP_TOOLS_TOOL,
     MCP_TOOL,
-    "read_raw",
-    "glob_json",
-    "grep_json",
     HTTP_TOOL,
 ];
-
-/// The compile-time literal tool vocabulary ([`KNOWN_TOOL_NAMES`]), for a
-/// surface that must grade a profile with no live registry in hand
-/// (`skutter inspect agents`, `crate::tool_state`). Names only — whether any
-/// given one is registered this run is a runtime fact this list deliberately
-/// does not claim.
-pub fn known_tool_names() -> &'static [&'static str] {
-    KNOWN_TOOL_NAMES
-}
-
-/// Whether `entry` — one item from an agent's `tools:`/`disallowed_tools:`
-/// mask, or the tool part of a `permission:` rule key — names something a
-/// stale-config check can vouch for (#623): a known literal tool name
-/// ([`KNOWN_TOOL_NAMES`]), a `*`/`?` wildcard pattern (ADR-0148 — matched dynamically, so it can't be
-/// checked against a fixed list), or an MCP tool (`mcp__<server>__<tool>`,
-/// unknowable until the server connects, #426). Anything else is very likely
-/// a stale or typo'd name — e.g. a tool retired by a rename (#605/#606:
-/// `bash_output`/`agent_poll`/`agent_spawn` replaced by `poll`/`agent`, or
-/// ADR-0226's retired discovery/envelope names) — worth a startup warning so a masked-out config doesn't
-/// silently degrade (ADR-0161 "Config churn", ADR-0166).
-pub fn is_recognized_mask_entry(entry: &str) -> bool {
-    entry.contains('*')
-        || entry.contains('?')
-        || entry.starts_with("mcp__")
-        || KNOWN_TOOL_NAMES.contains(&entry)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn recognizes_known_literal_tool_names() {
-        for name in KNOWN_TOOL_NAMES {
-            assert!(is_recognized_mask_entry(name), "{name} should be known");
-        }
-    }
-
-    #[test]
-    fn recognizes_tools_globs_and_mcp_tools() {
-        assert!(is_recognized_mask_entry("read"));
-        assert!(is_recognized_mask_entry("write"));
-        assert!(is_recognized_mask_entry("*"));
-        assert!(is_recognized_mask_entry("mcp__*"));
-        assert!(is_recognized_mask_entry("mcp__docs__search"));
-        assert!(is_recognized_mask_entry("bash(git *)"));
-    }
-
-    #[test]
-    fn flags_removed_and_typo_d_tool_names() {
-        for gone in [
-            "bash_output",
-            "agent_poll",
-            "agent_spawn",
-            "raed",
-            // #916: the argv `call` tool.
-            "call",
-            // ADR-0226 retirements.
-            "explore",
-            "describe",
-            "invoke",
-            "mcp_enable",
-            "responses_tool_search",
-        ] {
-            assert!(!is_recognized_mask_entry(gone), "{gone} is retired");
-        }
-    }
-
-    #[test]
     fn non_maskable_names_are_the_ones_dispatch_never_grades_by_name() {
-        for tool in DISCOVERY_TOOLS
-            .iter()
-            .chain(&[MCP_TOOL, "read_raw", "glob_json", "grep_json"])
-        {
+        for tool in DISCOVERY_TOOLS.iter().chain(&[MCP_TOOL]) {
             assert!(is_non_maskable(tool), "{tool} must be non-maskable");
             assert!(non_maskable_reason(tool).is_some(), "{tool} needs a reason");
         }
-        for maskable in ["bash", "read", "glob", RHAI_TOOL, "mcp__gh__x", "mcp__*"] {
+        for maskable in [RHAI_TOOL, HTTP_TOOL, "mcp__gh__x", "mcp__*"] {
             assert!(non_maskable_reason(maskable).is_none(), "{maskable}");
         }
         let mcp = non_maskable_reason(MCP_TOOL).unwrap();
         assert!(mcp.contains("remove the server from config"), "{mcp}");
-        let glob = non_maskable_reason("glob_json").unwrap();
-        assert!(glob.contains("name `glob`"), "{glob}");
-        let raw = non_maskable_reason("read_raw").unwrap();
-        assert!(
-            raw.contains("read(<pattern>)") && raw.contains("read class"),
-            "{raw}"
-        );
         let list = non_maskable_reason(LIST_MCP_TOOL).unwrap();
         assert!(list.contains("not maskable"), "{list}");
     }

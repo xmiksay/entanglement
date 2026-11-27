@@ -8,7 +8,7 @@ use crate::host::grep::{compile_regex, scan_matches};
 use crate::host::walk::MAX_RESULTS;
 use crate::host::{glob, list_files_with_extra_roots, FileList};
 use crate::path_grading::SessionWorkdirs;
-use crate::tools::Tool;
+use crate::tools::{CallGrading, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
@@ -72,6 +72,14 @@ impl Tool for GrepJsonTool {
 
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("grep_json")
+    }
+    /// Graded as `grep`, the tool it rides on (ADR-0098/0206): a
+    /// structured-output variant is never a permission escape hatch.
+    fn call_grading(&self, _input: &str) -> Option<CallGrading> {
+        Some(CallGrading {
+            name: "grep".to_string(),
+            capabilities: &[Capability::Read],
+        })
     }
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Read]

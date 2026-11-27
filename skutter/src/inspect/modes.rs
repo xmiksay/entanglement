@@ -11,7 +11,7 @@
 //! Runs with **no engine**, like every other `inspect` subcommand, so the
 //! roster is the fixed, always-registered host quintet-plus-two, `apply_patch`/
 //! `load_skill`, and the runtime-owned pseudo-tools
-//! ([`crate::capability::static_capability_of`]) rather than a live
+//! ([`crate::tool_vocab::static_capability_of`]) rather than a live
 //! [`crate::tools::ToolRegistry`] — an MCP/endpoint tool is dynamic and
 //! environment-dependent, out of scope for a static report.
 
@@ -20,9 +20,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::capability::{bypasses_grading, static_capability_of};
+use crate::capability::bypasses_grading;
 use crate::config::Config;
 use crate::mode::{self, Mode, ModeTable};
+use crate::tool_vocab::static_capability_of;
+use crate::tools::ArgKind;
 
 /// The known roster this view grades against, in a stable display order.
 const ROSTER: &[&str] = &[
@@ -52,7 +54,7 @@ const ROSTER: &[&str] = &[
 /// Build the resolved mode table exactly as `services.rs` does at real startup
 /// (built-ins + `config.yml` `modes:` tuning, validated against a real
 /// capability resolver) — `inspect` has no live `ToolRegistry`, so it uses
-/// the no-registry static resolver (`capability::static_capability_of`).
+/// the no-registry static resolver (`tool_vocab::static_capability_of`).
 fn resolved_table(config: &Config) -> Result<ModeTable> {
     mode::build_table(&config.modes, &static_capability_of)
         .context("building the permission mode table from config.yml `modes:`")
@@ -177,7 +179,7 @@ pub(super) fn render_mode_detail(m: &Mode) -> String {
             } else {
                 format!(
                     "{:?}",
-                    m.resolve(tool, capabilities.unwrap_or(&[]), None, None)
+                    m.resolve(tool, capabilities.unwrap_or(&[]), None, ArgKind::None, None)
                 )
             };
             vec![(*tool).to_string(), outcome]

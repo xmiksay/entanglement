@@ -173,6 +173,7 @@ pub fn build_table(
 mod tests {
     use super::*;
     use crate::mode::builtin;
+    use crate::tools::ArgKind;
 
     fn research() -> Mode {
         builtin::modes()
@@ -203,7 +204,13 @@ mod tests {
         let tuned = apply(&research(), &tuning, &capability_of)
             .expect("this is exactly the ADR §5 example");
         assert_eq!(
-            tuned.resolve("bash", &[Capability::Exec], Some("cargo check"), None),
+            tuned.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("cargo check"),
+                ArgKind::Command,
+                None
+            ),
             Permission::Allow
         );
     }
@@ -326,7 +333,13 @@ mod tests {
         };
         let tuned = apply(&research(), &tuning, &capability_of).expect("narrowing always allowed");
         assert_eq!(
-            tuned.resolve("bash", &[Capability::Exec], Some("curl x"), None),
+            tuned.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("curl x"),
+                ArgKind::Command,
+                None
+            ),
             Permission::Deny
         );
     }
@@ -352,7 +365,13 @@ mod tests {
         };
         let tuned = apply(&research(), &tuning, &capability_of).expect("both accepted");
         assert_eq!(
-            tuned.resolve("bash", &[Capability::Exec], Some("cargo test --lib"), None),
+            tuned.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("cargo test --lib"),
+                ArgKind::Command,
+                None
+            ),
             Permission::Allow
         );
     }
@@ -380,13 +399,19 @@ mod tests {
         let table = build_table(&tuning, &capability_of).expect("valid tuning");
         let research = table.get("research").expect("research exists");
         assert_eq!(
-            research.resolve("bash", &[Capability::Exec], Some("cargo check"), None),
+            research.resolve(
+                "bash",
+                &[Capability::Exec],
+                Some("cargo check"),
+                ArgKind::Command,
+                None
+            ),
             Permission::Allow
         );
         // An untouched mode is unaffected.
         let build = table.get("build").expect("build exists");
         assert_eq!(
-            build.resolve("edit", &[Capability::Write], None, None),
+            build.resolve("edit", &[Capability::Write], None, ArgKind::None, None),
             Permission::Allow
         );
     }

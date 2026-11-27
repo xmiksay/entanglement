@@ -97,6 +97,10 @@ impl Tool for WriteTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("write")
     }
+    /// A cut between backup and write would lose the undo (ADR-0212).
+    fn script_unbounded(&self) -> bool {
+        true
+    }
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Write]
     }

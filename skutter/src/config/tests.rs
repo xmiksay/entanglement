@@ -78,6 +78,7 @@ fn ceiling_grade(
         tool,
         capabilities,
         None,
+        crate::tools::ArgKind::None,
         None,
     )
 }

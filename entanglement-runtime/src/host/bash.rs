@@ -200,6 +200,10 @@ impl Tool for BashTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("bash")
     }
+    /// Its own `timeout` is derived from a script's budget (#419).
+    fn script_unbounded(&self) -> bool {
+        true
+    }
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Exec]
     }

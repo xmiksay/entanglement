@@ -8,7 +8,7 @@ use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
 use crate::path_grading::resolve_under_root;
-use crate::tools::{ArgKind, PermissionScope, Tool};
+use crate::tools::{ArgKind, CallGrading, PermissionScope, Tool};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -256,6 +256,14 @@ impl Tool for ReadRawTool {
 
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read_raw")
+    }
+    /// Graded as `read`, the tool it rides on (ADR-0098/0206): a
+    /// structured-output variant is never a permission escape hatch.
+    fn call_grading(&self, _input: &str) -> Option<CallGrading> {
+        Some(CallGrading {
+            name: "read".to_string(),
+            capabilities: &[Capability::Read],
+        })
     }
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Read]

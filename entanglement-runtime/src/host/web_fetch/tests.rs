@@ -138,7 +138,7 @@ fn builtin_modes_grade_web_fetch_like_an_outbound_command() {
         table
             .get(mode)
             .unwrap()
-            .resolve(WEB_FETCH_TOOL, caps, url, None)
+            .resolve(WEB_FETCH_TOOL, caps, url, ArgKind::Text, None)
     };
     assert_eq!(grade("build"), Permission::Allow);
     assert_eq!(grade("research"), Permission::Ask);
@@ -172,7 +172,7 @@ fn grading_uses_the_normalized_url_so_spelling_tricks_cannot_dodge_a_deny() {
     ] {
         let input = serde_json::json!({ "url": raw }).to_string();
         let arg = WebFetchTool::new().unwrap().permission_arg(&input);
-        let grade = mode.resolve(WEB_FETCH_TOOL, &caps, arg.as_deref(), None);
+        let grade = mode.resolve(WEB_FETCH_TOOL, &caps, arg.as_deref(), ArgKind::Text, None);
         assert_eq!(grade, Permission::Deny, "{raw:?} must stay denied");
     }
 }

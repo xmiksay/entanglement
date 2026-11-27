@@ -86,7 +86,9 @@ impl Dispatcher {
         tool: &str,
         via: Via<'_>,
     ) -> Result<ToolRegistry, String> {
-        if let Some(budget) = via.budget(tool).filter(|_| tool.starts_with("mcp__")) {
+        // An MCP tool is not registered until it connects, so it is never
+        // one that declares itself unbounded.
+        if let Some(budget) = via.budget(false).filter(|_| tool.starts_with("mcp__")) {
             if let Some(target) = self.connect_target(tool) {
                 self.await_connect(target, budget).await?;
             }

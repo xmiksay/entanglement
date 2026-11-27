@@ -79,6 +79,10 @@ impl Tool for ApplyPatchTool {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("apply_patch")
     }
+    /// A cut between backup and write would lose the undo (ADR-0212).
+    fn script_unbounded(&self) -> bool {
+        true
+    }
     fn capabilities(&self) -> &'static [Capability] {
         &[Capability::Write]
     }

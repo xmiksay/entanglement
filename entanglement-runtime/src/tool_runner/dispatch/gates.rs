@@ -95,7 +95,7 @@ impl Dispatcher {
             .credentialed_host(&call.tool, &call.input)
             .filter(|host| !self.http_gate.is_approved(&self.session, host));
         let run = Cleared::Run(None);
-        let floored = self.floored(graded_name(&call.tool), &call.input);
+        let floored = self.floored(tools, &call.tool, &call.input);
         // ADR-0228: a trusted script, or one the user chose **Run all** for,
         // passes every remaining gate — a graded `Ask`, escape-root (a
         // single-use token the host tool spends), the credentialed-`http`
@@ -178,12 +178,7 @@ impl Dispatcher {
         // A per-call grading override: the tool tells us what name and
         // capabilities to grade as (e.g. an embedder's `invoke` -> its target).
         let call_grade = tools.get(tool).and_then(|t| t.call_grading(input));
-        // Read-variants grade as the tool they ride on (ADR-0098/0206);
-        // a per-call override wins over that.
-        let graded = match &call_grade {
-            Some(cg) => cg.name.as_str(),
-            None => graded_name(tool),
-        };
+        let graded = call_grade.as_ref().map_or(tool, |cg| cg.name.as_str());
         let inputs = GradeInputs {
             tools,
             resolver: &*self.resolver,
@@ -200,8 +195,8 @@ impl Dispatcher {
 
     /// Whether this call is a write the floor carries at `Ask` (ADR-0228) —
     /// in every mode, `auto` included.
-    pub(super) fn floored(&self, tool: &str, input: &str) -> bool {
-        crate::rhai_trust::floored_write(tool, input, &self.files_root, &self.trust)
+    pub(super) fn floored(&self, tools: &ToolRegistry, tool: &str, input: &str) -> bool {
+        crate::rhai_trust::floored_write(tools, tool, input, &self.files_root, &self.trust)
     }
 
     /// What makes a retry of `call` the same call (ADR-0247): the session
@@ -209,11 +204,12 @@ impl Dispatcher {
     /// a default grade, or an `Ask` from elsewhere (an ancestor's clamp),
     /// keys on the argument as before.
     fn repeat_of(&self, call: &Call, arg: Option<&str>) -> run_limits::Repeat {
-        let tool = graded_name(&call.tool);
+        let tool = &graded_name(&self.tools, &call.tool, &call.input);
         let rule = self.mode_table.get(&self.mode).and_then(|mode| {
             let capabilities = capability::capability_of(tool, &self.tools).unwrap_or(&[]);
             let workdir = crate::permission::permission_workdir(&self.tools, tool, &call.input);
-            mode.deciding_rule(tool, capabilities, arg, workdir.as_deref())
+            let kind = crate::permission::permission_scope(&self.tools, tool).arg;
+            mode.deciding_rule(tool, capabilities, arg, kind, workdir.as_deref())
         });
         match rule {
             Some((key, Permission::Ask)) => run_limits::Repeat::Rule(key),

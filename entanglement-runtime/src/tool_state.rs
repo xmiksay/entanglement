@@ -97,23 +97,9 @@ pub fn graded(permission: &PermissionProfile, tool: &str) -> ToolState {
     }
 }
 
-/// The roster an **engine-free** surface grades against: the compile-time
-/// literal tool vocabulary, minus `read_raw` — an internal alias of `read` the
-/// model is never shown (ADR-0098). MCP tools are necessarily absent: no
-/// server connects in a view that spawns no engine, so their names are
-/// unknowable there.
-pub fn static_roster() -> Vec<&'static str> {
-    crate::tool_names::known_tool_names()
-        .iter()
-        .copied()
-        .filter(|t| *t != "read_raw")
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_names::{AGENT_TOOL, PROPOSE_PLAN_TOOL};
 
     #[test]
     fn grade_drives_the_three_states() {
@@ -139,21 +125,5 @@ mod tests {
         // A scoped rule agreeing with the bare grade adds no noise.
         let quiet = PermissionProfile::new(Permission::Ask).with("bash(*)", Permission::Ask);
         assert_eq!(graded(&quiet, "bash").label(), "asks");
-    }
-
-    #[test]
-    fn static_roster_covers_the_built_ins_and_hides_read_raw() {
-        let roster = static_roster();
-        for expected in [
-            "read",
-            "write",
-            "bash",
-            "poll",
-            AGENT_TOOL,
-            PROPOSE_PLAN_TOOL,
-        ] {
-            assert!(roster.contains(&expected), "{expected} missing: {roster:?}");
-        }
-        assert!(!roster.contains(&"read_raw"), "{roster:?}");
     }
 }

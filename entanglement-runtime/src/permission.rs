@@ -156,10 +156,14 @@ pub fn clamp_to_base(
     tool: &str,
     capabilities: &[crate::capability::Capability],
     arg: Option<&str>,
+    kind: crate::tools::ArgKind,
     workdir: Option<&str>,
 ) -> Permission {
     let ceiling = crate::mode::Mode::from_permission_profile(base);
-    min_permission(perm, ceiling.resolve(tool, capabilities, arg, workdir))
+    min_permission(
+        perm,
+        ceiling.resolve(tool, capabilities, arg, kind, workdir),
+    )
 }
 
 /// The session + its ancestor chain (nearest first), walking `guard`'s parent
@@ -213,6 +217,7 @@ fn rank(p: Permission) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ArgKind;
     use entanglement_core::Agent;
 
     fn profile(name: &str) -> Agent {
@@ -441,11 +446,27 @@ mod tests {
             .with("write", Permission::Deny)
             .with("edit", Permission::Allow);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "edit", &caps, None, None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "edit",
+                &caps,
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Allow
         );
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "apply_patch", &caps, None, None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "apply_patch",
+                &caps,
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Deny
         );
         // A `*` rule meets a named one by length: the long credentials deny
@@ -461,6 +482,7 @@ mod tests {
                 "bash",
                 &exec,
                 Some("cat .credentials"),
+                ArgKind::Command,
                 None
             ),
             Permission::Deny
@@ -472,27 +494,67 @@ mod tests {
         // Allow-all base (the embedded default) never changes the agent's grade.
         let open = PermissionProfile::new(Permission::Allow);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &open, "bash", &[], None, None),
+            clamp_to_base(
+                Permission::Allow,
+                &open,
+                "bash",
+                &[],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Allow
         );
         assert_eq!(
-            clamp_to_base(Permission::Ask, &open, "bash", &[], None, None),
+            clamp_to_base(
+                Permission::Ask,
+                &open,
+                "bash",
+                &[],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Ask
         );
         // A base `bash: ask` tightens an agent's Allow to Ask, but leaves a
         // stricter agent Deny untouched (least-privilege wins either way).
         let base = PermissionProfile::new(Permission::Allow).with("bash", Permission::Ask);
         assert_eq!(
-            clamp_to_base(Permission::Allow, &base, "bash", &[], None, None),
+            clamp_to_base(
+                Permission::Allow,
+                &base,
+                "bash",
+                &[],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Ask
         );
         assert_eq!(
-            clamp_to_base(Permission::Deny, &base, "bash", &[], None, None),
+            clamp_to_base(
+                Permission::Deny,
+                &base,
+                "bash",
+                &[],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Deny
         );
         // The base never loosens: base Allow over an agent Ask stays Ask.
         assert_eq!(
-            clamp_to_base(Permission::Ask, &base, "read", &[], None, None),
+            clamp_to_base(
+                Permission::Ask,
+                &base,
+                "read",
+                &[],
+                None,
+                ArgKind::None,
+                None
+            ),
             Permission::Ask
         );
     }
@@ -512,6 +574,7 @@ mod tests {
                 "edit",
                 &[crate::capability::Capability::Write],
                 None,
+                ArgKind::None,
                 None
             ),
             Permission::Deny,
@@ -524,6 +587,7 @@ mod tests {
                 "read",
                 &[crate::capability::Capability::Read],
                 None,
+                ArgKind::None,
                 None
             ),
             Permission::Allow
@@ -547,6 +611,7 @@ mod tests {
                 "bash",
                 &[],
                 None,
+                ArgKind::None,
                 Some("/etc/cron.d")
             ),
             Permission::Deny
@@ -564,6 +629,7 @@ mod tests {
                 "bash",
                 &[],
                 Some("rm -rf /"),
+                ArgKind::Command,
                 None
             ),
             Permission::Deny
@@ -575,6 +641,7 @@ mod tests {
                 "bash",
                 &[],
                 Some("git status"),
+                ArgKind::Command,
                 None
             ),
             Permission::Allow
@@ -595,6 +662,7 @@ mod tests {
                 "bash",
                 &[],
                 Some("find . && rm x"),
+                ArgKind::Command,
                 None
             ),
             Permission::Deny
@@ -608,6 +676,7 @@ mod tests {
                 "bash",
                 &[],
                 Some("find . && git status"),
+                ArgKind::Command,
                 None
             ),
             Permission::Allow
