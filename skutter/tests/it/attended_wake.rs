@@ -9,10 +9,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use entanglement_core::{Holly, InMsg, OutEvent, PendingApproval, Permission, SessionId};
+use entanglement_core::{Holly, InMsg, OutEvent, PendingApproval, SessionId};
 use entanglement_runtime::attendance::Attendance;
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::policy::PermissionResolver;
+use entanglement_runtime::policy::{Grade, PermissionResolver};
 use entanglement_runtime::session_store::{LogPayload, SessionStore};
 use entanglement_runtime::ToolRegistry;
 use skutter::serve::{router, Rejoin};
@@ -29,7 +29,7 @@ struct Slow(Arc<dyn PermissionResolver>);
 
 #[async_trait]
 impl PermissionResolver for Slow {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
         tokio::time::sleep(Duration::from_millis(400)).await;
         self.0.resolve(session, tool, input).await
     }

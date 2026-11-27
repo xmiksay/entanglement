@@ -47,9 +47,11 @@ The library runs no hooks. Lifecycle hooks moved to `skutter`, which runs
 them from the seams any embedder has: a blocking `pre_tool_use` is a
 `PermissionResolver` wrapper (`skutter::hooks::HookResolver`), every other
 point a subscriber on the `InMsg`/`OutEvent` fan-out
-(`skutter::hooks::spawn`). No new trait replaces them. Site passes
-`Hooks::default()` to `spawn_tool_executor_with_policy` and nexial names no
-hook item. What changes:
+(`skutter::hooks::spawn`). No new trait replaces them; a resolver's `Deny`
+can now carry its reason. Site passes `Hooks::default()` to
+`spawn_tool_executor_with_policy` and nexial names no hook item; both
+implement `PermissionResolver`, so both change its return type. What
+changes:
 
 - **Removed API:** the `entanglement_runtime::hooks` module (`Hooks`,
   `HookSpec`, `HookEvent`); `ToolExecutorBuilder::hooks`;
@@ -59,22 +61,32 @@ hook item. What changes:
   `serde_yaml::Value` (`Null` when absent), no longer a parsed `Hooks`: the
   library no longer validates it, so a typo in it is no longer a config
   load error in the library.
-- **Changed behaviour (`skutter`, awaiting the maintainer's confirmation
-  on #964):** a `pre_tool_use` veto grades the call `Deny` — the model sees
-  the plain `denied by mode … use /mode to switch` text, whose `/mode`
-  advice is misleading for a hook veto, and the hook's own output is logged
-  instead of returned. The hooks run wherever the resolver is asked (once
-  per session in a sub-agent call's ancestor chain, each run naming that
-  ancestor; `propose_plan` and an in-call redirect hop included) and match
-  the graded tool name (`read_raw` → `read`, `glob_json` → `glob`,
-  `grep_json` → `grep`, a `call_grading` target), so a `tools: [read_raw]`
-  filter never matches. `post_tool_use` fires on the `ToolOutput` of every
-  host-tool call the runtime was asked to run (`ToolExec`) — a refused one
-  included, a script's nested calls not, the executor's own routes
-  (`agent`, `poll`, `ask_user`, … — as in 0.7) not — and runs asynchronously
-  after the result folded back instead of before, on its own worker, so a
-  formatter hook races the agent's next call on the same file. Its `input`
-  is still the workdir-rewritten one (`path_grading::rewrite`, now public).
+- **Changed API:** `PermissionResolver::resolve` and
+  `resolve_with_capabilities` return `policy::Grade` (`Allow | Ask |
+  Deny(Option<String>)`), not `Permission`. A `Deny(Some(reason))` reaches
+  the model verbatim as the call's error result, in place of the
+  `denied by mode … use /mode to switch` text, which a `Deny(None)` still
+  gets. A resolver that grades by mode alone returns `permission.into()`;
+  a vetoing one returns `Grade::deny(reason)`. `tool_runner::grade_in_scope`
+  returns `(Grade, mode)`, so a redirect hop's refusal carries the reason too.
+- **Changed behaviour (`skutter`, signed off on #964):** a `pre_tool_use`
+  veto grades the call `Deny` with the hook's reason, so the model gets the
+  same `tool X blocked by pre_tool_use hook: …` text as in 0.7. The hooks
+  run wherever the resolver is asked (`propose_plan` and an in-call
+  redirect hop included). Known limitation until #936: a sub-agent's call
+  runs them once per session in its ancestor chain, each run naming that
+  ancestor. They match the graded tool name (`read_raw` → `read`,
+  `glob_json` → `glob`, `grep_json` → `grep`, a `call_grading` target), so a
+  `tools: [read_raw]` filter never matches. `post_tool_use` is observe-only
+  telemetry: it fires on the `ToolOutput` of a host-tool call the runtime ran
+  (`ToolExec`, a measured `duration_ms`) — not a refused call, not a
+  script's nested calls, not the executor's own routes (`agent`, `poll`,
+  `ask_user`, … — as in 0.7) — and runs asynchronously after the result
+  folded back instead of before, on its own worker, so a formatter hook
+  races the agent's next call on the same file. Synchronous post hooks run
+  inside `skutter`'s own tools, script calls included, once host tools
+  (#968) and the file/exec bindings (#933) move there. Its `input` is still
+  the workdir-rewritten one (`path_grading::rewrite`, now public).
   `user_prompt_submit` runs on the first event a prompt causes. Details:
   [hooks §9](../../../architecture/gates/hooks-and-seams.md).
 - **Instead:** drop `Hooks::default()` from `spawn_tool_executor_with_policy`

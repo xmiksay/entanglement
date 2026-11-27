@@ -13,7 +13,7 @@ use entanglement_core::{
     stream_from_response, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest, LlmResponse,
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::policy::{GrantStore, PermissionResolver};
+use entanglement_runtime::policy::{Grade, GrantStore, PermissionResolver};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
@@ -61,17 +61,17 @@ impl Tool for EchoBash {
 /// A resolver that answers a single fixed grade for every call and records what
 /// it was asked — the multi-tenant embedder's DB lookup, stubbed.
 struct FixedResolver {
-    grade: Permission,
+    grade: Grade,
     seen: Arc<Mutex<Vec<(SessionId, String, String)>>>,
 }
 #[async_trait]
 impl PermissionResolver for FixedResolver {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
         self.seen
             .lock()
             .unwrap()
             .push((session.clone(), tool.to_string(), input.to_string()));
-        self.grade
+        self.grade.clone()
     }
 }
 
@@ -197,7 +197,7 @@ async fn collect(
 async fn custom_resolver_allow_runs_without_approval() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let resolver = Arc::new(FixedResolver {
-        grade: Permission::Allow,
+        grade: Grade::Allow,
         seen: seen.clone(),
     });
     let holly = spawn_with_policy("echo hi", resolver, Arc::new(RecordingGrants::default()));
@@ -227,10 +227,11 @@ async fn custom_resolver_allow_runs_without_approval() {
     );
 }
 
-#[tokio::test]
-async fn custom_resolver_deny_refuses_without_request() {
+/// Run one `bash` call graded `grade` by a [`FixedResolver`] and return its
+/// events, asserting it neither parked nor ran.
+async fn denied_events(grade: Grade) -> Vec<OutEvent> {
     let resolver = Arc::new(FixedResolver {
-        grade: Permission::Deny,
+        grade,
         seen: Arc::new(Mutex::new(Vec::new())),
     });
     let holly = spawn_with_policy("rm -rf", resolver, Arc::new(RecordingGrants::default()));
@@ -238,7 +239,6 @@ async fn custom_resolver_deny_refuses_without_request() {
     let sub = holly.subscribe();
     holly.send(InMsg::prompt(sid.clone(), "rm")).await.unwrap();
     let events = collect(sub, &sid).await;
-
     assert!(
         !events
             .iter()
@@ -246,16 +246,40 @@ async fn custom_resolver_deny_refuses_without_request() {
         "no approval expected on custom Deny"
     );
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, OutEvent::ToolOutput { output, .. } if output.contains("denied"))),
-        "custom Deny should report a denial; got {events:?}"
-    );
-    assert!(
         !events.iter().any(
             |e| matches!(e, OutEvent::ToolOutput { output, .. } if output.starts_with("ran:"))
         ),
         "custom Deny must not run the tool"
+    );
+    events
+}
+
+fn tool_output(events: &[OutEvent]) -> Option<&str> {
+    events.iter().find_map(|e| match e {
+        OutEvent::ToolOutput { output, .. } => Some(output.as_str()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn custom_resolver_deny_refuses_without_request() {
+    let events = denied_events(Grade::Deny(None)).await;
+    assert_eq!(
+        tool_output(&events),
+        Some("tool `bash` denied by mode `build` — use /mode to switch"),
+        "a reasonless Deny reports the mode deny; got {events:?}"
+    );
+}
+
+/// #964: an embedder resolver's deny reason reaches the model verbatim, in
+/// place of the mode-deny text and its `/mode` advice.
+#[tokio::test]
+async fn custom_resolver_deny_reason_reaches_the_model() {
+    let events = denied_events(Grade::deny("tenant acme may not run bash")).await;
+    assert_eq!(
+        tool_output(&events),
+        Some("tenant acme may not run bash"),
+        "got {events:?}"
     );
 }
 
@@ -269,7 +293,7 @@ async fn custom_resolver_ask_then_always_routes_through_custom_grant_store() {
         recorded: recorded.clone(),
     });
     let resolver = Arc::new(FixedResolver {
-        grade: Permission::Ask,
+        grade: Grade::Ask,
         seen: Arc::new(Mutex::new(Vec::new())),
     });
     // Valid JSON so the runtime extracts the argument-scoped grant key (#173).

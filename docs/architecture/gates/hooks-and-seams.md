@@ -9,12 +9,13 @@ ingress, for policy, telemetry and notifications. Hooks are
 **`skutter`'s** (`skutter::hooks`, #964): neither core nor the library
 executor runs or knows any hook. They hang off seams every embedder already
 has — the pluggable `PermissionResolver` (below) and the `InMsg`/`OutEvent`
-fan-out — so no new protocol or library surface exists.
+fan-out — so no hook seam exists in the library or the protocol; the one
+library change is that a resolver's `Deny` carries its reason (`Grade`).
 
 | point | fires | can block? | payload |
 | --- | --- | --- | --- |
-| `pre_tool_use` | while a call is graded: `HookResolver` wraps `skutter`'s `ModeResolver`, so it runs wherever the executor asks the resolver — every graded model call (the `agent`/`agent_send` gate and `propose_plan` included), a script's launch and each nested binding call, a redirect hop's in-call grade | **yes** — a non-zero exit grades the call `Deny`: the tool neither prompts nor runs and the model gets the plain mode-deny text; the hook's output is logged (`warn`), not shown | `{event, session, tool, input}` |
-| `post_tool_use` | on the `ToolOutput` of a host-tool call the runtime was asked to run (`ToolExec`, matched by `(session, request_id)`) — a refused call included, a script's nested calls not (they emit no `ToolExec`). The executor's own routes fire nothing, as in 0.7: `agent`, `agent_send`, `poll`, `ask_user`, `propose_plan`, `request_mode`, the `rhai` launch and the discovery tools but `load_skill` | no — observational (exit code logged, never fed to the model); it runs after the result folded back, so it cannot rewrite it | `{event, session, tool, input, output, is_error, exit_code}` — `input` as the executor ran it: a `/cd` session's relative path arguments joined onto its workdir (`path_grading::rewrite` over `ToolExec.workdir`, as in 0.7 and as `pre_tool_use` grades it), since the hook runs from the project root; `is_error` (#636, ADR-0176) is the same structured classification that rides `OutEvent::ToolOutput`; `exit_code` (#681, ADR-0186) is the observed process exit status for `bash` (JSON `null` for every other tool and for a killed process) |
+| `pre_tool_use` | while a call is graded: `HookResolver` wraps `skutter`'s `ModeResolver`, so it runs wherever the executor asks the resolver — every graded model call (the `agent`/`agent_send` gate and `propose_plan` included), a script's launch and each nested binding call, a redirect hop's in-call grade | **yes** — a non-zero exit grades the call `Deny` carrying the hook's reason: the tool neither prompts nor runs and the model gets `tool X blocked by pre_tool_use hook: <output>` (as in 0.7), not the mode-deny text; the reason is also logged (`warn`) | `{event, session, tool, input}` |
+| `post_tool_use` | on the `ToolOutput` of a host-tool call the runtime ran (`ToolExec`, matched by `(session, request_id)`, with a measured `duration_ms` — ADR-0176's "it ran" mark; `update_tasks`'s ack is the one unmeasured run). A refused call fires nothing, nor does a call declined at the door by argument validation; a script's nested calls are not covered (they emit no `ToolExec`). The executor's own routes fire nothing, as in 0.7: `agent`, `agent_send`, `poll`, `ask_user`, `propose_plan`, `request_mode`, the `rhai` launch and the discovery tools but `load_skill` | no — observe-only telemetry (exit code logged, never fed to the model); it runs after the result folded back, so it cannot rewrite it | `{event, session, tool, input, output, is_error, exit_code}` — `input` as the executor ran it: a `/cd` session's relative path arguments joined onto its workdir (`path_grading::rewrite` over `ToolExec.workdir`, as in 0.7 and as `pre_tool_use` grades it), since the hook runs from the project root; `is_error` (#636, ADR-0176) is the same structured classification that rides `OutEvent::ToolOutput`; `exit_code` (#681, ADR-0186) is the observed process exit status for `bash` (JSON `null` for every other tool and for a killed process) |
 | `user_prompt_submit` | on an inbound `InMsg::Prompt` (run when the first event it causes arrives) | no — observational | `{event, session, prompt}` |
 | `session_start` | on `OutEvent::SessionStarted` — every session, root or child, incl. a compaction successor and each session a resume re-announces | no | `{event, session, source, parent, predecessor, agent, model, root}` — `source` is `resume` when an `InMsg::Resume`'s records name the id, else `compact` when it has a `predecessor`, else `fresh` |
 | `session_end` | on `OutEvent::SessionEnded` / `SessionHibernated` | no | `{event, session, reason, parent, agent}` — `reason`: `hibernated`, `compacted` (the source after its `Compacted`), else `closed` |
@@ -50,36 +51,39 @@ pluggable decision every call passes.
   spawns children can't orphan them. A timeout or a spawn failure counts as a
   **failure**, so a `pre_tool_use` hook that can't launch **fails closed**
   (denies the call) rather than letting it through.
-- **`pre_tool_use` is a grade.** The executor asks the resolver once per
-  session in a call's ancestor chain (below), so a sub-agent's call runs the
-  hooks once per ancestor, each payload naming that session; a veto from any
-  of them denies. A `Control` tool that bypasses grading (the discovery
-  tools, `ask_user`, `update_tasks`, …) never reaches it. The hook sees the
+- **`pre_tool_use` is a grade.** `HookResolver` returns
+  `Grade::deny(reason)` on a veto, and the executor hands that reason to the
+  model in place of the mode-deny text (below). Known limitation, fixed by
+  #936: the executor asks the resolver once per session in a call's
+  ancestor chain, so a sub-agent's call runs the hooks once per ancestor —
+  N sequential hook processes at depth N, each with
+  `ENTANGLEMENT_SESSION_ID` naming an ancestor that did not make the call
+  (an audit hook logs phantom calls); a veto from any of them denies. A
+  `Control` tool that bypasses grading (the discovery tools, `ask_user`,
+  `update_tasks`, …) never reaches it. The hook sees the
   call's **grade identity**, not the raw call: `read_raw`/`glob_json`/
   `grep_json` arrive as `read`/`glob`/`grep`, a `Tool::call_grading` override
   as its target, a rhai launch with its root-rewritten graded input — so a
   `tools:` filter (and `ENTANGLEMENT_TOOL_NAME`) must name the graded tool.
-- **`post_tool_use` is asynchronous.** It runs on the watcher after the
-  result folded back, so it races the agent's next call: a formatter
-  (`prettier --write` on `write`/`edit`) can run before or after the next
-  `read`/`edit` of the same file — in the same batch or the next turn — or
-  overwrite the agent's next write. A hook that changes the workspace makes
-  the loop non-deterministic; keep `post_tool_use` to telemetry, or format
-  at turn end (`stop`). A script's nested writes are not formatted at all
-  (they emit no `ToolExec`).
-- **Changed from 0.7 — awaiting the maintainer's confirmation on #964.**
-  Each follows from decision B (no hook seam in the executor):
-  (a) a `pre_tool_use` veto no longer returns the hook's reason to the model,
-  which instead gets the generic mode-deny text — including its misleading
-  `use /mode to switch` advice, though no mode caused the deny; changing that
-  text needs a library change. (b) A sub-agent's call runs `pre_tool_use`
-  once per ancestor, N sequential hook processes at depth N (each up to
-  `timeout_secs`), each with `ENTANGLEMENT_SESSION_ID` naming an ancestor
-  that did not make the call — an audit hook logs phantom calls.
-  (c) `post_tool_use` no longer fires for a rhai script's nested binding
-  calls. (d) `post_tool_use` also fires for refused calls, and runs after
-  the result folded back (the race above) instead of before. Plus the
-  graded-name matching above.
+- **`post_tool_use` is asynchronous and observe-only.** It runs on the
+  watcher after the result folded back, so it races the agent's next call:
+  a formatter (`prettier --write` on `write`/`edit`) can run before or after
+  the next `read`/`edit` of the same file — in the same batch or the next
+  turn — or overwrite the agent's next write. A hook that changes the
+  workspace makes the loop non-deterministic; keep `post_tool_use` to
+  telemetry, or format at turn end (`stop`). A script's nested writes are
+  not seen at all (they emit no `ToolExec`). Once host tools (#968) and the
+  file/exec bindings (#933) move to `skutter`, it runs `post_tool_use`
+  synchronously inside its own tools, script calls included, which makes a
+  formatter deterministic again.
+- **Changed from 0.7 (signed off on #964).** Each follows from decision B
+  (no hook seam in the executor): (b) the per-ancestor `pre_tool_use` runs
+  above, until #936; (c) `post_tool_use` no longer fires for a rhai
+  script's nested binding calls; (d) `post_tool_use` runs after the result
+  folded back (the race above) instead of before. `pre_tool_use` also runs
+  on `propose_plan` and redirect-hop grades and matches the graded name
+  (above), since the hook is the resolver. (a), the veto reason, is kept:
+  a resolver's `Deny` carries it.
 - **Wiring (`services.rs`):** `skutter` builds the `ModeResolver` itself and
   hands the builder `HookResolver::new(mode_resolver, hooks)` via
   `.resolver(..)` when any `pre_tool_use` command exists. `hooks::spawn`
@@ -111,14 +115,20 @@ embedder that stores rules per user in its own DB swaps both without forking the
 ~350-line executor — keeping the shared interception ladder, spawn bounds,
 rhai, and plan/tasks tools.
 
-- **`PermissionResolver::resolve(session, tool, input) → Permission`** decides one
+- **`PermissionResolver::resolve(session, tool, input) → Grade`** decides one
   session's `Allow|Ask|Deny` grade (async — a real embedder hits a DB, and the
-  ladder already runs in a detached task). It runs **where the mode/base
-  resolution ran before**, but the sub-agent ancestor clamp (ADR-0024) and
-  spawn bounds stay in the ladder **on top of** it: the executor snapshots
-  the call's ancestor chain (`permission::ancestor_chain`) in the loop and takes
-  the least-privileged resolver grade across it (`resolve_effective`), so a tenant
-  rule can never widen a child beyond its parent. `apply_grant` then upgrades a
+  ladder already runs in a detached task). A `Grade::Deny(Some(reason))`
+  reaches the model verbatim as the call's result — from the dispatch gate,
+  the `rhai` launch and `propose_plan`; a redirect hop's refusal quotes it —
+  in place of the `denied by mode … use /mode to switch` text a `Deny(None)`
+  gets (#964);
+  across the ancestor chain the first deny, leaf first, gives the reason.
+  It runs **where the mode/base resolution ran before**, but the sub-agent
+  ancestor clamp (ADR-0024) and spawn bounds stay in the ladder **on top
+  of** it: the executor snapshots the call's ancestor chain
+  (`permission::ancestor_chain`) in the loop and takes the least-privileged
+  resolver grade across it (`resolve_effective`), so a tenant rule can
+  never widen a child beyond its parent. `apply_grant` then upgrades a
   resolved `Ask` to `Allow` from a `GrantStore` grant.
 - **`GrantStore`** persists + reads "always allow" grants (§ agents-and-permissions
   #174). `record(session, tool, arg, scope, mode)` is async so an `ApprovalScope::Always`

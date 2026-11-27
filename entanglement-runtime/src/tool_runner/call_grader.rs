@@ -14,10 +14,10 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use entanglement_core::{Permission, SessionId};
+use entanglement_core::SessionId;
 
 use super::dispatch::grade::{grade_call, GradeInputs};
-use crate::policy::{GrantStore, PermissionResolver};
+use crate::policy::{Grade, GrantStore, PermissionResolver};
 
 /// The owned twin of [`GradeInputs`].
 pub(crate) struct CallGrader {
@@ -36,7 +36,7 @@ pub(crate) struct CallGrader {
 impl CallGrader {
     /// Grade `(tool, input)` as `dispatch` would grade the same call, minus
     /// what can't apply mid-call (the escape-root gate, parking).
-    pub(crate) async fn grade(&self, tool: &str, input: &str) -> Permission {
+    pub(crate) async fn grade(&self, tool: &str, input: &str) -> Grade {
         let inputs = GradeInputs {
             resolver: &*self.resolver,
             chain: &self.chain,
@@ -49,7 +49,7 @@ impl CallGrader {
             capability_override: None,
         };
         match grade_call(&inputs, tool, input).await.0 {
-            Permission::Ask if self.run_all => Permission::Allow,
+            Grade::Ask if self.run_all => Grade::Allow,
             grade => grade,
         }
     }
@@ -69,8 +69,9 @@ pub(crate) async fn scope<F: Future>(grader: CallGrader, f: F) -> F::Output {
 }
 
 /// Grade `(tool, input)` against the running call's context, with the
-/// session's mode name for messages; `None` when no executor scoped one.
-pub async fn grade_in_scope(tool: &str, input: &str) -> Option<(Permission, String)> {
+/// session's mode name for messages; `None` when no executor scoped one. A
+/// `Deny` carries the resolver's reason when it gave one (#964).
+pub async fn grade_in_scope(tool: &str, input: &str) -> Option<(Grade, String)> {
     let grader = CALL_GRADER.try_with(Arc::clone).ok()?;
     let grade = grader.grade(tool, input).await;
     Some((grade, grader.mode().to_string()))
@@ -78,7 +79,7 @@ pub async fn grade_in_scope(tool: &str, input: &str) -> Option<(Permission, Stri
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use entanglement_core::PermissionProfile;
+    use entanglement_core::{Permission, PermissionProfile};
 
     use super::*;
     use crate::tools::ToolRegistry;
@@ -116,6 +117,7 @@ mod tests {
     use super::*;
     use crate::mode::{Limits, Mode, Rules};
     use crate::tools::ToolRegistry;
+    use entanglement_core::Permission;
 
     fn mode() -> Mode {
         Mode {
@@ -128,7 +130,7 @@ mod tests {
         }
     }
 
-    async fn grade(cmd: &str) -> Option<(Permission, String)> {
+    async fn grade(cmd: &str) -> Option<(Grade, String)> {
         grade_in_scope("bash", &format!(r#"{{"command":"{cmd}"}}"#)).await
     }
 
@@ -144,9 +146,9 @@ mod tests {
         })
         .await;
         let research = || "research".to_string();
-        assert_eq!(graded.0, Some((Permission::Deny, research())));
-        assert_eq!(graded.1, Some((Permission::Allow, research())));
-        assert_eq!(graded.2, Some((Permission::Ask, research())));
+        assert_eq!(graded.0, Some((Grade::Deny(None), research())));
+        assert_eq!(graded.1, Some((Grade::Allow, research())));
+        assert_eq!(graded.2, Some((Grade::Ask, research())));
     }
 
     /// A trusted / **Run all** script's call passes an `Ask` hop like the
@@ -156,7 +158,7 @@ mod tests {
         let mut grader = grader_for(mode(), ToolRegistry::new());
         grader.run_all = true;
         let graded = scope(grader, async { (grade("make").await, grade("rm x").await) }).await;
-        assert_eq!(graded.0.map(|g| g.0), Some(Permission::Allow));
-        assert_eq!(graded.1.map(|g| g.0), Some(Permission::Deny));
+        assert_eq!(graded.0.map(|g| g.0), Some(Grade::Allow));
+        assert_eq!(graded.1.map(|g| g.0), Some(Grade::Deny(None)));
     }
 }

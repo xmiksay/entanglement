@@ -68,7 +68,10 @@ async fn a_rhai_veto_refuses_a_trusted_launch() {
     let _exec = wire_trusted(&holly, &root, tools, hook_for("rhai", "exit 1"), trusted);
 
     let output = run(&holly).await;
-    assert!(output.contains("tool `rhai` denied"), "got: {output}");
+    assert_eq!(
+        output, "tool `rhai` blocked by pre_tool_use hook: hook exited with code 1",
+        "got: {output}"
+    );
     assert!(!root.join("no.txt").exists(), "the vetoed script ran");
 }
 
@@ -84,7 +87,10 @@ async fn a_nested_veto_wins_under_a_trusted_script() {
     let _exec = wire_trusted(&holly, &root, tools, hook_for("write", "exit 1"), trusted);
 
     let output = run(&holly).await;
-    assert!(output.contains("tool `write` denied"), "got: {output}");
+    assert!(
+        output.contains("tool `write` blocked by pre_tool_use hook"),
+        "got: {output}"
+    );
     assert!(!root.join("no.txt").exists(), "the vetoed write ran");
 }
 
@@ -136,6 +142,9 @@ async fn a_nested_veto_refuses_an_inline_scripts_call() {
     let events = collect(sub, &sid).await;
 
     let output = tool_output(&events).expect("a ToolOutput");
-    assert!(output.contains("tool `write` denied"), "got: {output}");
+    assert!(
+        output.contains("tool `write` blocked by pre_tool_use hook"),
+        "got: {output}"
+    );
     assert!(!root.join("no.txt").exists(), "the vetoed write ran");
 }

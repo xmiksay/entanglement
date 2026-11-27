@@ -36,15 +36,21 @@ use crate::permission::{clamp_to_base, permission_workdir};
 use crate::permission_path::grading_arg;
 use crate::tools::SharedRegistry;
 
+mod grade;
+pub(crate) use grade::deny_text;
+pub use grade::Grade;
+
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`
 /// lets a multi-tenant embedder derive the tenant; `input` (the raw JSON tool
-/// input) enables argument-scoped rules. Called once per session in a call's
-/// ancestor chain — the executor clamps the results least-privilege, so a
-/// resolver need only decide a single session's own grade. Async because a real
-/// embedder hits a DB; the ladder already runs in a detached task.
+/// input) enables argument-scoped rules. A [`Grade::Deny`] may carry the
+/// reason the model is told instead of the mode-deny text (#964). Called
+/// once per session in a call's ancestor chain — the executor clamps the
+/// results least-privilege, so a resolver need only decide a single
+/// session's own grade. Async because a real embedder hits a DB; the ladder
+/// already runs in a detached task.
 #[async_trait]
 pub trait PermissionResolver: Send + Sync {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission;
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade;
 
     /// Resolve with caller-supplied capabilities (ADR-0249 per-call grading):
     /// the same grade as [`resolve`][Self::resolve], but the tool's capability
@@ -57,7 +63,7 @@ pub trait PermissionResolver: Send + Sync {
         tool: &str,
         input: &str,
         _capabilities: &[crate::capability::Capability],
-    ) -> Permission {
+    ) -> Grade {
         self.resolve(session, tool, input).await
     }
 }
@@ -177,12 +183,12 @@ impl ModeResolver {
 
 #[async_trait]
 impl PermissionResolver for ModeResolver {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
         let caps = {
             let registry = self.registry.read().expect("tool registry lock poisoned");
             capability::capability_of(tool, &registry).unwrap_or(&[])
         };
-        self.grade(session, tool, input, caps)
+        self.grade(session, tool, input, caps).into()
     }
 
     async fn resolve_with_capabilities(
@@ -191,8 +197,8 @@ impl PermissionResolver for ModeResolver {
         tool: &str,
         input: &str,
         capabilities: &[capability::Capability],
-    ) -> Permission {
-        self.grade(session, tool, input, capabilities)
+    ) -> Grade {
+        self.grade(session, tool, input, capabilities).into()
     }
 }
 
@@ -306,14 +312,14 @@ mod tests {
             resolver
                 .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
                 .await,
-            Permission::Allow
+            Grade::Allow
         );
         // The relative spelling already worked pre-#485 — must stay identical.
         assert_eq!(
             resolver
                 .resolve(&session, "read", r#"{"path":"src/main.rs"}"#)
                 .await,
-            Permission::Allow
+            Grade::Allow
         );
     }
 
@@ -334,7 +340,7 @@ mod tests {
             resolver
                 .resolve(&session, "read", r#"{"path":"/r/src/main.rs"}"#)
                 .await,
-            Permission::Ask
+            Grade::Ask
         );
     }
 
@@ -353,7 +359,7 @@ mod tests {
         );
         assert_eq!(
             resolver.resolve(&session, "read", r#"{"path":"x"}"#).await,
-            Permission::Deny
+            Grade::Deny(None)
         );
     }
 }

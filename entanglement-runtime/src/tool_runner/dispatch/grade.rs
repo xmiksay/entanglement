@@ -13,7 +13,7 @@ use entanglement_core::{Permission, SessionId};
 use crate::capability::Capability;
 use crate::permission::min_permission;
 use crate::permission_path::grading_arg;
-use crate::policy::{GrantStore, PermissionResolver};
+use crate::policy::{Grade, GrantStore, PermissionResolver};
 use crate::rhai_trust::Trust;
 
 /// Everything a call's grade depends on besides the call itself — what
@@ -39,7 +39,8 @@ pub(crate) struct GradeInputs<'a> {
 }
 
 /// The grade `(tool, input)` resolves to, plus the argument it was graded
-/// on: the mode grade clamped across the ancestor chain — then
+/// on: the mode grade clamped across the ancestor chain — a `Deny` returned
+/// as resolved, with its reason (#964) — then
 /// upgraded `Ask`→`Allow` by an existing mode-scoped grant. Last, a
 /// `write`/`edit`/`apply_patch` of a `*.rhai` file inside a `rhai.trusted`
 /// folder, or of a skill's `SKILL.md`/`lib.rhai`, is floored at `Ask`
@@ -50,10 +51,20 @@ pub(crate) async fn grade_call(
     g: &GradeInputs<'_>,
     tool: &str,
     input: &str,
-) -> (Permission, Option<String>) {
+) -> (Grade, Option<String>) {
     let arg = grading_arg(tool, input, g.root);
     let base = resolve_effective(g.resolver, g.chain, tool, input, g.capability_override).await;
-    let perm = apply_grant(g.grants, g.session, tool, arg.as_deref(), base, g.mode);
+    if let Grade::Deny(_) = base {
+        return (base, arg);
+    }
+    let perm = apply_grant(
+        g.grants,
+        g.session,
+        tool,
+        arg.as_deref(),
+        base.permission(),
+        g.mode,
+    );
     let perm = if perm == Permission::Allow
         && g.floor
             .is_some_and(|(trust, root)| crate::rhai_trust::floored_write(tool, input, root, trust))
@@ -62,7 +73,7 @@ pub(crate) async fn grade_call(
     } else {
         perm
     };
-    (perm, arg)
+    (perm.into(), arg)
 }
 
 /// The grade identity of a call: a script-facing read variant grades as the
@@ -106,7 +117,8 @@ pub(crate) fn apply_grant(
 /// resolve already clamps to the config ceiling internally, so folding them
 /// least-privilege here is the whole of it — no separate outer `clamp_to_base`
 /// needed. An empty chain is impossible — the leaf session is always present —
-/// but defaults to `Deny` if one ever arrives.
+/// but defaults to `Deny` if one ever arrives. A `Deny` keeps the reason of
+/// the first session in the chain (leaf first) that denied (#964).
 ///
 /// When `capability_override` is `Some` (ADR-0249 per-call grading), each
 /// session is resolved via
@@ -121,8 +133,8 @@ pub(crate) async fn resolve_effective(
     tool: &str,
     input: &str,
     capability_override: Option<&[Capability]>,
-) -> Permission {
-    let mut perm = Permission::Allow;
+) -> Grade {
+    let mut folded = Grade::Allow;
     let mut any = false;
     for session in chain {
         let grade = match capability_override {
@@ -133,13 +145,17 @@ pub(crate) async fn resolve_effective(
             }
             None => resolver.resolve(session, tool, input).await,
         };
-        perm = min_permission(perm, grade);
+        // Only a strictly lower grade replaces the fold, so a later `Deny`
+        // never overwrites the first one's reason.
+        if min_permission(folded.permission(), grade.permission()) != folded.permission() {
+            folded = grade;
+        }
         any = true;
     }
     if any {
-        perm
+        folded
     } else {
-        Permission::Deny
+        Grade::Deny(None)
     }
 }
 
@@ -150,13 +166,22 @@ mod tests {
     /// A resolver that answers a fixed grade per session id (default `Allow`),
     /// so a test can prove the executor's ancestor clamp (#311, ADR-0024) sits
     /// *on top of* the pluggable resolver.
-    struct PerSessionResolver(std::collections::HashMap<SessionId, Permission>);
+    struct PerSessionResolver(std::collections::HashMap<SessionId, Grade>);
 
     #[async_trait::async_trait]
     impl PermissionResolver for PerSessionResolver {
-        async fn resolve(&self, session: &SessionId, _tool: &str, _input: &str) -> Permission {
-            self.0.get(session).copied().unwrap_or(Permission::Allow)
+        async fn resolve(&self, session: &SessionId, _tool: &str, _input: &str) -> Grade {
+            self.0.get(session).cloned().unwrap_or(Grade::Allow)
         }
+    }
+
+    fn per_session(grades: &[(&SessionId, Grade)]) -> PerSessionResolver {
+        PerSessionResolver(
+            grades
+                .iter()
+                .map(|(s, g)| ((*s).clone(), g.clone()))
+                .collect(),
+        )
     }
 
     #[tokio::test]
@@ -166,30 +191,48 @@ mod tests {
         // The tenant rule *widens* the child to Allow, but its parent resolves
         // Ask — the chain min must clamp the child back to Ask, so a resolver can
         // never widen a sub-agent beyond its ancestor.
-        let resolver = PerSessionResolver(
-            [
-                (child.clone(), Permission::Allow),
-                (parent.clone(), Permission::Ask),
-            ]
-            .into_iter()
-            .collect(),
-        );
+        let resolver = per_session(&[(&child, Grade::Allow), (&parent, Grade::Ask)]);
         let chain = vec![child.clone(), parent.clone()];
         assert_eq!(
             resolve_effective(&resolver, &chain, "bash", "{}", None).await,
-            Permission::Ask
+            Grade::Ask
         );
         // A root (single-element chain) resolves to its own grade unchanged.
         assert_eq!(
             resolve_effective(&resolver, std::slice::from_ref(&child), "bash", "{}", None).await,
-            Permission::Allow
+            Grade::Allow
         );
-        // A parent `Deny` floors the child regardless of the tenant's Allow.
-        let deny_parent =
-            PerSessionResolver([(parent.clone(), Permission::Deny)].into_iter().collect());
+        // A parent `Deny` floors the child regardless of the tenant's Allow,
+        // and its reason comes along.
+        let deny_parent = per_session(&[(&parent, Grade::deny("parent says no"))]);
         assert_eq!(
             resolve_effective(&deny_parent, &chain, "bash", "{}", None).await,
-            Permission::Deny
+            Grade::deny("parent says no")
+        );
+    }
+
+    /// #964: the first deny in the chain (leaf first) names the reason; a
+    /// later one cannot overwrite it.
+    #[tokio::test]
+    async fn the_first_deny_in_the_chain_keeps_its_reason() {
+        let child = SessionId::new("child");
+        let parent = SessionId::new("parent");
+        let chain = vec![child.clone(), parent.clone()];
+        let both = per_session(&[
+            (&child, Grade::deny("child")),
+            (&parent, Grade::deny("parent")),
+        ]);
+        assert_eq!(
+            resolve_effective(&both, &chain, "bash", "{}", None).await,
+            Grade::deny("child")
+        );
+        let plain = per_session(&[
+            (&child, Grade::Deny(None)),
+            (&parent, Grade::deny("parent")),
+        ]);
+        assert_eq!(
+            resolve_effective(&plain, &chain, "bash", "{}", None).await,
+            Grade::Deny(None)
         );
     }
 }

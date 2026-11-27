@@ -14,7 +14,7 @@ use entanglement_runtime::host::host_tools;
 use entanglement_runtime::host_ns::{HostFn, HostNamespace};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    DefaultGrantStore, Grade, GrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
@@ -208,11 +208,11 @@ async fn custom_resolver_sees_the_target_name() {
     struct DenyTarget;
     #[async_trait::async_trait]
     impl PermissionResolver for DenyTarget {
-        async fn resolve(&self, _session: &SessionId, tool: &str, _input: &str) -> Permission {
+        async fn resolve(&self, _session: &SessionId, tool: &str, _input: &str) -> Grade {
             if tool == "read_page" {
-                Permission::Deny
+                Grade::Deny(None)
             } else {
-                Permission::Allow
+                Grade::Allow
             }
         }
     }

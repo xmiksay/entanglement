@@ -22,6 +22,7 @@ fn exec(s: &str, rid: &str, tool: &str, input: &str) -> OutEvent {
     }
 }
 
+/// The result of a call that ran: the runtime measured its duration.
 fn output(s: &str, rid: &str, text: &str, is_error: bool, exit_code: Option<i32>) -> OutEvent {
     OutEvent::ToolOutput {
         session: sid(s),
@@ -31,10 +32,20 @@ fn output(s: &str, rid: &str, text: &str, is_error: bool, exit_code: Option<i32>
         output: text.into(),
         content: Vec::new(),
         is_error,
-        duration_ms: None,
+        duration_ms: Some(1),
         exit_code,
         envelope: None,
     }
+}
+
+/// The result of a call the runtime refused (or declined at the door):
+/// no duration, since nothing ran.
+fn refused(s: &str, rid: &str) -> OutEvent {
+    let mut ev = output(s, rid, "tool `write` denied by mode `plan`", true, None);
+    if let OutEvent::ToolOutput { duration_ms, .. } = &mut ev {
+        *duration_ms = None;
+    }
+    ev
 }
 
 #[test]
@@ -61,9 +72,27 @@ fn a_run_call_fires_post_tool_use_with_its_input_and_result() {
 fn a_failed_call_carries_is_error_and_a_null_exit_code() {
     let mut t = Tracker::default();
     t.observe(&exec("s", "r1", "write", "{}"));
-    let f = t.observe(&output("s", "r1", "denied", true, None)).unwrap();
+    let f = t
+        .observe(&output("s", "r1", "disk full", true, None))
+        .unwrap();
     assert_eq!(f.payload["is_error"], true);
     assert_eq!(f.payload["exit_code"], Value::Null);
+}
+
+/// Observe-only (#964): a refused call fires nothing and leaves no open
+/// call behind; `update_tasks`'s unmeasured ack still fires.
+#[test]
+fn a_refused_call_fires_no_post_tool_use() {
+    let mut t = Tracker::default();
+    t.observe(&exec("s", "r1", "write", "{}"));
+    assert!(t.observe(&refused("s", "r1")).is_none());
+    assert!(t.execs.is_empty());
+    t.observe(&exec("s", "r2", "update_tasks", "{}"));
+    let mut ack = refused("s", "r2");
+    if let OutEvent::ToolOutput { is_error, .. } = &mut ack {
+        *is_error = false;
+    }
+    assert!(t.observe(&ack).is_some());
 }
 
 /// The executor's own routes fire nothing, as in 0.7 (`post_tool_use` ran

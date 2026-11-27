@@ -64,12 +64,15 @@ modes: {}
 # execution and on prompt ingress, for policy / telemetry / notifications (the
 # library passes this section through unparsed, #964). Three lists:
 #   pre_tool_use       — while a tool call is graded; a non-zero exit *denies*
-#                        it (the reason is logged). The policy gate. `tools`
-#                        matches the graded name (`read_raw` → `read`).
-#   post_tool_use      — after a tool's result; an observational telemetry
-#                        sink. Runs asynchronously, racing the agent's next
-#                        call, and not for a script's nested calls — a
-#                        formatter here can clobber the agent's next edit.
+#                        it (its output becomes the tool result). The policy
+#                        gate. `tools` matches the graded name (`read_raw` →
+#                        `read`).
+#   post_tool_use      — after a tool ran (never for a refused call); an
+#                        observe-only telemetry sink. Runs asynchronously,
+#                        racing the agent's next call, and not for a script's
+#                        nested calls — a formatter (`prettier --write`) here
+#                        can clobber the agent's next edit until post hooks
+#                        run inside skutter's own tools (#968, #933).
 #   user_prompt_submit — when a prompt reaches the engine; observational.
 # Six more points (#734) are observe-only — none can block anything:
 #   session_start      — a session started (`source`: fresh | resume | compact).

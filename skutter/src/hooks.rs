@@ -10,12 +10,13 @@
 //!
 //! - **`pre_tool_use`** — [`HookResolver`] wraps the permission resolver and
 //!   runs it while a call is graded. A hook that exits **non-zero denies the
-//!   call** (graded `Deny`, the hook's output logged): the tool never runs.
-//!   This is the policy gate — a hook can veto a `bash rm …` or an `edit`
-//!   outside a path.
+//!   call** (a `Deny` carrying the hook's output, which the model receives):
+//!   the tool never runs. This is the policy gate — a hook can veto a
+//!   `bash rm …` or an `edit` outside a path.
 //! - **`post_tool_use`** — fires on the `ToolOutput` of a host-tool call the
-//!   runtime was asked to run (`ToolExec`; not `agent`/`poll`/`ask_user`/…).
-//!   Observational: the exit code is logged, never fed back to the model.
+//!   runtime ran (`ToolExec`; not a refused call, not `agent`/`poll`/
+//!   `ask_user`/…, not a script's nested calls). Observe-only: the exit code
+//!   is logged, never fed back to the model.
 //! - **`user_prompt_submit`** — fires on an inbound `InMsg::Prompt`.
 //!   Observational (telemetry/logging); it does not gate the prompt.
 //! - **`session_start`/`session_end`/`stop`/`pre_compact`/`subagent_stop`/

@@ -256,14 +256,14 @@ the code, never as a description of current behaviour — that is
 | [0222](0222-no-silent-echo-first-run-onboarding-and-init.md) | No silent echo: first-run onboarding and `/init` | current; changed by #917 | — |
 | [0223](0223-non-compacting-session-fork.md) | Non-compacting session fork (`/fork`) | current; changed by #923 | — |
 | [0224](0224-session-working-directory.md) | Session working directory (`/cd`, `Spawn.workdir`) | current; changed by #916 | — |
-| [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923 | — |
+| [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923; changed by #964 | — |
 | [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923 | — |
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920; changed by #964 | — |
 | [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 (itself removed by #926); changed by #920; changed by #923 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920; changed by #923 | — |
 | [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237; changed by #925 | — |
 | [0231](0231-compaction-successor-inherits-background-work.md) | A compaction successor inherits its predecessor's background work | current; amended by 0234, 0238, 0241, 0242 | — |
-| [0232](0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md) | Spawning is graded; the bookkeeping Control tools are non-maskable | current; amended by 0235; changed by #923 | — |
+| [0232](0232-spawning-is-graded-bookkeeping-control-tools-non-maskable.md) | Spawning is graded; the bookkeeping Control tools are non-maskable | current; amended by 0235; changed by #923; changed by #964 | — |
 | [0233](0233-live-only-nested-call-events-for-rhai-scripts.md) | Live-only `NestedCall` events report a script's binding calls | current | — |
 | [0234](0234-live-sub-agents-survive-compaction.md) | Live sub-agents survive compaction | current; amended by 0236 | — |
 | [0235](0235-scoped-spawn-rules-grade-the-target.md) | Scoped spawn rules grade the target | current | — |

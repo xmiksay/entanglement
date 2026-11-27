@@ -22,10 +22,10 @@ use serde::Deserialize;
 use entanglement_core::web_fetch::{
     has_userinfo, scheme_and_host, FetchBody, FetchOutcome, HttpRequest, WebFetcher,
 };
-use entanglement_core::Permission;
 
 use crate::capability::Capability;
 use crate::http_gate::HttpGate;
+use crate::policy::Grade;
 use crate::tool_names::HTTP_TOOL;
 use crate::tools::Tool;
 
@@ -200,11 +200,12 @@ fn scrub(text: &str, secrets: &[String]) -> String {
 async fn check_hop(method: String, url: String) -> Result<()> {
     let input = serde_json::json!({ "method": method, "url": url }).to_string();
     match crate::tool_runner::grade_in_scope(HTTP_TOOL, &input).await {
-        None | Some((Permission::Allow, _)) => Ok(()),
-        Some((Permission::Deny, mode)) => {
+        None | Some((Grade::Allow, _)) => Ok(()),
+        Some((Grade::Deny(Some(reason)), _)) => bail!("redirect to {url} not followed: {reason}"),
+        Some((Grade::Deny(None), mode)) => {
             bail!("redirect to {url} not followed: `http` of that URL is denied by mode `{mode}`")
         }
-        Some((Permission::Ask, _)) => bail!(
+        Some((Grade::Ask, _)) => bail!(
             "redirect to {url} not followed: requesting that URL needs approval — call \
              http on it directly to request it"
         ),
@@ -247,6 +248,7 @@ mod tests {
     async fn a_run_all_call_follows_an_ask_hop_but_never_a_deny_hop() {
         use crate::mode::{Limits, Mode, Rules};
         use crate::tool_runner::call_grader::{scope, test_support::grader_for};
+        use entanglement_core::Permission;
         let mode = || Mode {
             name: "build".into(),
             default: Permission::Ask,

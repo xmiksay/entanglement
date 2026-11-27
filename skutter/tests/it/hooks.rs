@@ -189,9 +189,12 @@ async fn pre_tool_use_hook_blocks_the_tool() {
     let events = collect(sub, &sid).await;
 
     let output = tool_output(&events).expect("a ToolOutput");
-    // The grade carries no reason (#964): the model sees the plain deny,
-    // the hook's own output is logged.
-    assert!(output.contains("tool `read` denied"), "got: {output}");
+    // The veto's reason rides the resolver's `Deny` (#964): the model gets
+    // the hook's own output, not the mode-deny text and its `/mode` advice.
+    assert_eq!(
+        output, "tool `read` blocked by pre_tool_use hook: policy-veto",
+        "got: {output}"
+    );
     // The blocked tool never read the file.
     assert!(
         !output.contains("greetings"),
@@ -255,6 +258,37 @@ async fn post_tool_use_hook_runs_after_a_cleared_tool() {
     assert!(
         wait_for(&marker, 3).await,
         "post_tool_use side-effect never ran"
+    );
+}
+
+/// Observe-only (#964): a call refused at the gate never ran, so it fires
+/// no `post_tool_use`.
+#[tokio::test]
+async fn post_tool_use_skips_a_refused_call() {
+    let s = scratch("post-refused");
+    let root = s.0.clone();
+    let marker = root.join("post-ran");
+    let (holly, tools) = engine(&root, read_then_finish());
+    let hooks = Hooks {
+        pre_tool_use: vec![spec("exit 1")],
+        post_tool_use: vec![spec(&format!("touch {}", marker.display()))],
+        ..Default::default()
+    };
+    let _exec = wire(&holly, &root, tools, hooks);
+
+    let sid = SessionId::new("s1");
+    let sub = holly.subscribe();
+    holly
+        .send(InMsg::prompt(sid.clone(), "read"))
+        .await
+        .unwrap();
+    let events = collect(sub, &sid).await;
+
+    let output = tool_output(&events).expect("a ToolOutput");
+    assert!(output.contains("blocked by pre_tool_use hook"), "{output}");
+    assert!(
+        !wait_for(&marker, 1).await,
+        "post_tool_use fired for a refused call"
     );
 }
 

@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use entanglement_core::{AgentState, ApprovalKind, ApprovalScope, CardReason, Permission};
 
+use crate::policy::{deny_text, Grade};
 use crate::seam::ApprovalDecision;
 use crate::tool_names::RHAI_TOOL;
 use crate::tool_runner::{Dispatcher, Posture};
@@ -66,13 +67,11 @@ pub(super) async fn gate(
     let d = dispatcher;
     let root = launch_root(d, launch);
     let graded = graded_input(root, input);
-    let (perm, arg) = d.grade(&d.tools, RHAI_TOOL, &graded).await;
-    if perm == Permission::Deny {
-        return Verdict::Refuse(format!(
-            "tool `{RHAI_TOOL}` denied by mode `{}` — use /mode to switch",
-            d.mode
-        ));
-    }
+    let (grade, arg) = d.grade(&d.tools, RHAI_TOOL, &graded).await;
+    let perm = match grade {
+        Grade::Deny(reason) => return Verdict::Refuse(deny_text(RHAI_TOOL, &d.mode, reason)),
+        graded => graded.permission(),
+    };
     let escape = match parsed.source {
         Source::Path(_) => d
             .escape_root

@@ -42,14 +42,14 @@ starts a session that runs tools, so `orchestration::spawn`/`agent_send`
 climb the same ladder as a host tool (`Dispatcher::gate` —
 grade + grants (any resolver veto included), mode deny, the unattended
 collapse, the approval park) before launching. A refusal is an ordinary
-`is_error` result, and no child starts. The spawn slot is reserved first (the guard is
-loop state; the ladder may park in the detached task) and released on a
-refusal. The child's event receiver is taken only once the gate clears, so a
-long approval park can't lag it past the outbox capacity. A session that
-ends or hibernates unwinds the cards of its turn
-(`PendingDecisions::stop_attached` in the executor's lifecycle fold): tool
-and spawn cards, `ask_user` questions, plan/mode cards, a blocking script's
-nested cards. A resume re-offers a parked `ToolExec`. A background
+`is_error` result, and no child starts. The spawn slot is reserved first
+(the guard is loop state; the ladder may park in the detached task) and
+released on a refusal. The child's event receiver is taken only once the
+gate clears, so a long approval park can't lag it past the outbox
+capacity. A session that ends or hibernates unwinds the cards of its
+turn (`PendingDecisions::stop_attached` in the executor's lifecycle fold):
+tool and spawn cards, `ask_user` questions, plan/mode cards, a blocking
+script's nested cards. A resume re-offers a parked `ToolExec`. A background
 (`detached`) script's nested card is exempt there. It is no `ToolExec`, so
 nothing would re-offer it, and the script outlives the session (a compaction
 successor inherits it,

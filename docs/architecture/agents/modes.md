@@ -235,7 +235,9 @@ below realize one model:
   — redirection, substitution, a heredoc, subshell grouping) grades at the
   mode's `default` outright — never a whole-string guess. A `Deny` is
   **absolute**: a flat decline naming the mode and the way out (`` tool `x`
-  denied by mode `research` — use /mode to switch ``), no prompt, no escape
+  denied by mode `research` — use /mode to switch ``; a resolver's own
+  `Deny` reason replaces it, #964 —
+  [hooks & seams](../gates/hooks-and-seams.md)), no prompt, no escape
   hatch except the user's own `/mode`/`request_mode`; `Ask` parks an ordinary
   approval exactly as before. (The skill-alias rewrite that used to precede
   grading is gone with skill `tools:`, [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md).)

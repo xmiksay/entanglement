@@ -27,10 +27,10 @@ use regex::Regex;
 use serde::Deserialize;
 
 use entanglement_core::web_fetch::{FetchBody, FetchOutcome, WebFetcher, DEFAULT_MAX_BYTES};
-use entanglement_core::Permission;
 
 use crate::capability::Capability;
 use crate::output::MAX_OUTPUT_BYTES;
+use crate::policy::Grade;
 use crate::tools::Tool;
 
 mod html;
@@ -137,11 +137,12 @@ impl Tool for WebFetchTool {
 async fn check_hop(url: String) -> Result<()> {
     let input = serde_json::json!({ "url": url }).to_string();
     match crate::tool_runner::grade_in_scope(WEB_FETCH_TOOL, &input).await {
-        None | Some((Permission::Allow, _)) => Ok(()),
-        Some((Permission::Deny, mode)) => bail!(
+        None | Some((Grade::Allow, _)) => Ok(()),
+        Some((Grade::Deny(Some(reason)), _)) => bail!("redirect to {url} not followed: {reason}"),
+        Some((Grade::Deny(None), mode)) => bail!(
             "redirect to {url} not followed: `web_fetch` of that URL is denied by mode `{mode}`"
         ),
-        Some((Permission::Ask, _)) => bail!(
+        Some((Grade::Ask, _)) => bail!(
             "redirect to {url} not followed: fetching that URL needs approval — call \
              web_fetch on it directly to request it"
         ),

@@ -131,8 +131,10 @@ hooks are exactly that (`skutter::hooks::HookResolver`, #964):
 ```rust
 #[async_trait]
 pub trait PermissionResolver: Send + Sync {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission;
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade;
 }
+/// `Allow | Ask | Deny(Option<String>)`; `From<Permission>`.
+pub enum Grade { Allow, Ask, Deny(Option<String>) }
 #[async_trait]
 pub trait GrantStore: Send + Sync {
     fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool;
@@ -156,6 +158,11 @@ earned in `build` never upgrades a call in `research`
 A 0.6.0 store gains the parameter on both methods
 ([migration](migrations/agents-modes-and-permissions.md#mode-scoped-grants-adr-0207-8-634)).
 
+A `Grade::Deny(Some(reason))` reaches the model verbatim as the call's error
+result; a `Deny(None)` gets the `tool X denied by mode M — use /mode to
+switch` text, which points at the wrong fix for a veto of your own, so give
+one a reason (`Grade::deny(..)`, #964).
+
 `resolve` is called once per session in a call's ancestor chain; the executor
 takes the least-privileged grade across that chain itself, so your resolver
 only ever decides a *single* session's own grade — the sub-agent privilege
@@ -173,12 +180,13 @@ struct TenantResolver { tenants: HashMap<&'static str, PermissionProfile> }
 
 #[async_trait]
 impl PermissionResolver for TenantResolver {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
         let arg = permission_arg(tool, input);
-        self.tenants
-            .get(tenant_of(session))
-            .map(|profile| profile.resolve(tool, arg.as_deref()))
-            .unwrap_or(Permission::Deny) // fail closed on an unknown tenant
+        match self.tenants.get(tenant_of(session)) {
+            Some(profile) => profile.resolve(tool, arg.as_deref()).into(),
+            // Fail closed on an unknown tenant, and say why.
+            None => Grade::deny(format!("tool `{tool}` denied: unknown tenant")),
+        }
     }
 }
 ```

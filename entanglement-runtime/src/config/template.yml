@@ -76,12 +76,13 @@
 # the event JSON on stdin and ENTANGLEMENT_HOOK_EVENT / _SESSION_ID / _TOOL_NAME
 # in the env. `tools` (tool hooks only) scopes a hook to named tools; omit for
 # all. `timeout_secs` defaults to 30.
-#   pre_tool_use       — before a tool runs; a NON-ZERO EXIT BLOCKS the tool.
+#   pre_tool_use       — before a tool runs; a NON-ZERO EXIT BLOCKS the tool
+#                        and its output is the tool result the model sees.
 #                        `tools` matches the graded name (read_raw → read).
-#   post_tool_use      — after the result; observational. Runs asynchronously,
-#                        racing the agent's next call, and not for a script's
-#                        nested calls — so don't rewrite files from it (a
-#                        formatter can clobber the agent's next edit).
+#   post_tool_use      — after a tool ran (never for a refused call);
+#                        observe-only. Runs asynchronously, racing the
+#                        agent's next call, and not for a script's nested
+#                        calls (see the prettier caveat below).
 #   user_prompt_submit — when a prompt arrives; observational.
 # Observe-only lifecycle points (none can block; payload fields in brackets):
 #   session_start      — a session started [source: fresh|resume|compact].
@@ -96,6 +97,11 @@
 #      tools: [bash]
 #  post_tool_use:
 #    - command: "jq -c '{tool, is_error}' >> ~/.local/state/entanglement-tools.jsonl"
+#    # CAVEAT: a formatter here races the agent's next read/edit of the same
+#    # file and skips a script's writes, until post hooks run synchronously
+#    # inside skutter's own tools (#968, #933). Prefer formatting on `stop`.
+#    - command: "jq -r '.input.path' | xargs -r prettier --write"
+#      tools: [write, edit]
 #  user_prompt_submit:
 #    - command: "logger -t entanglement-prompt"
 #  notification:

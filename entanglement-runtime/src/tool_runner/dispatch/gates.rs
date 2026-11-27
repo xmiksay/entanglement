@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use entanglement_core::Permission;
 
 use crate::capability;
+use crate::policy::{deny_text, Grade};
 use crate::tools::ToolRegistry;
 use crate::{mode, run_limits};
 
@@ -67,14 +68,15 @@ impl Dispatcher {
     /// escape-root, the credentialed-`http` gate, the unattended collapse and
     /// the approval park. `None` when a `Stop` unwound the park.
     async fn clear(&self, tools: &ToolRegistry, call: &Call, via: Via<'_>) -> Option<Cleared> {
-        let (perm, arg) = self.grade(tools, &call.tool, &call.input).await;
-        if perm == Permission::Deny {
-            // ADR-0207 §4: absolute, no prompt, names the way out.
-            return Some(Cleared::Refused(format!(
-                "tool `{}` denied by mode `{}` — use /mode to switch",
-                call.tool, self.mode
-            )));
-        }
+        let (grade, arg) = self.grade(tools, &call.tool, &call.input).await;
+        // ADR-0207 §4: absolute, no prompt — names the way out, or gives
+        // the resolver's own reason (#964).
+        let perm = match grade {
+            Grade::Deny(reason) => {
+                return Some(Cleared::Refused(deny_text(&call.tool, &self.mode, reason)))
+            }
+            graded => graded.permission(),
+        };
         // ADR-0109: an out-of-root target forces approval unless durably
         // granted for this exact `(tool, path)`.
         let escape = self
@@ -172,7 +174,7 @@ impl Dispatcher {
         tools: &ToolRegistry,
         tool: &str,
         input: &str,
-    ) -> (Permission, Option<String>) {
+    ) -> (Grade, Option<String>) {
         // A per-call grading override: the tool tells us what name and
         // capabilities to grade as (e.g. an embedder's `invoke` -> its target).
         let call_grade = tools.get(tool).and_then(|t| t.call_grading(input));

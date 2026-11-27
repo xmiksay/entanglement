@@ -30,7 +30,7 @@ use entanglement_core::{
     PermissionProfile, SessionId,
 };
 use entanglement_runtime::permission::permission_arg;
-use entanglement_runtime::policy::{GrantStore, PermissionResolver};
+use entanglement_runtime::policy::{Grade, GrantStore, PermissionResolver};
 use entanglement_runtime::{host, tool_runner};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -48,12 +48,14 @@ struct TenantResolver {
 
 #[async_trait]
 impl PermissionResolver for TenantResolver {
-    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Permission {
+    async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
         let arg = permission_arg(tool, input);
-        self.tenants
-            .get(tenant_of(session))
-            .map(|profile| profile.resolve(tool, arg.as_deref()))
-            .unwrap_or(Permission::Deny)
+        // An unknown tenant's deny says why (#964), instead of the mode-deny
+        // text a mode grade gets.
+        match self.tenants.get(tenant_of(session)) {
+            Some(profile) => profile.resolve(tool, arg.as_deref()).into(),
+            None => Grade::deny(format!("tool `{tool}` denied: unknown tenant")),
+        }
     }
 }
 

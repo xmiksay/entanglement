@@ -23,6 +23,7 @@ use entanglement_core::{AgentState, CompactionMode, InMsg, OutEvent, SessionId};
 use entanglement_runtime::tool_names::{
     AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL,
     LIST_SKILLS_TOOL, MCP_TOOLS_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL, RHAI_TOOL,
+    UPDATE_TASKS_TOOL,
 };
 use entanglement_runtime::tools::SharedRegistry;
 use serde_json::{json, Value};
@@ -256,10 +257,17 @@ impl Tracker {
                 request_id,
                 output,
                 is_error,
+                duration_ms,
                 exit_code,
                 ..
             } => {
                 let (tool, input) = self.execs.remove(&(session.clone(), request_id.clone()))?;
+                // Observe-only (#964): a refused call never ran. The runtime
+                // measures a duration exactly when the tool ran (ADR-0176);
+                // `update_tasks`'s ack is the one unmeasured run.
+                if duration_ms.is_none() && tool != UPDATE_TASKS_TOOL {
+                    return None;
+                }
                 let extra = json!({
                     "tool": tool,
                     "input": parse_input(&input),
