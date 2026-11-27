@@ -154,7 +154,10 @@ pub async fn tui(
     app.set_active_provider(provider_name);
     app.set_agent_models(agent_models);
     app.set_agent_generation(agent_generation);
-    app.set_aux_models(aux_models);
+    app.set_aux_models(
+        aux_models,
+        crate::config::aux_models::AuxModelsPath::managed(),
+    );
     app.set_http_client(http_client);
     app.set_configured_editor(configured_editor);
     app.set_launch_mode(launch_mode);
@@ -164,11 +167,7 @@ pub async fn tui(
     app.init_head_context(root.clone());
     let config_root = root.clone();
     app.set_session_store(crate::user_dirs::session_store(&root));
-    app.set_user_layers(crate::inspect::UserLayers {
-        agents: crate::user_dirs::user_layer(crate::user_dirs::AGENTS_DIR_ENV),
-        skills: crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
-        commands: crate::user_dirs::user_layer(crate::user_dirs::COMMANDS_DIR_ENV),
-    });
+    app.set_user_layers(crate::inspect::UserLayers::from_env());
     app.set_statusline_config(tui_config.statusline.clone());
     app.apply_appearance(&tui_config, app::appearance::no_color_env(), true);
     app.set_status_refresh(statusline::spawn_probe(root.clone(), event_tx.clone()));

@@ -39,6 +39,17 @@ pub struct UserLayers {
 }
 
 impl UserLayers {
+    /// Each kind's `ENTANGLEMENT_*_DIR` override, else the real home/config
+    /// dirs — what the live TUI resolves from.
+    pub fn from_env() -> Self {
+        use crate::user_dirs::{user_layer, AGENTS_DIR_ENV, COMMANDS_DIR_ENV, SKILLS_DIR_ENV};
+        Self {
+            agents: user_layer(AGENTS_DIR_ENV),
+            skills: user_layer(SKILLS_DIR_ENV),
+            commands: user_layer(COMMANDS_DIR_ENV),
+        }
+    }
+
     /// Exactly `dir` for every kind.
     pub fn dir(dir: impl Into<std::path::PathBuf>) -> Self {
         let dir = dir.into();

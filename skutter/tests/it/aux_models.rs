@@ -28,11 +28,14 @@ fn set_round_trips_across_a_reload() {
     let (_dir, path) = tmp_path("roundtrip");
     let _ = std::fs::remove_file(&path);
 
-    let mut store = file(&path).load();
-    assert!(store.get(Purpose::Summarize).is_none());
-    file(&path)
-        .set(&mut store, Purpose::Summarize, "zai", "glm-4.5-flash")
+    assert!(file(&path).load().get(Purpose::Summarize).is_none());
+    let merged = file(&path)
+        .record(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
+    assert_eq!(
+        merged.get(Purpose::Summarize),
+        Some(("zai", "glm-4.5-flash"))
+    );
 
     // A freshly loaded store (a fresh process) sees the persisted pin.
     let reloaded = file(&path).load();
@@ -118,26 +121,24 @@ fn deny_unknown_fields_rejects_a_typo() {
 
 #[test]
 fn concurrent_set_from_two_stores_both_survive() {
-    // Two "processes" (threads, each with its own loaded store)
-    // race to pin *different* purposes against the same on-disk file (#329).
+    // Two "processes" (threads) race to pin *different* purposes against the
+    // same on-disk file (#329).
     let (_dir, path) = tmp_path("concurrent");
     let _ = std::fs::remove_file(&path);
 
     let a = std::thread::spawn({
         let path = path.clone();
         move || {
-            let mut store = file(&path).load();
             file(&path)
-                .set(&mut store, Purpose::Summarize, "zai", "glm-4.5-flash")
+                .record(Purpose::Summarize, "zai", "glm-4.5-flash")
                 .unwrap();
         }
     });
     let b = std::thread::spawn({
         let path = path.clone();
         move || {
-            let mut store = file(&path).load();
             file(&path)
-                .set(&mut store, Purpose::SessionTitle, "ollama", "llama3.1")
+                .record(Purpose::SessionTitle, "ollama", "llama3.1")
                 .unwrap();
         }
     });
@@ -168,9 +169,8 @@ fn reload_picks_up_another_process_pin() {
     assert!(store.get(Purpose::Summarize).is_none());
 
     // Another instance persists a pin directly.
-    let mut other = file(&path).load();
     file(&path)
-        .set(&mut other, Purpose::Summarize, "zai", "glm-4.5-flash")
+        .record(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
 
     assert!(
@@ -191,21 +191,20 @@ fn rewrite_is_stable_and_ordered() {
     let (_dir, path) = tmp_path("stable");
     let _ = std::fs::remove_file(&path);
 
-    let mut store = file(&path).load();
     file(&path)
-        .set(&mut store, Purpose::SessionTitle, "ollama", "llama3.1")
+        .record(Purpose::SessionTitle, "ollama", "llama3.1")
         .unwrap();
     file(&path)
-        .set(&mut store, Purpose::Summarize, "zai", "glm-4.5-flash")
+        .record(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
     let first = std::fs::read_to_string(&path).unwrap();
     // Re-setting the identical pins in the other order rewrites byte-identical
     // output (BTreeMap ⇒ deterministic, `session_title` before `summarize`).
     file(&path)
-        .set(&mut store, Purpose::Summarize, "zai", "glm-4.5-flash")
+        .record(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
     file(&path)
-        .set(&mut store, Purpose::SessionTitle, "ollama", "llama3.1")
+        .record(Purpose::SessionTitle, "ollama", "llama3.1")
         .unwrap();
     let second = std::fs::read_to_string(&path).unwrap();
     assert_eq!(first, second);
@@ -224,9 +223,8 @@ fn persisted_file_carries_the_header_comment() {
     let (_dir, path) = tmp_path("header");
     let _ = std::fs::remove_file(&path);
 
-    let mut store = file(&path).load();
     file(&path)
-        .set(&mut store, Purpose::Summarize, "zai", "glm-4.5-flash")
+        .record(Purpose::Summarize, "zai", "glm-4.5-flash")
         .unwrap();
     let body = std::fs::read_to_string(&path).unwrap();
     assert!(

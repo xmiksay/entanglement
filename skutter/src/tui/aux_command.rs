@@ -9,7 +9,7 @@
 //! it instead of the primary model. No wire traffic — this is head-side
 //! persistence, not an engine op.
 
-use crate::config::aux_models::{AuxModelStore, AuxModelsPath, Purpose};
+use crate::config::aux_models::{AuxModelStore, Purpose};
 
 use super::app::App;
 
@@ -34,24 +34,11 @@ pub(super) fn send_aux_model(app: &mut App, text: &str) {
         app.show_aux_pins();
         return;
     };
-    // Clone the Arc handle out of `app` before locking + mutating, so the
-    // subsequent `app.*` calls don't alias an immutable borrow held across the
-    // mutex guard's drop — a `set` that errors must still render via `app`.
-    let Some(store) = app.aux_models().cloned() else {
-        app.record_aux_error(
-            "no config directory for the managed aux-models file; \
-             set ENTANGLEMENT_STATE_DIR to a directory first"
-                .to_string(),
-        );
-        return;
-    };
-    let result =
-        AuxModelsPath::managed().set(&mut store.lock().unwrap(), purpose, &provider, &model);
-    match result {
+    match app.persist_aux_pin(purpose, &provider, &model) {
         Ok(()) => app.confirm_aux_pin(purpose, &provider, &model),
         Err(e) => {
-            tracing::warn!("could not persist aux-model pin: {e:#}");
-            app.record_aux_error(format!("persist failed: {e}"));
+            tracing::warn!("could not persist aux-model pin: {e}");
+            app.record_aux_error(e);
         }
     }
 }

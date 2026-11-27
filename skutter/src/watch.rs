@@ -29,8 +29,8 @@ use std::time::{Duration, SystemTime};
 use entanglement_runtime::watch::spawn_debounced_watcher;
 use sha2::{Digest, Sha256};
 
-use crate::layers::{self, UserLayer};
-use crate::user_dirs::{AGENTS_DIR_ENV, COMMANDS_DIR_ENV, SKILLS_DIR_ENV};
+use crate::layers;
+use crate::user_dirs::{user_layer_from, AGENTS_DIR_ENV, COMMANDS_DIR_ENV, SKILLS_DIR_ENV};
 
 mod live;
 use live::reload;
@@ -250,13 +250,7 @@ fn watch_paths_from(
         // layered dirs are fingerprinted here too.
         ("commands", COMMANDS_DIR_ENV),
     ] {
-        let user = match env(env_var) {
-            Some(over) => UserLayer::Dir(over.into()),
-            None => UserLayer::Home {
-                home: home.clone(),
-                config: config.clone(),
-            },
-        };
+        let user = user_layer_from(env_var, &env, || (home.clone(), config.clone()));
         for (_, dir, _) in layers::candidate_dirs(cwd, kind, &user) {
             set.insert(dir);
         }

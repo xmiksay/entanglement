@@ -89,17 +89,13 @@ impl AuxModelsPath {
 
     /// Record `purpose`'s pin in the managed file, merged against whatever is
     /// on disk under an exclusive lock (#329) — a concurrent skutter
-    /// instance's own pin, recorded since `store` was loaded, must survive
-    /// rather than being clobbered by a write from stale in-memory state —
-    /// then replace `store` with the merged pins. Returns the write error for
-    /// the caller to log (never fatal); `store` is untouched then.
-    pub fn set(
-        &self,
-        store: &mut AuxModelStore,
-        purpose: Purpose,
-        provider: &str,
-        model: &str,
-    ) -> Result<()> {
+    /// instance's own pin, recorded since the live store was loaded, must
+    /// survive rather than being clobbered by a write from stale in-memory
+    /// state — and return the merged pins for the caller to swap into its
+    /// live store. Takes no store, so the file I/O never runs under the
+    /// store's lock (an aux resolve waits on that). Returns the write error
+    /// for the caller to log (never fatal).
+    pub fn record(&self, purpose: Purpose, provider: &str, model: &str) -> Result<AuxModelStore> {
         let Some(path) = &self.0 else {
             bail!(
                 "no config directory for the managed aux-models file; \
@@ -112,8 +108,7 @@ impl AuxModelsPath {
             persist_map(path, &on_disk)?;
             Ok(on_disk)
         })?;
-        *store = AuxModelStore::in_memory(merged);
-        Ok(())
+        Ok(AuxModelStore::in_memory(merged))
     }
 }
 

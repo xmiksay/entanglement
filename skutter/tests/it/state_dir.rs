@@ -19,7 +19,7 @@ use entanglement_runtime::mcp::McpToolCache;
 use serde_json::Value;
 use skutter::config::agent_generation::AgentGenerationStore;
 use skutter::config::agent_models::AgentModelStore;
-use skutter::config::aux_models::{AuxModelStore, AuxModelsPath, Purpose};
+use skutter::config::aux_models::{AuxModelsPath, Purpose};
 use skutter::config::state_dir::{self, MCP_TOKENS_FILE, MCP_TOOLS_FILE, STATE_DIR_ENV};
 use skutter::state::{FileExtraRoots, FileMcpToolCache, McpTokenStore};
 
@@ -132,12 +132,7 @@ fn seed_pins(dir: &Path) {
         .set(PROBE, Default::default())
         .unwrap();
     AuxModelsPath::at(file(state_dir::AUX_MODELS_FILE))
-        .set(
-            &mut AuxModelStore::default(),
-            Purpose::Narrate,
-            "zai",
-            PROBE,
-        )
+        .record(Purpose::Narrate, "zai", PROBE)
         .unwrap();
     FileExtraRoots::at(file(state_dir::EXTRA_ROOTS_FILE))
         .add("read", "/state-dir-probe")

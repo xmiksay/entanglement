@@ -66,8 +66,9 @@ pub(crate) fn user_layer(env: &str) -> UserLayer {
 }
 
 /// [`user_layer`] over an injected env lookup and `(home, config)` dirs —
-/// the latter consulted only when the override is unset.
-fn user_layer_from(
+/// the latter consulted only when the override is unset. The definitions
+/// watcher maps the same way, so it watches exactly the dirs loaded.
+pub(crate) fn user_layer_from(
     env: &str,
     lookup: impl Fn(&str) -> Option<OsString>,
     dirs: impl FnOnce() -> (Option<PathBuf>, Option<PathBuf>),

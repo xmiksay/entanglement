@@ -267,8 +267,9 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   and `${config_dir}/entanglement/<kind>`. The library reads none of
   `ENTANGLEMENT_CONFIG_FILE`, `ENTANGLEMENT_ENV_FILE`,
   `ENTANGLEMENT_STATE_DIR`, `ENTANGLEMENT_*_DIR`.
-- **Changed behaviour (`skutter`):** none; every file, env var and reload
-  works as in 0.7.
+- **Changed behaviour (`skutter`):** every file, env var and reload works as
+  in 0.7; the warning for an `ENTANGLEMENT_*_DIR` that points at a missing
+  dir names the kind and the path, no longer the env var.
 - **Instead:** pass `UserLayer::Dir(path)` or `UserLayer::Home { home,
   config }` to the `*_in` loaders; build `PromptContext::load_with(root,
   &sessions)` and `SessionStore::at(dir)` (or `for_cwd(base, cwd)`); fill an

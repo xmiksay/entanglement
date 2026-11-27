@@ -67,17 +67,7 @@ impl SettingsEffects for LiveEffects<'_> {
                 purpose,
                 provider,
                 model,
-            } => {
-                let store = self.app.aux_models.clone().ok_or_else(|| {
-                    "no config directory for the managed aux-models file".to_string()
-                })?;
-                let mut store = store
-                    .lock()
-                    .map_err(|_| "the aux-models store lock is poisoned".to_string())?;
-                crate::config::aux_models::AuxModelsPath::managed()
-                    .set(&mut store, *purpose, provider, model)
-                    .map_err(|e| format!("persist failed: {e:#}"))
-            }
+            } => self.app.persist_aux_pin(*purpose, provider, model),
         }
     }
 }

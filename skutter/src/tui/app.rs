@@ -113,10 +113,12 @@ pub struct App {
     /// `(agent, overrides)` awaiting its matching `GenerationChanged` confirmation.
     pending_generation_persist: Option<(String, entanglement_provider::GenerationParams)>,
 
-    // Per-purpose aux-model pins (Issue 5): the managed `aux-models.yml` store,
-    // threaded in from the head so `/aux-model <purpose> <provider>/<model>`
-    // persists back to disk. `None` store in tests / when no config dir.
+    // Per-purpose aux-model pins (Issue 5): the live store and its managed
+    // `aux-models.yml`, threaded in from the head so `/aux-model <purpose>
+    // <provider>/<model>` persists back to disk. `None` store and a
+    // path-less file in tests.
     aux_models: Option<std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>>,
+    aux_models_path: crate::config::aux_models::AuxModelsPath,
 
     // Shared HTTP transport (#rate-limit-status): the same per-endpoint pool the
     // provider clients meter through, so the bottom info line can surface a

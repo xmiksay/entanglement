@@ -131,6 +131,7 @@ impl App {
             agent_generation: None,
             pending_generation_persist: None,
             aux_models: None,
+            aux_models_path: crate::config::aux_models::AuxModelsPath::at(None),
             http_client: None,
             configured_editor: None,
             launch_mode: Default::default(),

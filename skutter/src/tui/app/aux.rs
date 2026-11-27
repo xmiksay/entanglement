@@ -7,13 +7,38 @@ use crate::config::aux_models::Purpose;
 use super::App;
 
 impl App {
-    /// Install the managed per-purpose aux-model store (Issue 5), threaded in
-    /// from the head so `/aux-model` persists back to disk.
+    /// Install the per-purpose aux-model store and the managed file it was
+    /// loaded from (Issue 5), so `/aux-model` persists back to disk.
     pub fn set_aux_models(
         &mut self,
         store: std::sync::Arc<std::sync::Mutex<crate::config::aux_models::AuxModelStore>>,
+        path: crate::config::aux_models::AuxModelsPath,
     ) {
         self.aux_models = Some(store);
+        self.aux_models_path = path;
+    }
+
+    /// Persist `purpose`'s pin to the managed file and swap the merged pins
+    /// into the live store — the file I/O runs outside the store's lock.
+    pub(crate) fn persist_aux_pin(
+        &self,
+        purpose: Purpose,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), String> {
+        let store = self.aux_models.as_ref().ok_or_else(|| {
+            "no config directory for the managed aux-models file; \
+             set ENTANGLEMENT_STATE_DIR to a directory first"
+                .to_string()
+        })?;
+        let merged = self
+            .aux_models_path
+            .record(purpose, provider, model)
+            .map_err(|e| format!("persist failed: {e:#}"))?;
+        *store
+            .lock()
+            .map_err(|_| "the aux-models store lock is poisoned".to_string())? = merged;
+        Ok(())
     }
 
     /// Records a `/aux-model` parse error (unknown purpose, missing slash,
