@@ -210,31 +210,18 @@ pub const KERNEL: &[&str] = &[
     MCP_TOOL,
 ];
 
-/// Capability-level permission keys (#418, ADR-0114). ADR-0207 §3 replaced
-/// this table's role as the *grading* vocabulary — a mode/ceiling rule's bare
-/// class key (`read`/`write`/`exec`/`plan`/`control`) now matches by each
-/// tool's own declared [`crate::capability::Capability`] (`mode::rules`'s
-/// private `capability_class`), not this static membership list, and the
-/// agent-frontmatter/config-ceiling expansion that used to consume it
-/// (`agents::expand_capabilities`/`permission_from_value`) is retired along
-/// with it. What's left: validating an MCP server's
-/// config-side `capabilities:` annotation strings
-/// ([`is_capability_name`], `entanglement_runtime::mcp::capability_index`),
-/// orthogonal to mode/ceiling grading — the membership lists are unread.
-pub const CAPABILITIES: &[(&str, &[&str])] = &[
-    ("read", &["read", "grep", "glob"]),
-    ("write", &["edit", "write", "apply_patch"]),
-    // Membership unread since #916 removed the `call` tool: the row only
-    // keeps `call` valid in an MCP server's `capabilities:` annotation.
-    ("call", &[]),
-];
+/// Capability names an MCP server's config-side `capabilities:` annotation
+/// may use (#426). Orthogonal to mode/ceiling grading, which matches a bare
+/// class key by each tool's declared [`crate::capability::Capability`]
+/// (ADR-0207 §3), not by this list.
+pub const CAPABILITIES: &[&str] = &["read", "write", "call"];
 
 /// Whether `name` names a capability (`read`/`write`/`call`) — used by an MCP
 /// server's config-side `capabilities` annotation (#426,
 /// `entanglement_runtime::mcp::capability_index`), which validates its
 /// declared capability strings against the same table.
 pub fn is_capability_name(name: &str) -> bool {
-    CAPABILITIES.iter().any(|(n, _)| *n == name)
+    CAPABILITIES.contains(&name)
 }
 
 /// The compile-time vocabulary of literal tool names a mask entry or

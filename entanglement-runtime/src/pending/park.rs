@@ -203,14 +203,12 @@ mod tests {
         let full = scopes_for(ApprovalKind::Tool, "bash", None);
         for (kind, tool, card) in [
             (ApprovalKind::Tool, "bash", CardReason::RootEscape),
+            (ApprovalKind::Tool, "read", CardReason::RootEscape),
             (ApprovalKind::Rhai, "rhai", CardReason::ScriptLaunch),
             (ApprovalKind::Rhai, "rhai", CardReason::LaunchEscape),
         ] {
             assert_eq!(scopes_for(kind, tool, Some(card)), full, "{card:?}");
         }
-        // An escape grant is exact-path: no directory scope on the triad.
-        let read = scopes_for(ApprovalKind::Tool, "read", Some(CardReason::RootEscape));
-        assert_eq!(read, full);
     }
 
     #[test]

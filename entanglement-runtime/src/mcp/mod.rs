@@ -215,10 +215,8 @@ impl From<entanglement_core::McpServerSpec> for McpServerConfig {
 
 /// Capability name (`read`/`write`/`call`) → the namespaced MCP tool names
 /// (`mcp__<server>__<tool>`) annotated with it across every configured server
-/// (#426). This is what lets the shared capability fan-out
-/// (`agents::expand_capabilities`) cover MCP tools alongside the fixed
-/// built-in set (`tool_names::CAPABILITIES`) — the membership just comes from
-/// config instead of a compile-time table.
+/// (#426); the capability names are validated against
+/// `tool_names::CAPABILITIES`.
 pub type McpCapabilityIndex = HashMap<String, Vec<String>>;
 
 /// Build the [`McpCapabilityIndex`] from every server's `capabilities`

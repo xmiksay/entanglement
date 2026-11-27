@@ -7,7 +7,7 @@
   (ADR-0013), rich markdown rendering with pulldown-cmark + syntect
   (ADR-0015), and inline tool approval cards (ADR-0014) with a full-body pager
   (`v` while parked on one, `j`/`k`/`PgUp`/`PgDn` scroll, `Esc` closes back to
-  the prompt; the decision keys `y`/`s`/`a`/`d`/`n`/`e` still resolve the
+  the prompt; the decision keys `y`/`s`/`a`/`n`/`e` still resolve the
   approval while it's open) reusing the tail's own rendering for a diff/plan
   body too long for the parked tail. Cards queue per session (#273); a
   terminal `Status` (`Idle`/`Done`/`Error`) drops the finished turn's cards
@@ -250,7 +250,7 @@
   `ctrl+q` immediate quit, `esc` cancel — also as `leader esc`) rejects the
   whole override with one warning naming every culprit, and the TUI keeps the
   map it had (the defaults at startup). Dialog-local keys (approval
-  `y/s/a/d/n/e/v`, list navigation) and readline editing stay fixed. The help
+  `y/s/a/n/e/v`, list navigation) and readline editing stay fixed. The help
   dialog lists the effective bindings plus the fixed keys; the input
   placeholder and the attention panel's jump hint read the live map. The
   reject-reason and free-text answer fields submit on `submit` (plain Enter

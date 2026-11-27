@@ -499,7 +499,7 @@ fn approval_tail_footer_shows_the_rhai_launch_choices() {
 #[test]
 fn approval_tail_footer_shows_plan_accept_keys_not_generic_scopes() {
     // #560, ADR-0207 §7 extension: `propose_plan` gets its own `[u]`/`[b]`
-    // accept keys instead of the generic `y`/`s`/`a`/`d` scope letters, which
+    // accept keys instead of the generic `y`/`s`/`a` scope letters, which
     // meant nothing for this tool.
     let sid = SessionId::new("s1");
     let mut app = App::new_for_test(sid.clone());
