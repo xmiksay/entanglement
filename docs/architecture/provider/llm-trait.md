@@ -186,24 +186,11 @@ trait Llm: Send {
   `ToolCall.provider_meta` (below). `gemini_factory(base, key, model,
   limits, http)`.
   Request-body assembly lives in the `gemini::request` submodule.
-- **Explicit `cachedContents` caching** (#587) — mirrors Anthropic's
-  `cache_control` breakpoints (above) for the backend that otherwise has no
-  equivalent: `gemini::cache::CacheHandle` (one per session, held on the
-  `GeminiLlm` clone that session owns) hashes the resolved `model` + `system`
-  + `tools` before every `stream` call, creating a `cachedContents` resource
-  via a `POST .../cachedContents` the first time a given combination is seen
-  (or after it changes) and reusing the returned resource name — sent as
-  `cachedContent` on the `streamGenerateContent` body in place of the inline
-  `systemInstruction`/`tools`, which Gemini rejects alongside a cache
-  reference — on every subsequent turn. Unlike Anthropic's breakpoints, the
-  growing message history is never folded into the cache (it changes every
-  turn, so caching it would just thrash); only the stable system+tools prefix
-  is. Best-effort throughout: a prefix under `MIN_CACHEABLE_CHARS` (a
-  char-count proxy for Gemini's undocumented per-model minimum token count)
-  or any create-call failure resolves to `None`, falling back to inlining
-  `system`/`tools` exactly as before — cache creation never fails the turn.
-  A resource replaced by a key change is `DELETE`d in a detached task,
-  failures only debug-logged, so it stops accruing storage before its 1h TTL.
+- **No explicit `cachedContents` caching** (#929 removed #587's) — Gemini
+  2.5+ caches a repeated prompt prefix implicitly, at the same cached-token
+  discount and with no storage fee; the body leads with the stable
+  `systemInstruction` + `tools`, so that prefix is what it reuses. Cache hits
+  still surface as `cachedContentTokenCount` → `Usage.cached_input_tokens`.
 - **Opaque `provider_meta`** (#309) — `ToolCall.provider_meta: Option<Value>` is a
   provider-private slot that must round-trip **verbatim** through history persistence
   + replay; core never inspects it. Gemini stashes `thoughtSignature` there; the
