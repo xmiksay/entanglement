@@ -245,7 +245,7 @@ optional `mode`. The prompt offers `[u]` accept → `auto`, `[b]` accept →
 [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
 `auto` runs everything except its deny list (destructive and publishing
 commands) and its prompt list (deletions such as `gh … delete`, `cargo yank`,
-recursive `rm`), within its run budgets and `question_timeout` — the approver
+recursive `rm`), within its `question_timeout` — the approver
 who wants each unlisted call seen picks `[b]` `build` instead. An
 unrecognised value fails *safe* to `build` rather than open to `auto` — a
 mistyped cautious choice must not run a plan unattended. `propose_plan` may

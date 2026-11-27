@@ -122,9 +122,8 @@
   approver's reason back to the model (TUI `[u]`/`[b]`/`[n]`/`[e]`). Since
   [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)
   `auto` runs everything except its deny list and its prompt list of
-  destructive deletions, bounded by its `max_turns`/`max_duration` budgets
-  and `question_timeout` — an approver who wants each unlisted call seen
-  picks `build`.
+  destructive deletions, bounded by its `question_timeout` — an approver who
+  wants each unlisted call seen picks `build`.
   `propose_plan` itself gains an optional `mode` argument (`"build"`/`"auto"`
   only) letting the model *suggest* which option the prompt pre-selects — a
   suggestion never decides, only the approver's own keystroke does. This is
