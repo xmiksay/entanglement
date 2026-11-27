@@ -1,5 +1,6 @@
 //! `skutter`'s managed files follow `ENTANGLEMENT_STATE_DIR` (ADR-0213) and
-//! back the live engine (#966). The stores are seeded at
+//! back the live engine (#966). The pin and escape-root stores are checked
+//! in-process through their production `managed()` resolution (#967). The stores are seeded at
 //! `<dir>/<managed file name>` through their injection seams, then a real
 //! `skutter` child — with only the env var pointing at `<dir>`, set on the
 //! child alone (#773) — must see them: `inspect mcp` reads the stores
@@ -11,11 +12,17 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use entanglement_core::{StoredAuth, TokenSet, TokenStore};
-use entanglement_runtime::config::state_dir::{MCP_TOKENS_FILE, MCP_TOOLS_FILE, STATE_DIR_ENV};
+use std::sync::Arc;
+
+use entanglement_core::{ApprovalScope, StoredAuth, TokenSet, TokenStore};
+use entanglement_runtime::extra_roots::{AlwaysRoots, ExtraRootStore};
 use entanglement_runtime::mcp::McpToolCache;
 use serde_json::Value;
-use skutter::state::{FileMcpToolCache, McpTokenStore};
+use skutter::config::agent_generation::AgentGenerationStore;
+use skutter::config::agent_models::AgentModelStore;
+use skutter::config::aux_models::{AuxModelStore, AuxModelsPath, Purpose};
+use skutter::config::state_dir::{self, MCP_TOKENS_FILE, MCP_TOOLS_FILE, STATE_DIR_ENV};
+use skutter::state::{FileExtraRoots, FileMcpToolCache, McpTokenStore};
 
 use crate::skutter_cmd::isolated_skutter;
 
@@ -112,4 +119,60 @@ fn the_live_engine_reads_the_managed_token_file() {
     assert_eq!(servers.len(), 1, "{reply}");
     assert_eq!(servers[0]["name"], "kb");
     assert_eq!(servers[0]["auth"], "authenticated", "{reply}");
+}
+
+const PROBE: &str = "state-dir-probe";
+
+/// Write one probe into each pin/escape-root file under `dir`, by file name.
+fn seed_pins(dir: &Path) {
+    let file = |name: &str| Some(dir.join(name));
+    AgentModelStore::load_from(file(state_dir::AGENT_MODELS_FILE))
+        .set(PROBE, "zai", "glm-5.3")
+        .unwrap();
+    AgentGenerationStore::load_from(file(state_dir::AGENT_GENERATION_FILE))
+        .set(PROBE, Default::default())
+        .unwrap();
+    AuxModelsPath::at(file(state_dir::AUX_MODELS_FILE))
+        .set(
+            &mut AuxModelStore::default(),
+            Purpose::Narrate,
+            "zai",
+            PROBE,
+        )
+        .unwrap();
+    FileExtraRoots::at(file(state_dir::EXTRA_ROOTS_FILE))
+        .add("read", "/state-dir-probe")
+        .unwrap();
+}
+
+/// Seeded through each store's injection seam, then re-loaded through the
+/// **production** resolution with only the env var pointing at the dir:
+/// seeing the probe proves the default went there. The only test in this
+/// binary that sets process env (children strip every `ENTANGLEMENT_*`
+/// var, `isolated_skutter`), and the probes name nothing else uses.
+#[test]
+fn the_state_dir_relocates_the_pin_and_escape_root_files() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_pins(dir.path());
+
+    std::env::set_var(STATE_DIR_ENV, dir.path());
+    let agent_models = AgentModelStore::load();
+    let agent_generation = AgentGenerationStore::load();
+    let aux = AuxModelsPath::managed().load();
+    let extra_roots =
+        ExtraRootStore::ephemeral().with_always_roots(Arc::new(FileExtraRoots::managed()));
+    std::env::remove_var(STATE_DIR_ENV);
+
+    assert_eq!(agent_models.get(PROBE), Some(("zai", "glm-5.3")));
+    assert!(agent_generation.get(PROBE).is_some());
+    assert_eq!(aux.get(Purpose::Narrate), Some(("zai", PROBE)));
+    assert!(extra_roots.is_durably_allowed("read", Path::new("/state-dir-probe")));
+    // The store records into the same file.
+    extra_roots.record("read", Path::new("/second"), ApprovalScope::Always, "r");
+    assert_eq!(
+        FileExtraRoots::at(Some(dir.path().join(state_dir::EXTRA_ROOTS_FILE)))
+            .load()
+            .len(),
+        2
+    );
 }

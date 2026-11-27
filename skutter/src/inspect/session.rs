@@ -18,13 +18,13 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use entanglement_core::{OutEvent, SessionId};
 
-use crate::session_store::{self, LogPayload, LogRecord};
+use crate::session_store::{LogPayload, LogRecord};
 
 /// Read `id`'s persisted log and print its resolved agent/model/name
 /// (folded from the log's events, last write wins).
 pub fn inspect_session(cwd: &Path, id: &str) -> Result<()> {
     let session_id = SessionId::new(id);
-    let records = session_store::SessionStore::for_cwd(cwd)
+    let records = crate::user_dirs::session_store(cwd)
         .read(&session_id)
         .with_context(|| {
             format!(

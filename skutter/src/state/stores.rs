@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use entanglement_runtime::config::state_dir::{GRANTS_FILE, MCP_TOKENS_FILE, MCP_TOOLS_FILE};
+use crate::config::state_dir::{GRANTS_FILE, MCP_TOKENS_FILE, MCP_TOOLS_FILE};
 use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig};
 
 use super::{FileGrantStore, FileMcpToolCache, McpTokenStore};

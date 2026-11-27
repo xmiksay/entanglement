@@ -8,7 +8,6 @@ use serde::Deserialize;
 
 use super::ceiling;
 use super::tui::TuiConfig;
-use crate::file_backup::BackupLimits;
 use crate::mcp::McpServerConfig;
 use crate::mode;
 
@@ -60,7 +59,7 @@ pub(super) struct RawConfig {
     /// Hidden `http()` credentials (ADR-0227), host → headers/cookies.
     /// Stripped from the project layer before the merge.
     #[serde(default)]
-    pub(super) http_auth: super::http_auth::HttpAuth,
+    pub(super) http_auth: entanglement_runtime::http_auth::HttpAuth,
     /// Cap on the inner LLM→tool loop within a single turn (#177). Default 200.
     #[serde(default)]
     pub(super) max_turns: Option<usize>,
@@ -95,5 +94,5 @@ pub(super) struct RawConfig {
     /// Per-write file backups behind `/undo`/`/rewind` (#787, ADR-0212):
     /// `enabled` + size caps, each field optional ([`super::undo`]).
     #[serde(default)]
-    pub(super) undo: BackupLimits,
+    pub(super) undo: super::undo::RawUndo,
 }

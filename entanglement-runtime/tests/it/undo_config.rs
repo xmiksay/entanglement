@@ -1,10 +1,10 @@
-//! `config.yml` `undo:` end to end (#787): limits resolved from a layered
-//! config file drive what the real `write` tool backs up, and a live limit
-//! change (what the definitions watcher applies on reload) takes effect for
-//! the next write while existing backups stay restorable.
+//! Backup limits end to end (#787): the caps an embedder hands
+//! [`FileBackups`] (`skutter`: `config.yml`'s `undo:` block) drive what the
+//! real `write` tool backs up, and a live limit change (what `skutter`'s
+//! definitions watcher applies on reload) takes effect for the next write
+//! while existing backups stay restorable.
 
 use entanglement_core::{InMsg, LlmResponse, OutEvent, SessionId};
-use entanglement_runtime::config::Config;
 use entanglement_runtime::file_backup::{BackupLimits, FileBackups};
 use entanglement_runtime::session_store::SessionStore;
 
@@ -33,12 +33,13 @@ async fn config_caps_and_live_disable_drive_real_writes() {
     let tmp = tempfile::tempdir().unwrap();
     let work = tmp.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
-    let user = tmp.path().join("user.yml");
-    std::fs::write(&user, "undo:\n  max_file_bytes: 4B\n").unwrap();
-    let config = Config::load_with(&work, Some(&user)).unwrap();
+    let limits = BackupLimits {
+        max_file_bytes: 4,
+        ..BackupLimits::default()
+    };
 
     let store = SessionStore::at(tmp.path().join("sessions"));
-    let backups = FileBackups::with_backup_limits(store.clone(), config.undo);
+    let backups = FileBackups::with_backup_limits(store.clone(), limits);
     let holly = spawn_with(
         &work,
         &store,
@@ -55,7 +56,7 @@ async fn config_caps_and_live_disable_drive_real_writes() {
     std::fs::write(work.join("small.txt"), "abc").unwrap();
     let sid = SessionId::new("s-undo-config");
 
-    // Turn 1: the prior `big.txt` is over the 4-byte config cap.
+    // Turn 1: the prior `big.txt` is over the 4-byte cap.
     send_until(&holly, &sid, InMsg::prompt(sid.clone(), "big"), is_done).await;
     // Turn 2: `small.txt` fits, so it is backed up.
     send_until(&holly, &sid, InMsg::prompt(sid.clone(), "small"), is_done).await;
@@ -63,7 +64,7 @@ async fn config_caps_and_live_disable_drive_real_writes() {
     // Disable live: turn 3's write is not recorded at all.
     backups.set_limits(BackupLimits {
         enabled: false,
-        ..config.undo
+        ..limits
     });
     send_until(&holly, &sid, InMsg::prompt(sid.clone(), "more"), is_done).await;
     assert_eq!(

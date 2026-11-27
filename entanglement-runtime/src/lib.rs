@@ -1,9 +1,11 @@
 //! Runtime crate for the entanglement agent engine.
 //!
 //! The library half of the engine seam: the `Tool` trait + `ToolRegistry`,
-//! host tools, tool execution, permission dispatch, sub-agent spawn, user
-//! config and event-sourced persistence over `entanglement-core`. It carries
-//! no binary and no head: the `skutter` crate is the CLI built on it.
+//! host tools, tool execution, permission dispatch, sub-agent spawn and
+//! event-sourced persistence over `entanglement-core`. It carries no binary
+//! and no head, and reads no config or env file: the embedder hands it plain
+//! values. The `skutter` crate is the CLI built on it (layered `config.yml`,
+//! the managed state files, live reload, the key writer).
 //!
 //! # Feature gates (ADR-0025)
 //!
@@ -38,7 +40,6 @@ pub mod cancel;
 // `crate::policy::ModeResolver` (stage 4) to grade a call by its tool's
 // declared capabilities under the session's permission mode.
 pub mod capability;
-pub mod config;
 mod date;
 // The discovery tools (ADR-0226): `list_agents`/`list_models`/`list_skills`/
 // `list_mcp`/`mcp_tools` plus the `mcp` envelope spec. Ungated — pure
@@ -60,6 +61,8 @@ pub mod host_ns;
 // The credentialed-`http()` gate (ADR-0227) — shared by the `http` tool and
 // the dispatch seam; ungated so the lean executor compiles the same ladder.
 pub mod http_gate;
+// The credentials that gate injects (ADR-0227), as plain data.
+pub mod http_auth;
 // The rhai-only `http` tool behind that gate.
 #[cfg(feature = "rhai")]
 pub mod http_tool;
@@ -73,7 +76,6 @@ pub mod rhai_ident;
 pub mod rhai_trust;
 // Env vars no child process may inherit — `http_auth`'s secrets (ADR-0227).
 pub mod secret_env;
-mod user_dirs;
 // MCP client — attach external tool servers as a runtime-side tool provider
 // (#198, #312). The stdio transport lives in the lean library (tokio process +
 // serde_json only), so an embedder gets external tools without any
@@ -165,9 +167,8 @@ pub mod tool_state;
 // core: core holds no executable tools, only advertises schemas and round-trips
 // each call back to the runtime (#206, ADR-0006/0010/0053).
 pub mod tools;
-// inotify-backed watcher for definition dirs + managed files (#329):
-// live-reloads the runtime's own profile/skill registry mirrors — never
-// core's `EngineConfig`, which stays pinned for the process lifetime.
+// The debounced file-watch primitive (#329) `plan_watch` and an embedder's
+// own reload watcher share.
 pub mod watch;
 // Session working directories (#764, ADR-0224): the core resolver seam, the
 // executor's per-session view, and the relative-path rewrite.

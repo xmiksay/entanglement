@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use entanglement_core::{Agent, AgentCatalog};
-use entanglement_runtime::config::agent_models::AgentModelStore;
+use skutter::config::agent_models::AgentModelStore;
 
 // Every test pins its own temp file through `load_from` — no process env.
 

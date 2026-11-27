@@ -34,7 +34,7 @@
 //!
 //! Composition is a pure function so it is unit-testable with no model in the
 //! loop. The runtime bakes the assembled prompt into each [`Agent`] at
-//! load time (see [`crate::agents::load_registry`]); core stays a pass-through
+//! load time (see [`crate::agents::load_registry_in`]); core stays a pass-through
 //! that ships `system_prompt` verbatim as `LlmRequest.system`.
 
 use std::path::{Path, PathBuf};
@@ -157,14 +157,8 @@ pub struct PromptPart {
 impl PromptContext {
     /// Discover the composition inputs for `root`: the shared preamble (built-in
     /// default unless a file overrides it), the project brief (if a brief file
-    /// exists), the generated environment block, and the tool conventions.
-    pub fn load(root: &Path) -> Self {
-        Self::load_with(root, &SessionStore::for_cwd(root))
-    }
-
-    /// [`load`](Self::load) with the session store (whose scratch dir the env
-    /// block names) injected — so a test never creates a scratch dir under the
-    /// developer's real data dir (#747).
+    /// exists), the generated environment block naming `sessions`' scratch
+    /// dir, and the tool conventions.
     pub fn load_with(root: &Path, sessions: &SessionStore) -> Self {
         let preamble = load_preamble();
         let brief = load_brief(root);

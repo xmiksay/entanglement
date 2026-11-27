@@ -35,8 +35,8 @@ impl App {
             ],
         );
         // Never the developer's real user agents/skills/commands (#773).
-        app.inspect.user_layer =
-            crate::layers::UserLayer::Dir("/nonexistent-entanglement-user-layer".into());
+        app.inspect.user_layers =
+            crate::inspect::UserLayers::dir("/nonexistent-entanglement-user-layer");
         app
     }
 

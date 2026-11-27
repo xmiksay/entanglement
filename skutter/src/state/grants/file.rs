@@ -89,5 +89,5 @@ pub(super) fn write_grants(path: &Path, grants: &HashSet<GrantKey>) -> anyhow::R
                   # Managed by skutter: a line is appended when you approve a tool with the\n\
                   # \"always\" scope. Each entry upgrades a matching Ask to Allow (exact match on\n\
                   # tool + argument); it never overrides a Deny. Delete a line to revoke.\n";
-    entanglement_runtime::config::atomic::atomic_write(path, &format!("{header}{body}"))
+    crate::config::atomic::atomic_write(path, &format!("{header}{body}"))
 }

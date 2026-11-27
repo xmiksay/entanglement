@@ -29,6 +29,27 @@ use super::commands::render_command_table;
 use super::prompt::render_prompt_parts;
 use super::skills::{render_disclosures, render_skill_dry_run, render_skill_table};
 
+/// The user layer of each definition kind the overlay resolves — the
+/// env/home-dir layers in the live TUI, an empty dir in tests (#773).
+#[derive(Debug, Clone, Default)]
+pub struct UserLayers {
+    pub agents: UserLayer,
+    pub skills: UserLayer,
+    pub commands: UserLayer,
+}
+
+impl UserLayers {
+    /// Exactly `dir` for every kind.
+    pub fn dir(dir: impl Into<std::path::PathBuf>) -> Self {
+        let dir = dir.into();
+        Self {
+            agents: UserLayer::Dir(dir.clone()),
+            skills: UserLayer::Dir(dir.clone()),
+            commands: UserLayer::Dir(dir),
+        }
+    }
+}
+
 /// One selectable row in a two-level inspection tab (#331): the item's name,
 /// the one-line summary the list shows, and the winning layer label. Kept as a
 /// flat `String` tuple so the overlay state owns no inspect-module types — it
@@ -88,11 +109,10 @@ pub enum InspectListTab {
 /// each registry is walked once for the flat table *and* the list items, so a
 /// single registry pass drives both presentations.
 ///
-/// `user` is the user definitions layer agents, skills and commands resolve
-/// from — [`UserLayer::FromEnv`] in the live TUI, an empty dir in tests.
+/// `user` holds the user layers agents, skills and commands resolve from.
 pub fn tui_reports(
     cwd: &Path,
-    user: &UserLayer,
+    user: &UserLayers,
     sessions: &SessionStore,
     agent: &str,
 ) -> InspectReports {
@@ -115,15 +135,15 @@ pub fn tui_reports(
 /// does not depend on which agent the live session is running.
 pub fn agent_detail(
     cwd: &Path,
-    user: &UserLayer,
+    user: &UserLayers,
     sessions: &SessionStore,
     name: &str,
 ) -> Option<String> {
     let build = || -> Result<Option<String>> {
         let skill_registry =
-            skills::load_registry_in(cwd, user).context("loading skill definitions")?;
+            skills::load_registry_in(cwd, &user.skills).context("loading skill definitions")?;
         let ctx = PromptContext::load_with(cwd, sessions);
-        let resolved = crate::agents::resolve_registry_in(cwd, user, &ctx, &skill_registry)
+        let resolved = crate::agents::resolve_registry_in(cwd, &user.agents, &ctx, &skill_registry)
             .context("resolving agent registry")?;
         Ok(resolved
             .iter()
@@ -138,10 +158,10 @@ pub fn agent_detail(
 /// Render the detail for one skill by name (#331) — the same
 /// `inspect skills <name>` dry-run output the CLI prints. `None` if no skill of
 /// that name resolves. Skill resolution does not need `agent`, so it is omitted.
-pub fn skill_detail(cwd: &Path, user: &UserLayer, name: &str) -> Option<String> {
+pub fn skill_detail(cwd: &Path, user: &UserLayers, name: &str) -> Option<String> {
     let build = || -> Result<Option<String>> {
         let resolved =
-            skills::resolve_registry_in(cwd, user).context("resolving skill registry")?;
+            skills::resolve_registry_in(cwd, &user.skills).context("resolving skill registry")?;
         Ok(resolved
             .iter()
             .find(|r| r.meta.name == name)
@@ -152,14 +172,17 @@ pub fn skill_detail(cwd: &Path, user: &UserLayer, name: &str) -> Option<String> 
 
 /// The active agent's assembled prompt, always broken into parts (the `--parts`
 /// view) — the breakdown is what makes a wrong brief/preamble pick visible.
-fn tui_prompt(cwd: &Path, user: &UserLayer, sessions: &SessionStore, agent: &str) -> String {
+fn tui_prompt(cwd: &Path, user: &UserLayers, sessions: &SessionStore, agent: &str) -> String {
     let build = || -> Result<String> {
         let skill_registry =
-            skills::load_registry_in(cwd, user).context("loading skill definitions")?;
+            skills::load_registry_in(cwd, &user.skills).context("loading skill definitions")?;
         let ctx = PromptContext::load_with(cwd, sessions);
-        let report = crate::agents::prompt_report_in(cwd, user, agent, &ctx, &skill_registry)
-            .context("assembling agent prompt")?
-            .with_context(|| format!("unknown agent `{agent}` (no matching definition found)"))?;
+        let report =
+            crate::agents::prompt_report_in(cwd, &user.agents, agent, &ctx, &skill_registry)
+                .context("assembling agent prompt")?
+                .with_context(|| {
+                    format!("unknown agent `{agent}` (no matching definition found)")
+                })?;
         Ok(render_prompt_parts(agent, &ctx, &report))
     };
     build().unwrap_or_else(|e| format!("error: {e:#}"))
@@ -171,15 +194,15 @@ fn tui_prompt(cwd: &Path, user: &UserLayer, sessions: &SessionStore, agent: &str
 /// registry pass avoids a second walk when the user drills into the list.
 fn tui_agent_views(
     cwd: &Path,
-    user: &UserLayer,
+    user: &UserLayers,
     sessions: &SessionStore,
     agent: &str,
 ) -> (Vec<InspectItem>, String) {
     let build = || -> Result<(Vec<InspectItem>, String)> {
         let skill_registry =
-            skills::load_registry_in(cwd, user).context("loading skill definitions")?;
+            skills::load_registry_in(cwd, &user.skills).context("loading skill definitions")?;
         let ctx = PromptContext::load_with(cwd, sessions);
-        let resolved = crate::agents::resolve_registry_in(cwd, user, &ctx, &skill_registry)
+        let resolved = crate::agents::resolve_registry_in(cwd, &user.agents, &ctx, &skill_registry)
             .context("resolving agent registry")?;
 
         // List rows: name + one-line description + winning layer.
@@ -206,19 +229,20 @@ fn tui_agent_views(
 }
 
 /// The user slash-command table (#733) — the same `inspect commands` output.
-fn tui_commands(cwd: &Path, user: &UserLayer) -> String {
-    crate::slash_commands::resolve_registry_in(cwd, user)
+fn tui_commands(cwd: &Path, user: &UserLayers) -> String {
+    crate::slash_commands::resolve_registry_in(cwd, &user.commands)
         .map(|resolved| render_command_table(&resolved))
         .unwrap_or_else(|e| format!("error: {e:#}"))
 }
 
 /// Resolve the skill registry once and derive both presentations (#331): the
 /// flat summary (disclosures + full table) and the selectable list rows.
-fn tui_skill_views(cwd: &Path, user: &UserLayer) -> (Vec<InspectItem>, String) {
+fn tui_skill_views(cwd: &Path, user: &UserLayers) -> (Vec<InspectItem>, String) {
     let build = || -> Result<(Vec<InspectItem>, String)> {
-        let registry = skills::load_registry_in(cwd, user).context("loading skill definitions")?;
+        let registry =
+            skills::load_registry_in(cwd, &user.skills).context("loading skill definitions")?;
         let resolved =
-            skills::resolve_registry_in(cwd, user).context("resolving skill registry")?;
+            skills::resolve_registry_in(cwd, &user.skills).context("resolving skill registry")?;
 
         // List rows: name + one-line description + winning layer.
         let items: Vec<InspectItem> = resolved
@@ -255,7 +279,7 @@ mod tests {
         // root and an empty user layer so a user definition can't perturb it.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let user = UserLayer::Dir(root.join("no-user"));
+        let user = UserLayers::dir(root.join("no-user"));
 
         let sessions = SessionStore::at(root.join("sessions"));
         let agent = agent_detail(root, &user, &sessions, "general");
@@ -282,7 +306,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let sessions = SessionStore::at(root.join("sessions"));
-        let user = UserLayer::Dir(root.join("no-user"));
+        let user = UserLayers::dir(root.join("no-user"));
         assert_eq!(agent_detail(root, &user, &sessions, "no-such-agent"), None);
         assert_eq!(skill_detail(root, &user, "no-such-skill"), None);
     }

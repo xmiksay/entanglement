@@ -5,7 +5,7 @@
 //! module owns the managed file behind that:
 //! `<state dir>/agent-models.yml` (relocated by
 //! `ENTANGLEMENT_STATE_DIR`, ADR-0213), a sibling of the grants file (#174) and the
-//! provider-key env file (#220) — **managed, not layered**: the runtime rewrites
+//! provider-key env file (#220) — **managed, not layered**: skutter rewrites
 //! it freely, so it never mixes into the hand-edited `config.yml`.
 //!
 //! Shape (a [`BTreeMap`] so the file is stable across rewrites):
@@ -51,7 +51,7 @@ struct AgentModelsFile {
     agents: BTreeMap<String, AgentModelPin>,
 }
 
-/// The runtime's per-agent model pins: the persisted map plus the file path to
+/// skutter's per-agent model pins: the persisted map plus the file path to
 /// re-write when a new pin is recorded.
 #[derive(Debug, Default)]
 pub struct AgentModelStore {

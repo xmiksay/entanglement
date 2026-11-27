@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use entanglement_core::Permission;
-use entanglement_runtime::config::Config;
 use entanglement_runtime::http_gate::HttpGate;
+use entanglement_runtime::rhai_trust::TrustedFolders;
 
 use super::launch_harness::{fixture, run, table, Launch, Setup, ADD};
 
@@ -86,31 +86,29 @@ async fn an_explicit_deny_inside_a_trusted_script_is_catchable() {
     assert!(!root.join("no.txt").exists());
 }
 
-/// Trust comes from `config.yml` `rhai.trusted` in either layer: the
-/// project's `scripts/` and the user's own folder (`~`-free, relative to the
-/// user config file).
-#[tokio::test]
-async fn project_and_user_layer_trusted_folders_both_work() {
+/// The trusted folders of either layer (`skutter`: `config.yml`
+/// `rhai.trusted`): the project's `scripts/` and the user's own folder.
+fn layered_trust(
+    user_suppressed: &[&str],
+) -> (tempfile::TempDir, PathBuf, PathBuf, TrustedFolders) {
     let (tmp, root) = fixture();
     let user_dir = tmp.path().canonicalize().unwrap().join("user");
     std::fs::create_dir_all(user_dir.join("mine")).unwrap();
     std::fs::write(user_dir.join("mine/u.rhai"), "args.a + args.b").unwrap();
-    std::fs::write(user_dir.join("config.yml"), "rhai:\n  trusted: [mine]\n").unwrap();
-    std::fs::create_dir_all(root.join(".entanglement")).unwrap();
-    std::fs::write(
-        root.join(".entanglement/config.yml"),
-        "rhai:\n  trusted: [scripts]\n",
-    )
-    .unwrap();
-    let config = Config::load_with(&root, Some(&user_dir.join("config.yml"))).unwrap();
-    assert_eq!(
-        config.rhai_trusted.all().count(),
-        2,
-        "{:?}",
-        config.rhai_trusted
-    );
+    let trusted = TrustedFolders {
+        project: vec![root.join("scripts")],
+        user: vec![user_dir.join("mine")],
+        user_suppressed: user_suppressed.iter().map(|m| m.to_string()).collect(),
+        user_suppressed_everywhere: false,
+    };
+    (tmp, root, user_dir, trusted)
+}
+
+#[tokio::test]
+async fn project_and_user_layer_trusted_folders_both_work() {
+    let (_tmp, root, user_dir, trusted) = layered_trust(&[]);
     let mut setup = ask(Launch::Reject);
-    setup.trusted = config.rhai_trusted;
+    setup.trusted = trusted;
     let user_script = serde_json::json!({
         "path": user_dir.join("mine/u.rhai"), "args": {"a": 40, "b": 2}
     })
@@ -124,25 +122,15 @@ async fn project_and_user_layer_trusted_folders_both_work() {
     );
 }
 
-/// The project config adding `prompt` rules for the session's mode drops
-/// the user layer's trust for the whole script there — it is graded (and
-/// carded) like any other; the project's own trusted folder still runs.
+/// User-layer trust suppressed in the session's mode (`skutter`: the project
+/// config adds `prompt` rules there) drops it for the whole script — it is
+/// graded (and carded) like any other; the project's own trusted folder
+/// still runs.
 #[tokio::test]
 async fn project_prompt_rules_suppress_user_layer_trust_in_that_mode() {
-    let (tmp, root) = fixture();
-    let user_dir = tmp.path().canonicalize().unwrap().join("user");
-    std::fs::create_dir_all(user_dir.join("mine")).unwrap();
-    std::fs::write(user_dir.join("mine/u.rhai"), "args.a + args.b").unwrap();
-    std::fs::write(user_dir.join("config.yml"), "rhai:\n  trusted: [mine]\n").unwrap();
-    std::fs::create_dir_all(root.join(".entanglement")).unwrap();
-    std::fs::write(
-        root.join(".entanglement/config.yml"),
-        "rhai:\n  trusted: [scripts]\nmodes:\n  build:\n    prompt: [\"bash(make *)\"]\n",
-    )
-    .unwrap();
-    let config = Config::load_with(&root, Some(&user_dir.join("config.yml"))).unwrap();
+    let (_tmp, root, user_dir, trusted) = layered_trust(&["build"]);
     let mut setup = ask(Launch::Reject);
-    setup.trusted = config.rhai_trusted;
+    setup.trusted = trusted;
     let user_script = serde_json::json!({
         "path": user_dir.join("mine/u.rhai"), "args": {"a": 40, "b": 2}
     })

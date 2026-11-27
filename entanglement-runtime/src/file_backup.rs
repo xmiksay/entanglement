@@ -50,17 +50,14 @@ pub const DEFAULT_MAX_ROOT_BYTES: u64 = 256 * 1024 * 1024;
 /// What a [`FileBackups`] records: whether it records at all, and its size
 /// caps in bytes. `skutter` reads it from `config.yml`'s `undo:` block (#787)
 /// and re-applies it on a config reload ([`FileBackups::set_limits`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackupLimits {
     /// `false` records nothing new; backups already on disk stay restorable.
     pub enabled: bool,
     /// A prior version larger than this is recorded as skipped.
-    #[serde(deserialize_with = "crate::config::undo::de_size")]
     pub max_file_bytes: u64,
     /// Per-root budget for stored prior versions; past it, further changes
     /// are recorded as skipped.
-    #[serde(deserialize_with = "crate::config::undo::de_size")]
     pub max_root_bytes: u64,
 }
 
@@ -72,6 +69,18 @@ impl Default for BackupLimits {
             max_root_bytes: DEFAULT_MAX_ROOT_BYTES,
         }
     }
+}
+
+/// Render `n` bytes exactly: the largest binary unit that divides it, else
+/// plain bytes — so a cap set as `8MB` never displays as a rounded `7 MiB`.
+pub fn format_size(n: u64) -> String {
+    const KIB: u64 = 1024;
+    for (unit, name) in [(KIB * KIB * KIB, "GiB"), (KIB * KIB, "MiB"), (KIB, "KiB")] {
+        if n >= unit && n.is_multiple_of(unit) {
+            return format!("{} {name}", n / unit);
+        }
+    }
+    format!("{n} bytes")
 }
 
 /// Handle to one project's file backups. Cheap to clone; every clone shares

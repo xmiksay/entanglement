@@ -132,7 +132,7 @@ impl Rules {
 /// class-scoped grammar) — that's the one way to write a rule for the
 /// literal `write`/`read`/`exec`/`plan`/`control`-named tool, and it's what
 /// the built-in `plan` mode uses for its plans-folder carve-out.
-pub(crate) fn capability_class(key: &str) -> Option<Capability> {
+pub fn capability_class(key: &str) -> Option<Capability> {
     match key {
         "read" => Some(Capability::Read),
         "write" => Some(Capability::Write),
@@ -146,11 +146,11 @@ pub(crate) fn capability_class(key: &str) -> Option<Capability> {
 /// The tool name a rule key names: everything before an argument (`(`) or
 /// workdir (`{`) scope, or the whole key if unscoped. Used by the tuning
 /// guard (`tune.rs`) to resolve a scoped key like `write(*)` back to the
-/// literal tool it grants, and by `config::mode_warn`'s stale-tuning-name
-/// check (crate-visible for that second, cross-module consumer) to extract
+/// literal tool it grants, and by `skutter`'s stale-tuning-name config
+/// check (public for that second, cross-crate consumer) to extract
 /// the same tool part from a rule key like `bash(cargo check)` before
 /// validating it against the compile-time vocabulary.
-pub(crate) fn rule_tool_name(key: &str) -> &str {
+pub fn rule_tool_name(key: &str) -> &str {
     let cut = key.find(['(', '{']).unwrap_or(key.len());
     &key[..cut]
 }

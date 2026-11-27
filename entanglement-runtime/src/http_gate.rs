@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use entanglement_core::SessionId;
 
-use crate::config::http_auth::{HttpAuth, HttpAuthEntry, ProjectHttpRules};
+use crate::http_auth::{HttpAuth, HttpAuthEntry, ProjectHttpRules};
 use crate::tool_names::HTTP_TOOL;
 
 #[derive(Default)]

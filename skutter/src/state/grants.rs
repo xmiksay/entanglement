@@ -38,9 +38,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
+use crate::config::state_dir::{state_file, GRANTS_FILE};
 use async_trait::async_trait;
 use entanglement_core::{ApprovalScope, SessionId};
-use entanglement_runtime::config::state_dir::{state_file, GRANTS_FILE};
 use entanglement_runtime::policy::{GrantStore, InMemoryGrantStore};
 
 /// A single granted tool call: the tool name, the optional argument
@@ -181,7 +181,7 @@ impl GrantStore for FileGrantStore {
 /// exclusive lock (#329) — a concurrent instance's own `Always` grant must
 /// survive rather than being clobbered.
 fn persist(path: &Path, key: GrantKey) -> anyhow::Result<()> {
-    entanglement_runtime::config::lock::with_locked_file(path, || {
+    crate::config::lock::with_locked_file(path, || {
         let mut merged = read_grants(path);
         if merged.insert(key) {
             write_grants(path, &merged)?;

@@ -17,9 +17,6 @@ pub(super) const BUILT_INS: &[(&str, &str)] = &[
     ("debug.md", include_str!("debug.md")),
 ];
 
-/// Env var overriding the user agents directory (tests + non-XDG setups).
-const AGENTS_DIR_ENV: &str = "ENTANGLEMENT_AGENTS_DIR";
-
 /// A discovered agent definition file *before* parsing: which layer it came from
 /// (#185), a display label for its origin (`built-in (general.md)` or the file
 /// path) and the raw file content.
@@ -33,8 +30,8 @@ pub(super) struct RawAgent {
 /// Enumerate every agent definition in precedence order — embedded built-ins,
 /// then the user dir, then the project dir — without parsing them. Later entries
 /// win on a `name` collision, so consumers keep the last match. A missing dir is
-/// fine; an unreadable dir or file is an error. A missing *explicit*
-/// `ENTANGLEMENT_AGENTS_DIR` override is warned by [`crate::layers::load_layers`].
+/// fine; an unreadable dir or file is an error. A missing explicit
+/// [`UserLayer::Dir`] is warned by [`crate::layers::load_layers`].
 pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawAgent>> {
     let built_ins: Vec<RawAgent> = BUILT_INS
         .iter()
@@ -45,14 +42,7 @@ pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawAgent>> {
             content: (*contents).to_string(),
         })
         .collect();
-    crate::layers::load_layers(
-        root,
-        "agents",
-        AGENTS_DIR_ENV,
-        user,
-        built_ins,
-        read_dir_raws,
-    )
+    crate::layers::load_layers(root, "agents", user, built_ins, read_dir_raws)
 }
 
 /// Append every `*.md` file in `dir` (if it exists) to `raws`, tagged with

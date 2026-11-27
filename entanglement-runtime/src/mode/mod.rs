@@ -25,10 +25,9 @@ pub(crate) mod rules;
 mod tune;
 
 pub use limits::{Limits, OnTimeout};
-// `rule_tool_name`/`capability_class` are crate-visible (not just
-// `pub(super)` to this module) purely for `config::mode_warn`'s stale
-// rule-name check — the only consumer outside `mode`/`tune`.
-pub(crate) use rules::{capability_class, rule_tool_name};
+// `rule_tool_name`/`capability_class` are public purely for an embedder's
+// config checks (`skutter`'s stale rule-name warning, #967).
+pub use rules::{capability_class, rule_tool_name};
 pub use rules::{Rules, PRECEDENCE};
 pub use tune::{apply as apply_tuning, build_table, ModeTuning};
 
@@ -45,8 +44,9 @@ use crate::capability::Capability;
 /// built-in mode's YAML ([`builtin::RawMode`]) and nowhere else, since
 /// `deny`/`allow`/`prompt` are list *names*, not scalar values, everywhere
 /// else they appear. Any other spelling (including the enum's own `ask`) is
-/// a config error, not a silent fallback.
-pub(crate) fn deserialize_grade<'de, D>(deserializer: D) -> Result<Permission, D::Error>
+/// a config error, not a silent fallback. Public for an embedder's own config
+/// (`skutter`'s `permissions:` ceiling).
+pub fn deserialize_grade<'de, D>(deserializer: D) -> Result<Permission, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

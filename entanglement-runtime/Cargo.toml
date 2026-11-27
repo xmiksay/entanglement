@@ -79,7 +79,6 @@ serde_yaml = { workspace = true }
 tracing = { workspace = true }
 # The `provider` feature's one-shot aux-LLM drain.
 futures = { workspace = true, optional = true }
-dirs = { workspace = true }
 # Host tool dependencies
 glob = { workspace = true }
 regex = { workspace = true }
@@ -105,11 +104,8 @@ rhai = { workspace = true, optional = true, features = ["internals"] }
 htmd = { workspace = true, optional = true }
 markup5ever_rcdom = { workspace = true, optional = true }
 html5ever = { workspace = true, optional = true }
-# Advisory cross-process file lock for the managed read-modify-write writes
-# (grants.yml / agent-models.yml / the env file, #329).
-fd-lock = { workspace = true }
-# Definitions-dir + managed-file watcher (#329). Pure-Rust/inotify, no
-# transport deps — rides in the lean library.
+# The debounced file-watch primitive (`watch`, #329) behind `plan_watch`.
+# Pure-Rust/inotify, no transport deps — rides in the lean library.
 notify = { workspace = true }
 notify-debouncer-mini = { workspace = true }
 

@@ -22,10 +22,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::config::atomic::atomic_write;
+use crate::config::lock;
 use anyhow::{Context, Result};
 use entanglement_core::{Holly, OutEvent};
-use entanglement_runtime::config::atomic::atomic_write;
-use entanglement_runtime::config::lock;
 use entanglement_runtime::mcp::{McpServerConfig, ServerConfigs};
 use serde_yaml::Value;
 use tokio::sync::broadcast::error::RecvError;
@@ -160,8 +160,8 @@ fn read_doc(path: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use entanglement_core::McpAction;
-    use entanglement_runtime::config::Config;
     use std::sync::{Arc, Mutex};
 
     fn stdio_cfg(command: &str) -> McpServerConfig {

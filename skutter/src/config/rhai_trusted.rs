@@ -155,9 +155,11 @@ fn resolve(
     let path = match layer {
         ConfigLayer::User => {
             let expanded = match dir.strip_prefix('~') {
-                Some(rest) if rest.is_empty() || rest.starts_with('/') => dirs::home_dir()
-                    .ok_or("needs a home directory")?
-                    .join(rest.trim_start_matches('/')),
+                Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                    crate::user_dirs::home_dir()
+                        .ok_or("needs a home directory")?
+                        .join(rest.trim_start_matches('/'))
+                }
                 _ => PathBuf::from(dir),
             };
             let base = Path::new(source).parent().unwrap_or(Path::new(""));

@@ -16,7 +16,7 @@ use crate::tool_runner::EscapeRoot;
 pub(crate) mod default_tools;
 use crate::{
     config, extra_roots, file_backup, host, jobs, mcp, path_grading, retained_output, script_ops,
-    session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
+    skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
 use default_tools::{register_default_tools, register_session_tools, DefaultTools};
 
@@ -132,16 +132,15 @@ pub(crate) async fn build_config(
     // Per-project scratch dir (#524, ADR-0142) — a pre-trusted write location
     // the model is steered toward over `/tmp` (see `system_prompt`'s env
     // block) — a general-purpose scratch carve-out.
-    let scratch_base = session_store::SessionStore::for_cwd(&root)
-        .scratch_dir()
-        .ok();
+    let scratch_base = crate::user_dirs::session_store(&root).scratch_dir().ok();
     // Escape-root approval store (ADR-0109): shared by the host tools (which
     // consult it to relax containment for an approved out-of-root path) and the
     // tool executor (which forces an approval prompt on a first out-of-root
     // access and records the grant here). The scratch dir itself is
     // pre-trusted (#524, ADR-0142): every path under it is durably allowed with
     // no grant, for every tool, in every profile.
-    let mut extra_root_store = extra_roots::ExtraRootStore::load();
+    let mut extra_root_store = extra_roots::ExtraRootStore::ephemeral()
+        .with_always_roots(Arc::new(crate::state::FileExtraRoots::managed()));
     if let Some(scratch) = &scratch_base {
         extra_root_store = extra_root_store.with_scratch(scratch.clone());
     }

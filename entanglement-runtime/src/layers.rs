@@ -3,8 +3,8 @@
 //! The agent loader ([`crate::agents`]) and the skill loader ([`crate::skills`])
 //! were byte-identical scaffolds modulo names: three precedence layers
 //! (embedded built-in < user dir < project dir, later wins on a `name`
-//! collision), a per-directory reader, and the `${config_dir}/entanglement/<kind>`
-//! path resolution with an `ENTANGLEMENT_*_DIR` override. That common machinery
+//! collision), a per-directory reader, and the candidate-dir policy. That
+//! common machinery
 //! lives here now; each loader supplies only its own `Raw*` item type and the
 //! closure that reads one directory (agents read flat `*.md`, skills walk for
 //! `SKILL.md`).
@@ -17,17 +17,16 @@
 //! are read [`Strictness::Lenient`] — files entanglement doesn't own must not
 //! abort the load — while native dirs stay [`Strictness::Strict`].
 //!
-//! It also closes the shared bug: an *explicitly-set* `ENTANGLEMENT_*_DIR`
-//! override that points at a missing path was silently swallowed, contradicting
-//! the "loud, never a silent fallback" doctrine the provider catalog documents.
-//! [`load_layers`] now `warn!`s when that happens — the default
-//! `${config_dir}` path staying absent is still fine (the common "no user layer
-//! yet" case), but a user who set the env var and mistyped it gets a signal.
-//! An explicit override replaces the *whole* user layer (foreign + native),
-//! which doubles as the opt-out for cross-vendor discovery.
+//! The library never resolves a user directory or reads an env var itself:
+//! the embedder says where the user layer is ([`UserLayer`]; `skutter` maps
+//! its `ENTANGLEMENT_*_DIR` overrides and the real home/config dirs onto it).
+//! An explicit [`UserLayer::Dir`] replaces the *whole* user layer (foreign +
+//! native), which doubles as the opt-out for cross-vendor discovery; one that
+//! points at a missing path is `warn!`ed by [`load_layers`] rather than
+//! silently swallowed — a default home/config dir staying absent is still
+//! fine (the common "no user layer yet" case).
 
 use std::collections::HashSet;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -66,13 +65,11 @@ pub enum Strictness {
 }
 
 /// The ordered candidate directories for `kind` (`agents`/`skills`), lowest
-/// precedence first. Pure — env/home/config are parameters — so the path policy
-/// is unit-testable without mutating process-global state.
+/// precedence first. Pure, so the path policy is unit-testable.
 ///
-/// - `env_override` set ⇒ the user layer is exactly that dir (strict), foreign
-///   user dirs included in the replacement; this keeps tests hermetic and is
-///   the cross-vendor opt-out.
-/// - Otherwise the user layer is `<home>/.claude/<kind>` (lenient) then
+/// - [`UserLayer::Dir`] ⇒ the user layer is exactly that dir (strict),
+///   foreign user dirs included in the replacement.
+/// - [`UserLayer::Home`] ⇒ `<home>/.claude/<kind>` (lenient) then
 ///   `<config>/entanglement/<kind>` (strict).
 /// - The project layer is `.claude/<kind>` (lenient) < `.agents/<kind>`
 ///   (lenient, cross-vendor beats vendor-specific — same tiebreak as the brief
@@ -80,37 +77,37 @@ pub enum Strictness {
 /// - A kind opencode also reads (only `commands`, #733) adds opencode's own
 ///   dirs just below each native one, lenient: `<config>/opencode/<sub>` and
 ///   `.opencode/<sub>` for each of [`opencode_subdirs`].
-pub(crate) fn candidate_dirs(
+pub fn candidate_dirs(
     root: &Path,
     kind: &str,
-    env_override: Option<PathBuf>,
-    home: Option<&Path>,
-    config: Option<&Path>,
+    user: &UserLayer,
 ) -> Vec<(Layer, PathBuf, Strictness)> {
     let mut dirs = Vec::new();
-    if let Some(over) = env_override {
-        dirs.push((Layer::User, over, Strictness::Strict));
-    } else {
-        if let Some(home) = home {
-            dirs.push((
-                Layer::User,
-                home.join(".claude").join(kind),
-                Strictness::Lenient,
-            ));
-        }
-        if let Some(config) = config {
-            for sub in opencode_subdirs(kind) {
+    match user {
+        UserLayer::Empty => {}
+        UserLayer::Dir(dir) => dirs.push((Layer::User, dir.clone(), Strictness::Strict)),
+        UserLayer::Home { home, config } => {
+            if let Some(home) = home {
                 dirs.push((
                     Layer::User,
-                    config.join("opencode").join(sub),
+                    home.join(".claude").join(kind),
                     Strictness::Lenient,
                 ));
             }
-            dirs.push((
-                Layer::User,
-                config.join("entanglement").join(kind),
-                Strictness::Strict,
-            ));
+            if let Some(config) = config {
+                for sub in opencode_subdirs(kind) {
+                    dirs.push((
+                        Layer::User,
+                        config.join("opencode").join(sub),
+                        Strictness::Lenient,
+                    ));
+                }
+                dirs.push((
+                    Layer::User,
+                    config.join("entanglement").join(kind),
+                    Strictness::Strict,
+                ));
+            }
         }
     }
     dirs.push((
@@ -202,82 +199,58 @@ pub fn walk_files(
     Ok(())
 }
 
-/// Where a loader's user layer comes from.
+/// Where a loader's user layer comes from — the embedder's answer; the
+/// library resolves no user directory itself.
 #[derive(Debug, Clone, Default)]
 pub enum UserLayer {
-    /// Production: the kind's `ENTANGLEMENT_*_DIR` override, else the
-    /// cross-vendor + native dirs under the real home/config dirs.
+    /// No user layer: built-ins and the project only.
     #[default]
-    FromEnv,
-    /// Exactly this dir (strict), as the env override would — the seam tests
-    /// and embedders use to stay off process env and the real user dirs
-    /// (#773). A missing dir is an empty layer, `warn!`ed like a missing
-    /// env override (#803) — a typo'd embedder path must not go silent.
+    Empty,
+    /// Exactly this dir (strict) — `skutter`'s `ENTANGLEMENT_*_DIR`
+    /// override, the cross-vendor opt-out, and the seam tests use to stay off
+    /// the real user dirs (#773). A missing dir is an empty layer, `warn!`ed
+    /// (#803) — a typo'd path must not go silent.
     Dir(PathBuf),
+    /// The cross-vendor + native dirs under the user's home and config dirs
+    /// (ADR-0074); see [`candidate_dirs`].
+    Home {
+        home: Option<PathBuf>,
+        config: Option<PathBuf>,
+    },
 }
 
 /// Discover layered definitions for `kind`, seeded with `built_ins`: read each
 /// candidate dir from [`candidate_dirs`] in precedence order, appending that
 /// layer's raw items to the accumulator. `read_dir(layer, dir, strictness,
 /// &mut acc)` does the actual reading and is where a missing dir is treated as
-/// empty; the only thing added here is the loud path — an explicitly-overridden
-/// user dir that does not exist is `warn!`ed rather than silently skipped (#204).
+/// empty; the only thing added here is the loud path — an explicit
+/// [`UserLayer::Dir`] that does not exist is `warn!`ed rather than silently
+/// skipped (#204).
 pub fn load_layers<T>(
     root: &Path,
     kind: &str,
-    env: &str,
     user: &UserLayer,
     mut acc: Vec<T>,
     mut read_dir: impl FnMut(Layer, &Path, Strictness, &mut Vec<T>) -> Result<()>,
 ) -> Result<Vec<T>> {
-    let dirs = match user {
-        UserLayer::Dir(dir) => {
-            warn_if_missing_override(kind, "UserLayer::Dir", dir);
-            candidate_dirs(root, kind, Some(dir.clone()), None, None)
-        }
-        UserLayer::FromEnv => env_candidate_dirs(
-            root,
-            kind,
-            env,
-            |name| std::env::var_os(name),
-            || (crate::user_dirs::home_dir(), crate::user_dirs::config_dir()),
-        ),
-    };
-    for (layer, dir, strictness) in dirs {
+    if let UserLayer::Dir(dir) = user {
+        warn_if_missing_override(kind, dir);
+    }
+    for (layer, dir, strictness) in candidate_dirs(root, kind, user) {
         read_dir(layer, &dir, strictness, &mut acc)?;
     }
     Ok(acc)
 }
 
-/// [`UserLayer::FromEnv`]'s candidate dirs over an injected env lookup and
-/// `(home, config)` dirs — the latter consulted only when the override is
-/// unset — so the resolution is unit-testable without mutating process env.
-fn env_candidate_dirs(
-    root: &Path,
-    kind: &str,
-    env: &str,
-    lookup: impl Fn(&str) -> Option<OsString>,
-    user_dirs: impl FnOnce() -> (Option<PathBuf>, Option<PathBuf>),
-) -> Vec<(Layer, PathBuf, Strictness)> {
-    if let Some(over) = lookup(env).map(PathBuf::from) {
-        warn_if_missing_override(kind, env, &over);
-        return candidate_dirs(root, kind, Some(over), None, None);
-    }
-    let (home, config) = user_dirs();
-    candidate_dirs(root, kind, None, home.as_deref(), config.as_deref())
-}
-
 /// A default user path that isn't there is the normal "no user layer" case;
-/// an *explicit* one (`source`: the env var, or the embedder's
-/// `UserLayer::Dir`) that isn't there is a mistake worth a warning. Returns
-/// whether it warned.
-fn warn_if_missing_override(kind: &str, source: &str, path: &Path) -> bool {
+/// an *explicit* [`UserLayer::Dir`] that isn't there is a mistake worth a
+/// warning. Returns whether it warned.
+fn warn_if_missing_override(kind: &str, path: &Path) -> bool {
     if path.exists() {
         return false;
     }
     tracing::warn!(
         kind,
-        source,
         path = %path.display(),
         "explicit definitions-dir override points at a missing path; treating the user layer as empty",
     );
@@ -288,7 +261,12 @@ fn warn_if_missing_override(kind: &str, source: &str, path: &Path) -> bool {
 mod tests {
     use super::*;
 
-    const TEST_ENV: &str = "ENTANGLEMENT_LAYERS_TEST_DIR";
+    fn home() -> UserLayer {
+        UserLayer::Home {
+            home: Some("/home/u".into()),
+            config: Some("/home/u/.config".into()),
+        }
+    }
 
     /// A trivial reader that records the layer + dir + strictness it was asked
     /// to read.
@@ -308,20 +286,11 @@ mod tests {
     fn a_missing_user_layer_dir_warns_and_is_empty() {
         let root = tempfile::tempdir().unwrap();
         let missing = root.path().join("typo-agents");
-        assert!(warn_if_missing_override(
-            "agents",
-            "UserLayer::Dir",
-            &missing
-        ));
-        assert!(!warn_if_missing_override(
-            "agents",
-            "UserLayer::Dir",
-            root.path()
-        ));
+        assert!(warn_if_missing_override("agents", &missing));
+        assert!(!warn_if_missing_override("agents", root.path()));
         let out = load_layers(
             root.path(),
             "agents",
-            TEST_ENV,
             &UserLayer::Dir(missing.clone()),
             Vec::new(),
             record,
@@ -333,13 +302,7 @@ mod tests {
     #[test]
     fn override_replaces_whole_user_layer() {
         let root = Path::new("/repo");
-        let out = candidate_dirs(
-            root,
-            "agents",
-            Some(PathBuf::from("/override")),
-            Some(Path::new("/home/u")),
-            Some(Path::new("/home/u/.config")),
-        );
+        let out = candidate_dirs(root, "agents", &UserLayer::Dir("/override".into()));
         assert_eq!(
             out,
             vec![
@@ -366,13 +329,7 @@ mod tests {
     #[test]
     fn default_user_layer_is_claude_then_native() {
         let root = Path::new("/repo");
-        let out = candidate_dirs(
-            root,
-            "skills",
-            None,
-            Some(Path::new("/home/u")),
-            Some(Path::new("/home/u/.config")),
-        );
+        let out = candidate_dirs(root, "skills", &home());
         assert_eq!(
             out[0],
             (
@@ -417,13 +374,7 @@ mod tests {
 
     #[test]
     fn commands_add_opencode_dirs_below_each_native_one() {
-        let out = candidate_dirs(
-            Path::new("/repo"),
-            "commands",
-            None,
-            Some(Path::new("/home/u")),
-            Some(Path::new("/home/u/.config")),
-        );
+        let out = candidate_dirs(Path::new("/repo"), "commands", &home());
         let paths: Vec<(PathBuf, Strictness)> = out.into_iter().map(|(_, p, s)| (p, s)).collect();
         let lenient = |p: &str| (PathBuf::from(p), Strictness::Lenient);
         let strict = |p: &str| (PathBuf::from(p), Strictness::Strict);
@@ -445,9 +396,15 @@ mod tests {
 
     #[test]
     fn missing_home_and_config_yield_project_only() {
-        let out = candidate_dirs(Path::new("/repo"), "skills", None, None, None);
-        assert!(out.iter().all(|(l, _, _)| *l == Layer::Project));
-        assert_eq!(out.len(), 3);
+        let no_dirs = UserLayer::Home {
+            home: None,
+            config: None,
+        };
+        for user in [no_dirs, UserLayer::Empty] {
+            let out = candidate_dirs(Path::new("/repo"), "skills", &user);
+            assert!(out.iter().all(|(l, _, _)| *l == Layer::Project));
+            assert_eq!(out.len(), 3);
+        }
     }
 
     #[test]
@@ -460,7 +417,6 @@ mod tests {
         let out = load_layers(
             root,
             "agents",
-            TEST_ENV,
             &UserLayer::Dir(user.clone()),
             vec![(Layer::BuiltIn, root.to_path_buf(), Strictness::Strict)],
             record,
@@ -476,52 +432,6 @@ mod tests {
                 root.join(".entanglement").join("agents"),
                 Strictness::Strict
             )
-        );
-    }
-
-    #[test]
-    fn missing_explicit_override_is_still_the_whole_user_layer() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let missing = root.join("no-such-dir");
-
-        // A missing explicit override warns but is not fatal: it still stands
-        // in for the whole user layer (read as empty), and the home/config
-        // dirs are never consulted.
-        let out = env_candidate_dirs(
-            root,
-            "skills",
-            TEST_ENV,
-            |n| (n == TEST_ENV).then(|| missing.clone().into()),
-            || panic!("home/config must not be consulted under an override"),
-        );
-        assert_eq!(out[0], (Layer::User, missing, Strictness::Strict));
-        assert!(out[1..].iter().all(|(l, _, _)| *l == Layer::Project));
-    }
-
-    #[test]
-    fn unset_override_reads_the_home_and_config_dirs() {
-        let out = env_candidate_dirs(
-            Path::new("/repo"),
-            "skills",
-            TEST_ENV,
-            |_| None,
-            || (Some("/home/u".into()), Some("/home/u/.config".into())),
-        );
-        assert_eq!(
-            out[..2],
-            [
-                (
-                    Layer::User,
-                    PathBuf::from("/home/u/.claude/skills"),
-                    Strictness::Lenient
-                ),
-                (
-                    Layer::User,
-                    PathBuf::from("/home/u/.config/entanglement/skills"),
-                    Strictness::Strict
-                ),
-            ]
         );
     }
 }

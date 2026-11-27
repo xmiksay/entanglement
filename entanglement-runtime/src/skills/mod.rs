@@ -162,11 +162,8 @@ pub use crate::layers::Layer as SkillLayer;
 /// dirs, then the project dirs — later layers replace earlier ones on a `name`
 /// collision (project > user > built-in). A malformed file in a native layer
 /// aborts; a malformed foreign file is warned and skipped.
-pub fn load_registry(root: &Path) -> Result<SkillRegistry> {
-    load_registry_in(root, &UserLayer::FromEnv)
-}
-
-/// [`load_registry`] with an explicit user layer (#773).
+///
+/// `user` is where the user layer lives — the embedder's answer (#773).
 pub fn load_registry_in(root: &Path, user: &UserLayer) -> Result<SkillRegistry> {
     let mut reg = SkillRegistry::default();
     // Track the winning (layer, source) per name so a later-wins collision is no
@@ -209,15 +206,10 @@ pub struct SkillResolution {
 }
 
 /// Resolve every skill for `root` with full provenance (#186), applying the same
-/// layer precedence as [`load_registry`] but keeping *which* layer won and what
+/// layer precedence as [`load_registry_in`] but keeping *which* layer won and what
 /// it shadowed. Sorted by name for a stable table. Malformed files behave
 /// exactly as at load (native aborts, foreign warns and skips) — mirrors
-/// [`crate::agents::resolve_registry`].
-pub fn resolve_registry(root: &Path) -> Result<Vec<SkillResolution>> {
-    resolve_registry_in(root, &UserLayer::FromEnv)
-}
-
-/// [`resolve_registry`] with an explicit user layer (#773).
+/// [`crate::agents::resolve_registry_in`].
 pub fn resolve_registry_in(root: &Path, user: &UserLayer) -> Result<Vec<SkillResolution>> {
     let mut order: Vec<String> = Vec::new();
     let mut by_name: HashMap<String, Vec<(SkillLayer, String, SkillMeta)>> = HashMap::new();

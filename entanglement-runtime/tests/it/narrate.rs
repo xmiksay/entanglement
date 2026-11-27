@@ -15,7 +15,7 @@ use entanglement_core::{
     LlmStream, ModelResolver, OutEvent, ResolvedModel, SessionId, ToolCall, UserId,
 };
 use entanglement_runtime::aux_llm::AuxLlmRegistry;
-use entanglement_runtime::config::aux_models::AuxModelStore;
+use entanglement_runtime::aux_llm::AuxModelStore;
 use entanglement_runtime::narrate::spawn_action_narrator;
 use tokio::sync::Notify;
 
@@ -70,17 +70,12 @@ impl Llm for GatedLlm {
     }
 }
 
-/// An `AuxLlmRegistry` with no persisted `narrate` pin, so `resolve()` always
+/// An `AuxLlmRegistry` with no `narrate` pin, so `resolve()` always
 /// falls back to `factory` — the resolver is never actually consulted (a
 /// no-pin `resolve` short-circuits straight to the primary), so an
 /// always-erroring stub is a faithful stand-in.
-fn registry_with_primary(label: &str, factory: LlmFactory) -> AuxLlmRegistry {
-    let path = std::env::temp_dir().join(format!(
-        "entanglement-narrate-it-{label}-{}.yml",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
-    let store = Arc::new(Mutex::new(AuxModelStore::load_from(Some(path))));
+fn registry_with_primary(factory: LlmFactory) -> AuxLlmRegistry {
+    let store = Arc::new(Mutex::new(AuxModelStore::default()));
     let resolver: ModelResolver = Arc::new(|_u: Option<&UserId>, _p: &str, _m: &str| {
         Err::<ResolvedModel, String>("no catalog in this test".to_string())
     });
@@ -126,7 +121,7 @@ async fn a_tool_call_narrates_the_action() {
             }) as Box<dyn Llm>
         })
     };
-    let registry = registry_with_primary("basic", factory);
+    let registry = registry_with_primary(factory);
 
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| Box::new(ToolCallingLlm) as Box<dyn Llm>),
@@ -198,7 +193,7 @@ async fn a_second_tool_call_is_skipped_while_one_is_in_flight() {
             }) as Box<dyn Llm>
         })
     };
-    let registry = registry_with_primary("burst", factory);
+    let registry = registry_with_primary(factory);
 
     let holly = Holly::spawn(EngineConfig {
         llm_factory: Arc::new(|| Box::new(TwoToolCallingLlm) as Box<dyn Llm>),
@@ -262,7 +257,7 @@ async fn only_a_scripts_first_nested_call_narrates() {
             }) as Box<dyn Llm>
         })
     };
-    let registry = registry_with_primary("nested", factory);
+    let registry = registry_with_primary(factory);
     let holly = Holly::spawn(EngineConfig::default());
     let handle = spawn_action_narrator(&holly, registry);
     tokio::task::yield_now().await;

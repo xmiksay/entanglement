@@ -8,10 +8,14 @@ mod support;
 // A `skutter` child isolated from the developer's real dirs (#747).
 mod skutter_cmd;
 
+// The managed pin files (#323/#331/Issue 5), moved from the library (#967).
+mod agent_generation;
+mod agent_models;
 mod attended_serve;
 mod attended_wake;
 mod attended_wake_queue;
 mod attended_wake_tree;
+mod aux_models;
 // `skutter`'s lifecycle hooks (#199/#734) over the real engine (#964).
 mod hook_events;
 mod hooks;

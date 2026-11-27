@@ -49,7 +49,7 @@ pub(crate) async fn dispatch(
             if let Some(resume_id) = resume {
                 let resume_session_id = SessionId::new(resume_id);
                 let known = known_agents(&head);
-                let (records, check) = session_store::SessionStore::for_cwd(cwd)
+                let (records, check) = crate::user_dirs::session_store(cwd)
                     .load_for_resume(&resume_session_id, |n| known.iter().any(|k| k == n))?;
                 // A retired agent resumes under a fallback (ADR-0215); say so.
                 for fallback in &check.fallbacks {
@@ -99,7 +99,7 @@ pub(crate) async fn dispatch(
             // then runs as for any other head. A fresh `Holly` clone keeps the
             // outer handle for that shutdown path.
             let rejoin = crate::serve::Rejoin::new(
-                session_store::SessionStore::for_cwd(cwd),
+                crate::user_dirs::session_store(cwd),
                 head.live_profiles.clone(),
             );
             crate::serve::serve(
@@ -316,7 +316,7 @@ async fn launch_tui(
 /// Prints the resumable past root sessions for `cwd` (no compacted-away
 /// ones, ADR-0243), most-recently-active first.
 pub(crate) fn print_sessions(cwd: &Path) -> Result<()> {
-    let sessions = session_store::SessionStore::for_cwd(cwd).list_sessions()?;
+    let sessions = crate::user_dirs::session_store(cwd).list_sessions()?;
     let mut sessions = session_store::resumable_roots(sessions);
     sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
 

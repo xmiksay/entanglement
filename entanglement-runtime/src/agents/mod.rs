@@ -82,16 +82,8 @@ use parse::{build_agent, parse_definition, parse_raw, resolve_preload, AgentDefi
 /// permission key fans out to these namespaced MCP tool names in addition to
 /// the fixed built-in set. Pass an empty index when no MCP capability fan-out
 /// applies (e.g. `McpCapabilityIndex::new()`).
-pub fn load_registry(
-    root: &Path,
-    ctx: &PromptContext,
-    skills: &SkillRegistry,
-    mcp: &McpCapabilityIndex,
-) -> Result<AgentCatalog> {
-    load_registry_in(root, &UserLayer::FromEnv, ctx, skills, mcp)
-}
-
-/// [`load_registry`] with an explicit user layer (#773).
+///
+/// `user` is where the user layer lives — the embedder's answer (#773).
 pub fn load_registry_in(
     root: &Path,
     user: &UserLayer,
@@ -131,7 +123,7 @@ pub fn load_registry_in(
 
 /// Parse *only* the embedded built-in set (`general`/`plan`/`debug`)
 /// into a [`AgentCatalog`], skipping the user/project layers
-/// [`load_registry`] consults. The runtime is the single source of the
+/// [`load_registry_in`] consults. The runtime is the single source of the
 /// built-ins (#201): core carries only the `general` fallback
 /// [`AgentCatalog::new`] synthesizes, so callers that need the full set
 /// without touching the filesystem parse the embedded markdown here. Prompts
@@ -141,7 +133,7 @@ pub fn load_registry_in(
 /// The embedded definitions are exercised by
 /// [`tests::built_ins_parse_with_expected_shape`], but a passing test suite is
 /// not something this function's own callers can rely on at runtime (#585):
-/// embedders call this directly as a public seam, bypassing [`load_registry`]
+/// embedders call this directly as a public seam, bypassing [`load_registry_in`]
 /// entirely. So a parse failure here is surfaced as a `Result` — same as
 /// every other layer — rather than an unconditional panic baked into a
 /// library function.
@@ -175,24 +167,15 @@ pub struct AgentResolution {
 }
 
 /// Resolve every agent for `root` with full provenance (#185), applying the same
-/// layer precedence as [`load_registry`] but keeping *which* layer won and what
+/// layer precedence as [`load_registry_in`] but keeping *which* layer won and what
 /// it shadowed. Sorted by name for a stable table. Malformed files behave
 /// exactly as at load (native aborts, foreign warns and skips).
 ///
-/// `skutter inspect agents` (unlike [`load_registry`]) doesn't already resolve
+/// `skutter inspect agents` (unlike [`load_registry_in`]) doesn't already resolve
 /// the user config's MCP servers, so this parses with an empty
 /// [`McpCapabilityIndex`] — harmless now that agent parsing carries no
 /// permission fan-out of its own (ADR-0207); kept for
 /// [`build_agent`]'s shared signature.
-pub fn resolve_registry(
-    root: &Path,
-    ctx: &PromptContext,
-    skills: &SkillRegistry,
-) -> Result<Vec<AgentResolution>> {
-    resolve_registry_in(root, &UserLayer::FromEnv, ctx, skills)
-}
-
-/// [`resolve_registry`] with an explicit user layer (#773).
 pub fn resolve_registry_in(
     root: &Path,
     user: &UserLayer,
@@ -256,21 +239,11 @@ pub struct AgentPromptReport {
 }
 
 /// Resolve the winning definition for `agent` (same precedence as
-/// [`load_registry`]) and report its assembled prompt plus per-part breakdown,
+/// [`load_registry_in`]) and report its assembled prompt plus per-part breakdown,
 /// without spawning the engine (#184). `Ok(None)` if no such agent exists;
 /// malformed definitions behave exactly as at load (native aborts, foreign
 /// warns and skips). Parses with an empty [`McpCapabilityIndex`], kept for
 /// [`build_agent`]'s shared signature (#426; harmless now, ADR-0207).
-pub fn prompt_report(
-    root: &Path,
-    agent: &str,
-    ctx: &PromptContext,
-    skills: &SkillRegistry,
-) -> Result<Option<AgentPromptReport>> {
-    prompt_report_in(root, &UserLayer::FromEnv, agent, ctx, skills)
-}
-
-/// [`prompt_report`] with an explicit user layer (#773).
 pub fn prompt_report_in(
     root: &Path,
     user: &UserLayer,

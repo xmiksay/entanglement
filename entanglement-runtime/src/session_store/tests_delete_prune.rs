@@ -176,10 +176,13 @@ fn prune_does_not_walk_sibling_project_dirs() {
 }
 
 #[test]
-#[should_panic(expected = "resolved the real user data dir")]
-fn for_cwd_refuses_the_real_data_dir_under_test() {
-    // The #747 guard: a unit test can never reach the developer's live logs.
-    let _ = SessionStore::for_cwd(Path::new("/some/project"));
+fn for_cwd_keys_the_store_by_the_cwd_under_the_base() {
+    let store = SessionStore::for_cwd(Path::new("/data/sessions"), Path::new("/some/project"));
+    assert_eq!(
+        store,
+        SessionStore::at("/data/sessions/some-project"),
+        "one store per working directory under the base"
+    );
 }
 
 /// ADR-0234: prune stays stat-only. A file moved sub-agents were adopted

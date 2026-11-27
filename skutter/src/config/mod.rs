@@ -1,4 +1,8 @@
-//! User configuration — the layered settings file (#172, ADR-0047).
+//! User configuration — the layered settings file (#172, ADR-0047) — plus
+//! the managed state files' paths and the key writer. `skutter`'s alone
+//! (#967): the library reads no config or env file and takes the plain
+//! values resolved here (a `PermissionProfile` ceiling, `HttpAuth`,
+//! `TrustedFolders`, `BackupLimits`, …).
 //!
 //! A general user-config file, same defaults+override shape as the provider
 //! catalog (#118) and the agent/skill registries (#112/#114): an embedded
@@ -174,11 +178,11 @@ pub struct Config {
     pub mcp: HashMap<String, McpServerConfig>,
     /// Hidden credentials for the rhai `http()` binding (ADR-0227) — user
     /// layer only ([`http_auth`]). Empty by default.
-    pub http_auth: http_auth::HttpAuth,
+    pub http_auth: entanglement_runtime::http_auth::HttpAuth,
     /// Per mode, the `http(...)` allow rules only a project layer added —
     /// they grade, but never unlock a credentialed call in an unattended
     /// mode (ADR-0227).
-    pub untrusted_http_rules: http_auth::ProjectHttpRules,
+    pub untrusted_http_rules: entanglement_runtime::http_auth::ProjectHttpRules,
     /// `rhai.trusted` folders by layer, canonical (ADR-0228): a
     /// `rhai(path)` inside one runs with no launch card, force-allowed —
     /// a user-layer one not in a mode the project config prompts in.
@@ -331,7 +335,7 @@ fn parse(raw_layers: &[RawLayer], root: Option<&Path>) -> Result<Resolved> {
             .session_retention_days
             .unwrap_or(DEFAULT_SESSION_RETENTION_DAYS),
         tui: raw.tui,
-        undo: raw.undo,
+        undo: raw.undo.into(),
     };
     warnings.extend(config.tui.warnings());
     warnings.extend(config.http_auth.key_warnings());

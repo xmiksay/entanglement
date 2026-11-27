@@ -10,12 +10,12 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 
-use crate::config::aux_models::{AuxModelStore, Purpose};
+use crate::config::aux_models::{AuxModelStore, AuxModelsPath, Purpose};
 
 /// Print every known auxiliary-LLM purpose with its persisted pin, or
 /// "(unset — falls back to the session's primary model)" when none is set.
 pub fn inspect_aux_models() -> Result<()> {
-    let store = AuxModelStore::load();
+    let store = AuxModelsPath::managed().load();
     print!("{}", render_aux_models(&store));
     Ok(())
 }

@@ -1,6 +1,7 @@
 //! The `config.yml` `undo:` block (#787): whether per-write file backups
-//! (ADR-0212) are recorded, and their size caps. Deserializes straight into
-//! [`crate::file_backup::BackupLimits`]; this module owns the size grammar.
+//! (ADR-0212) are recorded, and their size caps. Deserializes into
+//! [`RawUndo`], which becomes the library's plain
+//! [`BackupLimits`]; this module owns the size grammar.
 //!
 //! A size is a plain integer (bytes) or a string `<digits>[ ]<unit>` with a
 //! case-insensitive unit: `B`, decimal `KB`/`MB`/`GB` (powers of 1000) or
@@ -8,10 +9,10 @@
 //! least 1 byte — `enabled: false` is the off switch, so a `0` cap is
 //! rejected rather than read as one — and at most [`MAX_SIZE`].
 
+use entanglement_runtime::file_backup::{format_size, BackupLimits, FileBackups};
 use serde::{Deserialize, Deserializer};
 
 use super::Config;
-use crate::file_backup::FileBackups;
 
 const KIB: u64 = 1024;
 const MIB: u64 = KIB * 1024;
@@ -66,21 +67,10 @@ fn check_size(n: u64) -> Result<u64, String> {
     }
 }
 
-/// Render `n` bytes exactly: the largest binary unit that divides it, else
-/// plain bytes — so a cap set as `8MB` never displays as a rounded `7 MiB`.
-pub fn format_size(n: u64) -> String {
-    for (unit, name) in [(GIB, "GiB"), (MIB, "MiB"), (KIB, "KiB")] {
-        if n >= unit && n.is_multiple_of(unit) {
-            return format!("{} {name}", n / unit);
-        }
-    }
-    format!("{n} bytes")
-}
-
 /// Apply a reloaded config's `undo:` block to the live `backups`. A config
 /// that no longer parses keeps the previous limits — a mid-save edit must not
 /// switch backups off or reset the caps.
-pub(crate) fn reapply(backups: &FileBackups, loaded: anyhow::Result<Config>) {
+pub fn reapply(backups: &FileBackups, loaded: anyhow::Result<Config>) {
     match loaded {
         Ok(config) if config.undo != backups.limits() => {
             tracing::info!("undo backup limits reloaded: {:?}", config.undo);
@@ -91,8 +81,46 @@ pub(crate) fn reapply(backups: &FileBackups, loaded: anyhow::Result<Config>) {
     }
 }
 
+/// The `undo:` block as written: every field optional, filled from
+/// [`BackupLimits::default`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct RawUndo {
+    enabled: bool,
+    #[serde(deserialize_with = "de_size")]
+    max_file_bytes: u64,
+    #[serde(deserialize_with = "de_size")]
+    max_root_bytes: u64,
+}
+
+impl Default for RawUndo {
+    fn default() -> Self {
+        BackupLimits::default().into()
+    }
+}
+
+impl From<BackupLimits> for RawUndo {
+    fn from(l: BackupLimits) -> Self {
+        Self {
+            enabled: l.enabled,
+            max_file_bytes: l.max_file_bytes,
+            max_root_bytes: l.max_root_bytes,
+        }
+    }
+}
+
+impl From<RawUndo> for BackupLimits {
+    fn from(r: RawUndo) -> Self {
+        Self {
+            enabled: r.enabled,
+            max_file_bytes: r.max_file_bytes,
+            max_root_bytes: r.max_root_bytes,
+        }
+    }
+}
+
 /// serde `deserialize_with` for a size field: a YAML integer or a size string.
-pub(crate) fn de_size<'de, D: Deserializer<'de>>(de: D) -> Result<u64, D::Error> {
+fn de_size<'de, D: Deserializer<'de>>(de: D) -> Result<u64, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Raw {
@@ -109,7 +137,6 @@ pub(crate) fn de_size<'de, D: Deserializer<'de>>(de: D) -> Result<u64, D::Error>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_backup::BackupLimits;
 
     #[test]
     fn sizes_parse_with_decimal_and_binary_units() {
@@ -138,16 +165,9 @@ mod tests {
     }
 
     #[test]
-    fn sizes_format_exactly() {
-        assert_eq!(format_size(8 * MIB), "8 MiB");
-        assert_eq!(format_size(256_000_000), "250000 KiB");
-        assert_eq!(format_size(3 * GIB), "3 GiB");
-        assert_eq!(format_size(1000), "1000 bytes");
-    }
-
-    #[test]
     fn block_accepts_integers_and_strings_and_fills_defaults() {
-        let l: BackupLimits = serde_yaml::from_str("max_file_bytes: 4096").unwrap();
+        let parse = |y: &str| BackupLimits::from(serde_yaml::from_str::<RawUndo>(y).unwrap());
+        let l = parse("max_file_bytes: 4096");
         assert_eq!(
             l,
             BackupLimits {
@@ -155,10 +175,13 @@ mod tests {
                 ..BackupLimits::default()
             }
         );
-        let l: BackupLimits = serde_yaml::from_str("enabled: false\nmax_root_bytes: 1GiB").unwrap();
+        let l = parse("enabled: false\nmax_root_bytes: 1GiB");
         assert!(!l.enabled);
         assert_eq!(l.max_root_bytes, GIB);
-        assert_eq!(l.max_file_bytes, crate::file_backup::DEFAULT_MAX_FILE_BYTES);
+        assert_eq!(
+            l.max_file_bytes,
+            entanglement_runtime::file_backup::DEFAULT_MAX_FILE_BYTES
+        );
     }
 
     #[test]
@@ -177,7 +200,7 @@ mod tests {
             BackupLimits {
                 enabled: false,
                 max_file_bytes: MIB,
-                max_root_bytes: crate::file_backup::DEFAULT_MAX_ROOT_BYTES,
+                max_root_bytes: entanglement_runtime::file_backup::DEFAULT_MAX_ROOT_BYTES,
             }
         );
         let prov: std::collections::HashMap<_, _> = resolved.provenance.into_iter().collect();
@@ -200,8 +223,8 @@ mod tests {
             .map(|l| format!("{}\n", &l[3..]))
             .collect();
         assert!(!block.is_empty(), "template lost its `undo:` example");
-        let l: BackupLimits = serde_yaml::from_str(&block).unwrap();
-        assert_eq!(l, BackupLimits::default());
+        let l: RawUndo = serde_yaml::from_str(&block).unwrap();
+        assert_eq!(BackupLimits::from(l), BackupLimits::default());
     }
 
     #[test]
@@ -231,7 +254,7 @@ mod tests {
             "max_file_mb: 8",
         ] {
             assert!(
-                serde_yaml::from_str::<BackupLimits>(bad).is_err(),
+                serde_yaml::from_str::<RawUndo>(bad).is_err(),
                 "`{bad}` must be a config error"
             );
         }

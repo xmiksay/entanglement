@@ -12,8 +12,8 @@ use crate::layers::{Layer, Strictness, UserLayer};
 
 /// Env var replacing the whole user commands layer (tests, non-XDG setups, and
 /// the cross-vendor opt-out — same contract as `ENTANGLEMENT_SKILLS_DIR`).
-/// Owned by the runtime watcher, which fingerprints the same dirs.
-pub use entanglement_runtime::watch::COMMANDS_DIR_ENV;
+/// The definitions watcher fingerprints the same dirs.
+pub use crate::user_dirs::COMMANDS_DIR_ENV;
 
 /// A discovered command file *before* parsing.
 #[derive(Debug)]
@@ -28,14 +28,7 @@ pub(super) struct RawCommand {
 /// Every command file in precedence order — user dirs, then project dirs
 /// (there are no embedded built-ins). Later entries win on a name collision.
 pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawCommand>> {
-    crate::layers::load_layers(
-        root,
-        "commands",
-        COMMANDS_DIR_ENV,
-        user,
-        Vec::new(),
-        discover_dir,
-    )
+    crate::layers::load_layers(root, "commands", user, Vec::new(), discover_dir)
 }
 
 /// Append every `*.md` under `dir` (recursively), tagged with `layer`. A

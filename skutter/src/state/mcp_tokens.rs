@@ -60,11 +60,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::config::atomic::atomic_write;
+use crate::config::lock::with_locked_file;
+use crate::config::state_dir::{state_file, MCP_TOKENS_FILE, STATE_DIR_ENV};
 use anyhow::{bail, Context, Result};
 use entanglement_core::{StoredAuth, TokenStore};
-use entanglement_runtime::config::atomic::atomic_write;
-use entanglement_runtime::config::lock::with_locked_file;
-use entanglement_runtime::config::state_dir::{state_file, MCP_TOKENS_FILE, STATE_DIR_ENV};
 use serde::{Deserialize, Serialize};
 
 /// On-disk shape: a single `servers:` map.

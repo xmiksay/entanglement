@@ -11,9 +11,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::config::undo::format_size;
 use crate::config::{Config, ConfigLayer, Resolved};
 use crate::hooks::Hooks;
+use entanglement_runtime::file_backup::format_size;
 
 /// Resolve the user config for `cwd` and print the merged values with their
 /// winning layer, the permission ceiling, the discovered layer sources, and

@@ -1,4 +1,4 @@
-//! [`LiveDefinitions`]: the runtime-held mirrors the watcher swaps, and the
+//! [`LiveDefinitions`]: the head-held mirrors the watcher swaps, and the
 //! [`reload`] that swaps them. Split out of `watch.rs` (#787) to keep it
 //! under the file cap.
 
@@ -25,7 +25,7 @@ pub enum ReloadNotice {
     Failed(String),
 }
 
-/// The runtime-held mirrors a reload swaps. See the [`super`] module doc for
+/// The head-held mirrors a reload swaps. See the [`super`] module doc for
 /// why this is deliberately *not* core's `EngineConfig.agents`.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -91,13 +91,21 @@ impl LiveDefinitions {
 /// fingerprint check has already confirmed something on disk actually
 /// changed, so every call here is expected to produce a real notice.
 pub(super) fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<String> {
-    let new_skills = crate::skills::load_registry(cwd)?;
+    let new_skills = crate::skills::load_registry_in(
+        cwd,
+        &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
+    )?;
     let prompt_ctx = match &live.sessions {
         Some(sessions) => PromptContext::load_with(cwd, sessions),
-        None => PromptContext::load(cwd),
+        None => PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd)),
     };
-    let mut new_profiles =
-        crate::agents::load_registry(cwd, &prompt_ctx, &new_skills, &live.mcp_capabilities)?;
+    let mut new_profiles = crate::agents::load_registry_in(
+        cwd,
+        &crate::user_dirs::user_layer(crate::user_dirs::AGENTS_DIR_ENV),
+        &prompt_ctx,
+        &new_skills,
+        &live.mcp_capabilities,
+    )?;
 
     // Managed-file mirrors (#329): re-read whatever another skutter instance
     // may have written since this process's last load, then re-apply pins onto

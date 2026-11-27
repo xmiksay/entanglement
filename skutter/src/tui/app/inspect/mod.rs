@@ -14,7 +14,6 @@
 //! overlay). Tab switching works from either level.
 
 use crate::inspect::{InspectItem, InspectListTab};
-use crate::layers::UserLayer;
 
 use super::App;
 
@@ -102,10 +101,11 @@ pub struct InspectState {
     level: InspectLevel,
     /// The resolved per-item detail string, set on `Enter`. Cleared on back.
     detail: Option<String>,
-    /// The user definitions layer the overlay (and `/tools`) resolves agents,
-    /// skills and commands from: the env/real dirs live, an empty dir in a
-    /// test `App` so it never reads the developer's own definitions (#773).
-    pub(super) user_layer: UserLayer,
+    /// The user definitions layers the overlay (and `/tools`) resolves
+    /// agents, skills and commands from: the env/real dirs live
+    /// ([`App::set_user_layers`]), an empty dir in a test `App` so it never
+    /// reads the developer's own definitions (#773).
+    pub(super) user_layers: crate::inspect::UserLayers,
 }
 
 impl InspectState {
@@ -133,6 +133,11 @@ impl InspectState {
 }
 
 impl App {
+    /// The user definitions layers the overlay and `/tools` resolve from.
+    pub fn set_user_layers(&mut self, layers: crate::inspect::UserLayers) {
+        self.inspect.user_layers = layers;
+    }
+
     pub fn showing_inspect(&self) -> bool {
         self.inspect.visible
     }
@@ -180,7 +185,7 @@ impl App {
         } else {
             let reports = crate::inspect::tui_reports(
                 self.root(),
-                &self.inspect.user_layer,
+                &self.inspect.user_layers,
                 self.session_store(),
                 self.agent(),
             );
@@ -276,12 +281,12 @@ impl App {
         let detail = match list_tab {
             InspectListTab::Agents => crate::inspect::agent_detail(
                 self.root(),
-                &self.inspect.user_layer,
+                &self.inspect.user_layers,
                 self.session_store(),
                 &item.name,
             ),
             InspectListTab::Skills => {
-                crate::inspect::skill_detail(self.root(), &self.inspect.user_layer, &item.name)
+                crate::inspect::skill_detail(self.root(), &self.inspect.user_layers, &item.name)
             }
         };
         self.inspect.detail = detail.or_else(|| Some(format!("(no detail for `{}`)", item.name)));

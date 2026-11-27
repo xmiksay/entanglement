@@ -9,7 +9,7 @@
 use anyhow::{bail, Context, Result};
 use entanglement_provider::Catalog;
 
-use entanglement_runtime::config::env_key;
+use crate::config::env_key;
 
 /// Run the `config set-key` command for `provider`, sourcing the value from
 /// `key_arg` when given, else prompting / reading stdin.

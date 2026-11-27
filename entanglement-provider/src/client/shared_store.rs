@@ -4,9 +4,9 @@
 //! public API and policy (when to admit, what a caller does with a lease);
 //! this module owns the file format and the locked read-modify-write
 //! mechanics underneath it, mirroring
-//! `entanglement-runtime::config::lock::with_locked_file` (independently
-//! re-implemented since `entanglement-provider` is the leaf crate and takes
-//! no `entanglement-*` dependency, ADR-0053).
+//! `skutter::config::lock::with_locked_file` (independently re-implemented
+//! since `entanglement-provider` is the leaf crate and takes no
+//! `entanglement-*` dependency, ADR-0053).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -216,7 +216,7 @@ pub(super) fn prune_orphaned(dir: &Path, max_idle: Duration) -> usize {
 /// specific cause isn't threaded through.
 ///
 /// The temp file is `fsync`ed before the rename and the parent directory after
-/// it, mirroring `entanglement-runtime::config::atomic::atomic_write` (#549) —
+/// it, mirroring `skutter::config::atomic::atomic_write` (#549) —
 /// without both syncs a crash between write and rename can leave `path`
 /// zero-length rather than either the old or new content.
 fn with_locked_state<T>(path: &Path, f: impl FnOnce(&mut SharedState) -> T) -> Result<T, ()> {

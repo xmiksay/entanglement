@@ -4,12 +4,12 @@
 //! `/mcp` was split into `mcp_command.rs` (#373).
 //!
 //! The command persists a per-purpose `(provider, model)` pin into the managed
-//! `aux-models.yml` via the installed [`AuxModelStore`], so the next auxiliary
+//! `aux-models.yml` and the installed [`AuxModelStore`], so the next auxiliary
 //! LLM call (session-title generator; compaction summary once wired) resolves
 //! it instead of the primary model. No wire traffic — this is head-side
 //! persistence, not an engine op.
 
-use crate::config::aux_models::{AuxModelStore, Purpose};
+use crate::config::aux_models::{AuxModelStore, AuxModelsPath, Purpose};
 
 use super::app::App;
 
@@ -45,7 +45,8 @@ pub(super) fn send_aux_model(app: &mut App, text: &str) {
         );
         return;
     };
-    let result = store.lock().unwrap().set(purpose, &provider, &model);
+    let result =
+        AuxModelsPath::managed().set(&mut store.lock().unwrap(), purpose, &provider, &model);
     match result {
         Ok(()) => app.confirm_aux_pin(purpose, &provider, &model),
         Err(e) => {
@@ -70,8 +71,6 @@ mod tests {
 
     #[test]
     fn pin_label_falls_back_when_a_purpose_is_unpinned() {
-        // An empty store (no path) can't `set`, so only the unpinned label is
-        // exercised here — the set path is covered by the integration tests.
         let store = AuxModelStore::default();
         assert_eq!(pin_label(&store, Purpose::Summarize), "(primary model)");
         assert_eq!(pin_label(&store, Purpose::SessionTitle), "(primary model)");

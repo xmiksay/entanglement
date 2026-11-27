@@ -29,13 +29,12 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// The production layout for working directory `cwd`:
-    /// `<data_dir>/entanglement/sessions/<safe_cwd_name(cwd)>`. Resolves only
-    /// the path; nothing is created until first use.
-    pub fn for_cwd(cwd: &Path) -> Self {
-        Self {
-            dir: default_base().map(|base| base.join(safe_cwd_name(cwd))),
-        }
+    /// One store per working directory under `base`:
+    /// `<base>/<safe_cwd_name(cwd)>` (`skutter`'s `base` is
+    /// `<data_dir>/entanglement/sessions`). Resolves only the path; nothing is
+    /// created until first use.
+    pub fn for_cwd(base: &Path, cwd: &Path) -> Self {
+        Self::at(base.join(safe_cwd_name(cwd)))
     }
 
     /// A store with nowhere to keep logs: every operation fails (listing
@@ -251,12 +250,4 @@ fn prune_orphan_backups(store_dir: &Path) {
             remove_backups(store_dir, &name);
         }
     }
-}
-
-/// `<data_dir>/entanglement/sessions`, the base every project's store lives
-/// under. Guarded under `cfg(test)` (#747): a unit test must inject
-/// `SessionStore::at(<tempdir>)`, never read, write and prune the developer's
-/// live session logs.
-fn default_base() -> Option<PathBuf> {
-    crate::user_dirs::data_dir().map(|d| d.join("entanglement/sessions"))
 }

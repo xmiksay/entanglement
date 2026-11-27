@@ -13,7 +13,7 @@ use entanglement_core::{
     LlmStream, ModelResolver, OutEvent, ResolvedModel, SessionId, UserId,
 };
 use entanglement_runtime::aux_llm::AuxLlmRegistry;
-use entanglement_runtime::config::aux_models::AuxModelStore;
+use entanglement_runtime::aux_llm::AuxModelStore;
 use entanglement_runtime::session_title::spawn_session_title_generator;
 use tokio::sync::Notify;
 
@@ -75,16 +75,10 @@ impl Llm for GatedLlm {
 /// in the racing/resume tests below (irrelevant there), `Some(1)` in the
 /// deferral test to simulate a contended model.
 fn registry_with_primary(
-    label: &str,
     factory: LlmFactory,
     primary_concurrency: Option<usize>,
 ) -> AuxLlmRegistry {
-    let path = std::env::temp_dir().join(format!(
-        "entanglement-session-title-it-{label}-{}.yml",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
-    let store = Arc::new(Mutex::new(AuxModelStore::load_from(Some(path))));
+    let store = Arc::new(Mutex::new(AuxModelStore::default()));
     let resolver: ModelResolver = Arc::new(|_u: Option<&UserId>, _p: &str, _m: &str| {
         Err::<ResolvedModel, String>("no catalog in this test".to_string())
     });
@@ -118,7 +112,7 @@ async fn a_racing_name_survives_the_generators_late_write() {
             }) as Box<dyn Llm>
         })
     };
-    let registry = registry_with_primary("race", factory, None);
+    let registry = registry_with_primary(factory, None);
 
     let holly = Holly::spawn(EngineConfig::default());
     let handle = spawn_session_title_generator(&holly, registry);
@@ -180,7 +174,7 @@ async fn a_resumed_named_session_is_never_retitled() {
             }) as Box<dyn Llm>
         })
     };
-    let registry = registry_with_primary("resume", factory, None);
+    let registry = registry_with_primary(factory, None);
 
     let holly = Holly::spawn(EngineConfig::default());
     let handle = spawn_session_title_generator(&holly, registry);
@@ -250,7 +244,7 @@ async fn a_contended_primary_model_defers_the_aux_call_until_the_turn_settles() 
     // `Some(1)`: simulates a primary model with a single in-flight permit, so
     // the generator's contention guard treats firing alongside the main turn
     // as guaranteed contention.
-    let registry = registry_with_primary("contended", aux_factory, Some(1));
+    let registry = registry_with_primary(aux_factory, Some(1));
 
     let primary_entered = Arc::new(Notify::new());
     let primary_proceed = Arc::new(Notify::new());

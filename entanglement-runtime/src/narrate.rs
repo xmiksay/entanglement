@@ -34,7 +34,7 @@ use futures::StreamExt;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::aux_llm::AuxLlmRegistry;
-use crate::config::aux_models::Purpose;
+use crate::aux_llm::Purpose;
 
 /// The system prompt for the narrator: short, opinionated, asks for a
 /// present-tense phrase describing a single tool call. Display-only metadata,

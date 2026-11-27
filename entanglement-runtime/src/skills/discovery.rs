@@ -16,9 +16,6 @@ use crate::layers::{Strictness, UserLayer};
 /// skill's identity is its frontmatter `name`.
 pub(super) const BUILT_INS: &[(&str, &str)] = &[("rhai.md", include_str!("rhai.md"))];
 
-/// Env var overriding the user skills directory (tests + non-XDG setups).
-pub(super) const SKILLS_DIR_ENV: &str = "ENTANGLEMENT_SKILLS_DIR";
-
 /// The `SKILL.md` marker file that makes a directory a skill.
 pub(super) const SKILL_FILE: &str = "SKILL.md";
 
@@ -36,8 +33,8 @@ pub(super) struct RawSkill {
 /// Enumerate every `SKILL.md` in precedence order — embedded built-ins, then the
 /// user dir, then the project dir — without parsing. Later entries win on a
 /// `name` collision, so consumers keep the last match. A missing dir is fine; an
-/// unreadable dir or file is an error. A missing *explicit*
-/// `ENTANGLEMENT_SKILLS_DIR` override is warned by [`crate::layers::load_layers`].
+/// unreadable dir or file is an error. A missing explicit [`UserLayer::Dir`]
+/// is warned by [`crate::layers::load_layers`].
 pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawSkill>> {
     let built_ins: Vec<RawSkill> = BUILT_INS
         .iter()
@@ -51,14 +48,7 @@ pub(super) fn discover(root: &Path, user: &UserLayer) -> Result<Vec<RawSkill>> {
             content: (*contents).to_string(),
         })
         .collect();
-    crate::layers::load_layers(
-        root,
-        "skills",
-        SKILLS_DIR_ENV,
-        user,
-        built_ins,
-        discover_dir,
-    )
+    crate::layers::load_layers(root, "skills", user, built_ins, discover_dir)
 }
 
 /// Every user and project skill layer dir [`discover`] reads, existing or
@@ -70,8 +60,7 @@ pub fn skill_dirs(root: &Path, user: &UserLayer) -> Vec<PathBuf> {
         Ok(())
     };
     // The recorder never fails, so neither does the walk over candidates.
-    crate::layers::load_layers(root, "skills", SKILLS_DIR_ENV, user, Vec::new(), record)
-        .unwrap_or_default()
+    crate::layers::load_layers(root, "skills", user, Vec::new(), record).unwrap_or_default()
 }
 
 /// Append every `SKILL.md` under `dir` (recursively), tagged with `layer`, to

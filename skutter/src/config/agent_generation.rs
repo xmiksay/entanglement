@@ -6,7 +6,7 @@
 //! `<state dir>/agent-generation.yml` (relocated by
 //! `ENTANGLEMENT_STATE_DIR`, ADR-0213), a sibling of `agent-models.yml`, the
 //! grants file (#174), and the provider-key env file (#220) — **managed, not
-//! layered**: the runtime rewrites it freely, so it never mixes into the
+//! layered**: skutter rewrites it freely, so it never mixes into the
 //! hand-edited `config.yml`.
 //!
 //! Shape (a [`BTreeMap`] so the file is stable across rewrites):
@@ -57,7 +57,7 @@ struct AgentGenerationFile {
     agents: BTreeMap<String, GenerationParams>,
 }
 
-/// The runtime's per-agent generation overrides: the persisted map plus the
+/// skutter's per-agent generation overrides: the persisted map plus the
 /// file path to re-write when a new override is recorded.
 #[derive(Debug, Default)]
 pub struct AgentGenerationStore {

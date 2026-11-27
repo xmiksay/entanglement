@@ -6,7 +6,7 @@
 //! `Box<dyn Llm>` by reusing the runtime's catalog resolver (the same
 //! [`ModelResolver`] the engine calls on `SetModel`), falling back to the
 //! primary model when:
-//! - the purpose has no persisted pin ([`AuxModelStore::get`] misses), or
+//! - the purpose has no pin ([`AuxModelStore::get`] misses), or
 //! - the pin's provider/model fails to resolve (unknown to the catalog, or a
 //!   missing API key for that provider — both surfaced as an `Err` from the
 //!   resolver).
@@ -31,7 +31,8 @@ use std::time::{Duration, Instant};
 
 use entanglement_core::{AuxLlmResolver, Catalog, Llm, LlmFactory, ModelResolver, ResolvedModel};
 
-use crate::config::aux_models::{AuxModelStore, Purpose};
+mod pins;
+pub use pins::{AuxModelStore, Purpose};
 
 /// How long a `(purpose, provider, model)` combination stays cooled down
 /// after a failed [`try_resolve`](AuxLlmRegistry::try_resolve) probe (#560

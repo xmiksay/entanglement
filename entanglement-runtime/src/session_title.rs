@@ -46,7 +46,7 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::aux_llm::AuxLlmRegistry;
-use crate::config::aux_models::Purpose;
+use crate::aux_llm::Purpose;
 
 /// The per-model concurrency cap, at or below which firing the aux call
 /// alongside the main turn is treated as guaranteed contention rather than

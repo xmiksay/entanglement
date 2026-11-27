@@ -61,6 +61,7 @@ pub use session::inspect_session;
 pub use skills::inspect_skills;
 pub use tui::{
     agent_detail, skill_detail, tui_reports, InspectItem, InspectListTab, InspectReports,
+    UserLayers,
 };
 
 use std::fmt::Write as _;

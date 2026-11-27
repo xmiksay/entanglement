@@ -18,10 +18,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::config::atomic::atomic_write;
+use crate::config::lock::with_locked_file;
+use crate::config::state_dir::{state_file, MCP_TOOLS_FILE};
 use anyhow::Result;
-use entanglement_runtime::config::atomic::atomic_write;
-use entanglement_runtime::config::lock::with_locked_file;
-use entanglement_runtime::config::state_dir::{state_file, MCP_TOOLS_FILE};
 use entanglement_runtime::mcp::McpToolCache;
 use serde::{Deserialize, Serialize};
 

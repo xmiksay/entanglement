@@ -28,13 +28,13 @@ mod tui;
 mod user_dirs;
 
 use entanglement_runtime::{
-    agents, arg_validate, aux_llm, capability, config, discover, exec, extra_roots, file_backup,
-    history, host, jobs, layers, mcp, mode, narrate, path_grading, persistence, plan_files,
-    plan_watch, policy, retained_output, script_ops, session_store, session_title, skills,
-    subagent, system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names,
-    tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
+    agents, arg_validate, aux_llm, capability, discover, exec, extra_roots, file_backup, history,
+    host, jobs, mcp, mode, narrate, path_grading, persistence, plan_files, plan_watch, policy,
+    retained_output, script_ops, session_store, session_title, skills, subagent, system_prompt,
+    system_prompt_mode, throttle, tool_advertising, tool_names, tool_runner, workdir,
+    SharedRegistry, ToolRegistry,
 };
-use skutter::{hooks, inspect, logging, serve, slash_commands, state};
+use skutter::{config, hooks, inspect, logging, serve, slash_commands, state, watch};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     // scoped to this cwd's session dir only. A read-only data dir or a transient
     // error is logged and skipped — never fatal to startup. Runs before any head
     // so the TUI's resume modal and `sessions` both reflect the pruned set.
-    match session_store::SessionStore::for_cwd(&cwd).prune(user_config.session_retention_days) {
+    match crate::user_dirs::session_store(&cwd).prune(user_config.session_retention_days) {
         Ok(removed) if removed > 0 => {
             tracing::info!(
                 "startup prune removed {removed} session log(s) older than {} day(s)",

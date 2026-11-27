@@ -6,9 +6,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use entanglement_core::SessionId;
 
+use super::format_size;
 use super::manifest::{self, Change, Line, Prior, Stats, BLOBS, MANIFEST};
 use super::{lock, now_ms, sha256_hex, BackupLimits, FileBackups};
-use crate::config::undo::format_size;
 use crate::exec_scope::{current_exec_scope, ExecScope};
 
 /// What a change must know from *before* its write lands (ADR-0236 §2):

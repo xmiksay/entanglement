@@ -74,8 +74,8 @@ impl SettingsEffects for LiveEffects<'_> {
                 let mut store = store
                     .lock()
                     .map_err(|_| "the aux-models store lock is poisoned".to_string())?;
-                store
-                    .set(*purpose, provider, model)
+                crate::config::aux_models::AuxModelsPath::managed()
+                    .set(&mut store, *purpose, provider, model)
                     .map_err(|e| format!("persist failed: {e:#}"))
             }
         }

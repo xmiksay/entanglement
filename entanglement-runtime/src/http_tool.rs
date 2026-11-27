@@ -343,7 +343,7 @@ mod tests {
     /// echoing the bare token comes back scrubbed.
     #[test]
     fn a_non_2xx_body_echoing_the_bare_token_is_scrubbed() {
-        let entry: crate::config::http_auth::HttpAuthEntry =
+        let entry: crate::http_auth::HttpAuthEntry =
             serde_yaml::from_str("headers: {Authorization: \"Bearer ${T}\"}").unwrap();
         let auth = entry.resolve(|_| Some("tok123".into())).unwrap();
         let outcome = FetchOutcome {

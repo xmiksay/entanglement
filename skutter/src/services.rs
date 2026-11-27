@@ -186,7 +186,7 @@ pub(crate) fn start(
         .rhai_trusted(user_config.rhai_trusted.clone())
         .skill_dirs(entanglement_runtime::skills::skill_dirs(
             cwd,
-            &entanglement_runtime::layers::UserLayer::FromEnv,
+            &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
         ))
         .jobs(jobs)
         .retained(retained)
@@ -263,7 +263,7 @@ pub(crate) fn start(
 
     // Spawn the persistence subscriber to log all inbound + outbound frames.
     // One store for both: the log the tap writes is the one `ReplayFrom` reads.
-    let sessions = crate::session_store::SessionStore::for_cwd(cwd);
+    let sessions = crate::user_dirs::session_store(cwd);
     let persistence_handle = persistence::spawn_persistence_subscriber(&holly, sessions.clone());
     // Answer `ReplayFrom` late-subscriber history queries from that same log
     // (#160). The handle is kept so it can be aborted at shutdown — like the

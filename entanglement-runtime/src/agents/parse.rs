@@ -140,8 +140,8 @@ pub(super) fn parse_definition(
 /// `_mcp` is dead weight since ADR-0207 (agent parsing carries no permission
 /// fan-out any more) — kept only so every call site in this module shares one
 /// signature; [`permission_from_value`]/`expand_capabilities` still need a real
-/// [`McpCapabilityIndex`] for the config `permissions:` ceiling
-/// ([`crate::config`]).
+/// [`McpCapabilityIndex`] for an embedder's `permissions:` ceiling
+/// (`skutter`'s `config.yml`).
 pub(super) fn build_agent(
     def: AgentDefinition,
     body: &str,

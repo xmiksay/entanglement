@@ -3,20 +3,7 @@
 //! of 33 times. Run one module via `cargo test -p entanglement-runtime --test it <mod>`.
 //! `tests/rhai.rs` stays its own binary for its `required-features` gate.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
-
-/// One process-wide env-var lock. Tests from *different* former binaries now
-/// share an address space, so the per-file `ENV_LOCK`s merged into this one:
-/// every test that mutates process env must hold it until the matching
-/// `remove_var`. Poison-tolerant — a panicking test must not cascade.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-pub fn env_lock() -> MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// An empty user definitions layer under `root`: loaders take it instead of
-/// the process-global `ENTANGLEMENT_*_DIR` env, so a test never reads the
+/// An empty user definitions layer under `root`, so a test never reads the
 /// host's real user agents/skills (#773).
 pub fn no_user(root: &std::path::Path) -> entanglement_runtime::layers::UserLayer {
     entanglement_runtime::layers::UserLayer::Dir(root.join("no-such-user-dir"))
@@ -48,10 +35,8 @@ mod mode_support;
 
 mod advertising_pin;
 mod agent_definitions;
-mod agent_generation;
 mod agent_invariant_tools;
 mod agent_model;
-mod agent_models;
 mod agent_send;
 mod apply_patch;
 mod approval_resolved;
@@ -60,7 +45,6 @@ mod ask_user;
 mod attended_mode;
 mod attended_rejoin;
 mod attended_resume;
-mod aux_models;
 mod compact_fork;
 mod discovery_tools;
 mod executor_builder;
@@ -111,7 +95,6 @@ mod spawn_grading;
 mod spawn_grading_park;
 mod spawn_grading_scoped;
 mod spawn_prompt_persistence;
-mod state_dir;
 mod stop_abort;
 mod stop_abort_inflight_cleanup;
 mod subagent_spawn;

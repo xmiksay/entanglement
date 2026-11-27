@@ -161,8 +161,39 @@ mod tests {
     use super::super::{ConfigLayer, RawLayer};
     use super::*;
 
+    /// The executor registers `http` itself (with its gate); this stand-in
+    /// declares the same `METHOD url` text argument.
+    struct Http;
+
+    #[async_trait::async_trait]
+    impl entanglement_runtime::Tool for Http {
+        fn name(&self) -> std::borrow::Cow<'static, str> {
+            "http".into()
+        }
+        async fn run(&self, _input: &str) -> anyhow::Result<String> {
+            unreachable!("never run")
+        }
+        fn permission_scope(&self) -> PermissionScope {
+            PermissionScope::arg(ArgKind::Text)
+        }
+    }
+
+    /// Every registry tool `skutter` registers (the sextet, `bash`, the
+    /// script-only read variants, `web_fetch` and `http`) — the tools asked,
+    /// not a name list (#962).
     fn tools() -> ToolRegistry {
-        crate::host::every_tool("/p".into())
+        use entanglement_runtime::host::{
+            host_tools, BashTool, GlobJsonTool, GrepJsonTool, ReadRawTool, WebFetchTool,
+        };
+        let root = std::path::PathBuf::from("/p");
+        let mut reg = host_tools(root.clone());
+        reg.register(ReadRawTool::new(root.clone()));
+        reg.register(GlobJsonTool::new(root.clone()));
+        reg.register(GrepJsonTool::new(root.clone()));
+        reg.register(BashTool::new(root));
+        reg.register(WebFetchTool::new().expect("web_fetch client builds"));
+        reg.register(Http);
+        reg
     }
 
     /// `(scope, entry)` of every scoped key in `yaml` whose scope never
@@ -216,7 +247,6 @@ mod tests {
 
     /// #878: every tool that does take an argument keeps its scoped rules
     /// silent — the wildcard tool and a workdir scope too.
-    #[cfg(all(feature = "web-fetch", feature = "rhai"))]
     #[test]
     fn scoped_rules_on_argument_taking_tools_do_not_warn() {
         let keys = [

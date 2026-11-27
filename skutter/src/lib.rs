@@ -3,16 +3,20 @@
 //! The binary (`src/main.rs`) holds the heads (`run`/`pipe`/`tui`) and the
 //! startup wiring. This library carries the pieces its integration tests
 //! drive directly: the WebSocket `serve` head, user slash commands, the
-//! engine-less `inspect` views and the log setup. Everything below is built on
+//! engine-less `inspect` views, the layered config and managed files, the
+//! definitions watcher and the log setup. Everything below is built on
 //! `entanglement-runtime`'s public API only.
 
 // The moved modules name runtime modules as `crate::<name>`, exactly as they
 // did inside `entanglement-runtime`.
 use entanglement_runtime::{
-    agents, attendance, capability, config, discover, frontmatter, layers, mcp, mode,
-    session_store, skills, system_prompt, tool_names,
+    agents, attendance, capability, discover, file_backup, frontmatter, layers, mcp, mode,
+    permission, rhai_trust, secret_env, session_store, skills, system_prompt, tool_names, tools,
 };
 
+// The layered `config.yml`, the managed state files' paths and the key
+// writer (#967): read by `skutter`, never by the library.
+pub mod config;
 // Lifecycle hooks (#199, #964): run by `skutter`, never by the library.
 pub mod hooks;
 pub mod inspect;
@@ -24,3 +28,5 @@ pub mod slash_commands;
 // The file-backed stores behind the library's in-memory seams (#966).
 pub mod state;
 mod user_dirs;
+// The definitions watcher: live reload of what `skutter` loads from disk.
+pub mod watch;

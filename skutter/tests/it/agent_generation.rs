@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use entanglement_core::GenerationParams;
-use entanglement_runtime::config::agent_generation::AgentGenerationStore;
+use skutter::config::agent_generation::AgentGenerationStore;
 
 // Every test pins its own temp file through `load_from` — no process env.
 

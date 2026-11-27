@@ -87,14 +87,9 @@ fn succeeding_resolver() -> ModelResolver {
     })
 }
 
-/// Build a store backed by a temp file (so `set()` works).
-fn store_with_tmp_path(label: &str) -> Arc<Mutex<AuxModelStore>> {
-    let path = std::env::temp_dir().join(format!(
-        "entanglement-aux-llm-test-{label}-{}.yml",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
-    Arc::new(Mutex::new(AuxModelStore::load_from(Some(path))))
+/// An empty shared pin store.
+fn empty_store() -> Arc<Mutex<AuxModelStore>> {
+    Arc::new(Mutex::new(AuxModelStore::default()))
 }
 
 /// `resolve_pin` is the core-seam counterpart: `None` means "use the
@@ -102,7 +97,7 @@ fn store_with_tmp_path(label: &str) -> Arc<Mutex<AuxModelStore>> {
 /// the way `resolve` does.
 #[tokio::test]
 async fn resolve_pin_is_none_when_unset_or_unresolvable() {
-    let store = store_with_tmp_path("pin-none");
+    let store = empty_store();
     let reg = AuxLlmRegistry::new(
         store.clone(),
         failing_resolver(),
@@ -116,19 +111,17 @@ async fn resolve_pin_is_none_when_unset_or_unresolvable() {
     store
         .lock()
         .unwrap()
-        .set(Purpose::Summarize, "ghost", "gone")
-        .unwrap();
+        .set(Purpose::Summarize, "ghost", "gone");
     assert!(reg.resolve_pin(Purpose::Summarize).is_none());
 }
 
 #[tokio::test]
 async fn resolve_pin_returns_the_catalog_resolution() {
-    let store = store_with_tmp_path("pin-some");
+    let store = empty_store();
     store
         .lock()
         .unwrap()
-        .set(Purpose::Summarize, "stub", "stub-model")
-        .unwrap();
+        .set(Purpose::Summarize, "stub", "stub-model");
     let reg = AuxLlmRegistry::new(
         store,
         succeeding_resolver(),
@@ -147,12 +140,11 @@ async fn resolve_pin_returns_the_catalog_resolution() {
 /// back to the session's backend) rather than panicking.
 #[tokio::test]
 async fn resolver_maps_known_keys_and_ignores_unknown_ones() {
-    let store = store_with_tmp_path("resolver-seam");
+    let store = empty_store();
     store
         .lock()
         .unwrap()
-        .set(Purpose::Summarize, "stub", "stub-model")
-        .unwrap();
+        .set(Purpose::Summarize, "stub", "stub-model");
     let seam = AuxLlmRegistry::new(
         store,
         succeeding_resolver(),
@@ -168,7 +160,7 @@ async fn resolver_maps_known_keys_and_ignores_unknown_ones() {
 
 #[tokio::test]
 async fn resolve_falls_back_to_primary_when_no_pin() {
-    let store = store_with_tmp_path("no-pin");
+    let store = empty_store();
     let reg = AuxLlmRegistry::new(
         store,
         failing_resolver(),
@@ -185,12 +177,11 @@ async fn resolve_falls_back_to_primary_when_no_pin() {
 async fn resolve_falls_back_when_pin_does_not_resolve() {
     // A pin points at a provider/model the resolver rejects → the registry
     // must fall back to the primary rather than panic/error.
-    let store = store_with_tmp_path("no-resolve");
+    let store = empty_store();
     store
         .lock()
         .unwrap()
-        .set(Purpose::Summarize, "ghost", "no-such-model")
-        .unwrap();
+        .set(Purpose::Summarize, "ghost", "no-such-model");
     let reg = AuxLlmRegistry::new(
         store,
         failing_resolver(),
@@ -205,12 +196,11 @@ async fn resolve_falls_back_when_pin_does_not_resolve() {
 
 #[tokio::test]
 async fn resolve_uses_the_aux_factory_when_pin_resolves() {
-    let store = store_with_tmp_path("resolves");
+    let store = empty_store();
     store
         .lock()
         .unwrap()
-        .set(Purpose::SessionTitle, "stub", "stub-model")
-        .unwrap();
+        .set(Purpose::SessionTitle, "stub", "stub-model");
     let reg = AuxLlmRegistry::new(
         store,
         succeeding_resolver(),
@@ -227,12 +217,11 @@ async fn resolve_uses_the_aux_factory_when_pin_resolves() {
 /// resolves — not the primary's — mirroring `resolve`'s own precedence.
 #[tokio::test]
 async fn concurrency_cap_reports_the_pins_cap_when_it_resolves() {
-    let store = store_with_tmp_path("cap-pin");
+    let store = empty_store();
     store
         .lock()
         .unwrap()
-        .set(Purpose::SessionTitle, "capped", "capped-model")
-        .unwrap();
+        .set(Purpose::SessionTitle, "capped", "capped-model");
     let catalog: Catalog = serde_yaml::from_str(
         "providers:\n\
          \x20 - name: capped\n\
@@ -269,7 +258,7 @@ async fn concurrency_cap_reports_the_pins_cap_when_it_resolves() {
 /// admitted through, since that's exactly what `resolve` falls back to.
 #[tokio::test]
 async fn concurrency_cap_falls_back_to_primary_when_no_pin() {
-    let store = store_with_tmp_path("cap-no-pin");
+    let store = empty_store();
     let reg = AuxLlmRegistry::new(
         store,
         failing_resolver(),
@@ -329,12 +318,8 @@ fn aux_cooldown_keys_are_independent_per_purpose_and_identity() {
 /// model)`.
 #[tokio::test]
 async fn try_resolve_short_circuits_after_a_reported_failure() {
-    let store = store_with_tmp_path("try-resolve-cooldown");
-    store
-        .lock()
-        .unwrap()
-        .set(Purpose::Narrate, "stub", "stub")
-        .unwrap();
+    let store = empty_store();
+    store.lock().unwrap().set(Purpose::Narrate, "stub", "stub");
     let reg = AuxLlmRegistry::new(
         store,
         succeeding_resolver(),
@@ -361,12 +346,11 @@ async fn try_resolve_short_circuits_after_a_reported_failure() {
 /// of the (real) window.
 #[tokio::test]
 async fn note_success_clears_a_recorded_failure() {
-    let store = store_with_tmp_path("try-resolve-clears");
+    let store = empty_store();
     store
         .lock()
         .unwrap()
-        .set(Purpose::SessionTitle, "stub", "stub")
-        .unwrap();
+        .set(Purpose::SessionTitle, "stub", "stub");
     let reg = AuxLlmRegistry::new(
         store,
         succeeding_resolver(),

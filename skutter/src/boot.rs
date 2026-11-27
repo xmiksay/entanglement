@@ -62,15 +62,21 @@ pub(crate) async fn boot(
     // Discover skills (#114): embedded stock skills, then user, then project. A
     // malformed SKILL.md is a loud error. The model learns them from
     // `list_skills` (ADR-0226 — the roster left the system prompt).
-    let skill_registry =
-        std::sync::Arc::new(skills::load_registry(cwd).context("loading skill definitions")?);
+    let skill_registry = std::sync::Arc::new(
+        skills::load_registry_in(
+            cwd,
+            &crate::user_dirs::user_layer(crate::user_dirs::SKILLS_DIR_ENV),
+        )
+        .context("loading skill definitions")?,
+    );
     // The runtime's own live-reloadable mirror (#329, ADR-0084): a definitions
     // watcher swaps this for a freshly-loaded registry on a debounced dir
     // change. `load_skill` (below) and the watcher both share this handle;
     // core's own copy (built into `engine_config` below) has no such seam.
     let live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>> =
         Arc::new(RwLock::new(skill_registry.clone()));
-    let prompt_ctx = system_prompt::PromptContext::load(cwd);
+    let prompt_ctx =
+        system_prompt::PromptContext::load_with(cwd, &crate::user_dirs::session_store(cwd));
     // The MCP capability index (#426): config-side `capabilities:` hints on
     // `user_config.mcp`, folded into any bare `read`/`write`/`call` permission key alongside the
     // fixed built-in set — computed once here (like the ceiling permission
@@ -78,8 +84,14 @@ pub(crate) async fn boot(
     let mcp_capabilities =
         mcp::capability_index(&user_config.mcp).context("resolving MCP capability hints")?;
     // The skill registry also resolves per-agent `skills:` preload bodies (#117).
-    let mut profiles = agents::load_registry(cwd, &prompt_ctx, &skill_registry, &mcp_capabilities)
-        .context("loading agent definitions")?;
+    let mut profiles = agents::load_registry_in(
+        cwd,
+        &crate::user_dirs::user_layer(crate::user_dirs::AGENTS_DIR_ENV),
+        &prompt_ctx,
+        &skill_registry,
+        &mcp_capabilities,
+    )
+    .context("loading agent definitions")?;
     // Per-agent model pins (#323, ADR-0081): overlay the persisted
     // `agent-models.yml` onto the freshly-loaded profiles *before* the engine
     // builds — a persisted pin wins over frontmatter. The store is then threaded
@@ -111,7 +123,7 @@ pub(crate) async fn boot(
     // same store the persistence tap writes — a revert reads that log's turns.
     // Limits from `config.yml` `undo:` (#787); the watcher re-applies them.
     let file_backups = file_backup::FileBackups::with_backup_limits(
-        crate::session_store::SessionStore::for_cwd(cwd),
+        crate::user_dirs::session_store(cwd),
         user_config.undo,
     );
     // `skutter`'s managed-state files behind the library's in-memory seams
@@ -171,7 +183,9 @@ pub(crate) async fn boot(
     // wired) to a separate provider/model, falling back to the primary when a
     // purpose is unset or its pin won't resolve. Threaded into the TUI so
     // `/aux-model` persists back to disk.
-    let live_aux_models = Arc::new(Mutex::new(config::aux_models::AuxModelStore::load()));
+    let live_aux_models = Arc::new(Mutex::new(
+        config::aux_models::AuxModelsPath::managed().load(),
+    ));
     // The registry reuses the same catalog resolver the engine calls on
     // `SetModel` (capturing the warm per-endpoint pool) + the primary
     // `LlmFactory` as the no-pin fallback, so an unset purpose is byte-identical

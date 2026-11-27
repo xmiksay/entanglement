@@ -56,19 +56,17 @@
 //!   coincide in practice, and keeping the grant off the per-session dimension
 //!   lets the host tools consult it without threading a session id through every
 //!   `resolve_under_root` call site.)
-//! - **Always** — persisted to a **managed** file
-//!   (`<state dir>/extra-roots.yml`, relocated by `ENTANGLEMENT_STATE_DIR`,
-//!   ADR-0213), a sibling of the grants/env files rather
-//!   than a section of the hand-edited `config.yml`. Loaded at startup,
-//!   re-written on each new `Always` grant. Best-effort: a write failure is
-//!   logged, never fatal.
+//! - **Always** — kept in memory and, when the embedder plugs one in
+//!   ([`with_always_roots`](ExtraRootStore::with_always_roots)), handed to
+//!   an [`AlwaysRoots`] that outlives the process (`skutter`: its managed
+//!   `extra-roots.yml`). Loaded at construction, recorded on each new
+//!   `Always` grant. Best-effort: a write failure is logged, never fatal.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use entanglement_core::ApprovalScope;
-use serde::{Deserialize, Serialize};
 
 /// A granted out-of-root access: the tool name plus the normalized absolute path
 /// it may reach. Per-tool by construction — a `read` grant never satisfies a
@@ -92,11 +90,22 @@ struct Inner {
     once: HashSet<OnceKey>,
 }
 
+/// Where `Always` grants outlive the process — the embedder's storage
+/// (`skutter`: the managed `extra-roots.yml`). Grants are `(tool, path)`
+/// pairs, the path normalized and absolute.
+pub trait AlwaysRoots: Send + Sync {
+    /// Every persisted grant.
+    fn load(&self) -> Vec<(String, String)>;
+    /// Persist the grant `(tool, path)` and return every persisted grant —
+    /// including any another process recorded meanwhile, so it is not lost.
+    fn add(&self, tool: &str, path: &str) -> anyhow::Result<Vec<(String, String)>>;
+}
+
 /// Approval-gated out-of-root access grants (ADR-0109). Cheaply cloneable behind
 /// an `Arc` by callers; the interior is mutex-guarded.
 pub struct ExtraRootStore {
     inner: Mutex<Inner>,
-    path: Option<PathBuf>,
+    persisted: Option<Arc<dyn AlwaysRoots>>,
     /// The trusted per-project scratch dir (#524, ADR-0142), if wired.
     /// Canonicalized at construction so it compares equal to the
     /// symlink-resolved targets `resolve_and_contained` produces. `None`
@@ -109,37 +118,25 @@ fn key(tool: &str, path: &Path) -> GrantKey {
 }
 
 impl ExtraRootStore {
-    /// Load persisted `Always` grants from the managed file (missing → empty).
-    pub fn load() -> Self {
-        Self::load_from(resolve_path())
-    }
-
-    /// [`load`](Self::load) from an explicit file (`None` = nothing persists).
-    /// The injection seam (#747): tests pin a temp file instead of steering
-    /// process-global env.
-    pub fn load_from(path: Option<PathBuf>) -> Self {
-        let always = path
-            .as_deref()
-            .and_then(read_file)
-            .map(|f| f.always.into_iter().collect())
-            .unwrap_or_default();
-        Self {
-            inner: Mutex::new(Inner {
-                always,
-                ..Inner::default()
-            }),
-            path,
-            scratch: None,
-        }
-    }
-
-    /// An in-memory store with no persistence — for tests and standalone tools.
+    /// An in-memory store with no persistence — `Always` lasts the process.
     pub fn ephemeral() -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
-            path: None,
+            persisted: None,
             scratch: None,
         }
+    }
+
+    /// Load `Always` grants from `persisted` now and record each new one
+    /// there.
+    pub fn with_always_roots(mut self, persisted: Arc<dyn AlwaysRoots>) -> Self {
+        self.inner
+            .get_mut()
+            .expect("extra-roots mutex poisoned")
+            .always
+            .extend(persisted.load());
+        self.persisted = Some(persisted);
+        self
     }
 
     /// Trust `scratch` (and every path under it) for every tool, with no
@@ -245,63 +242,22 @@ impl ExtraRootStore {
         }
     }
 
-    /// Merge the new `Always` grant into the managed file under an exclusive
-    /// cross-process lock (#329) — read-current-then-merge: a concurrent
-    /// skutter instance's own `Always` grant, written between this store's
-    /// `load()` and now, must survive rather than being clobbered by a rewrite
-    /// from stale in-memory state. Best-effort: a failure is logged, never
-    /// propagated — a lost persisted grant only means the user is asked again,
-    /// the safe direction.
+    /// Hand the new `Always` grant to the embedder's [`AlwaysRoots`] and
+    /// adopt everything it holds. Best-effort: a failure is logged, never
+    /// propagated — a lost persisted grant only means the user is asked
+    /// again, the safe direction.
     fn persist(&self, new_key: &GrantKey) {
-        let Some(path) = self.path.as_deref() else {
+        let Some(persisted) = &self.persisted else {
             return;
         };
-        let result = crate::config::lock::with_locked_file(path, || {
-            let mut merged: HashSet<GrantKey> = read_file(path)
-                .map(|f| f.always.into_iter().collect())
-                .unwrap_or_default();
-            merged.insert(new_key.clone());
-            let mut always: Vec<GrantKey> = merged.iter().cloned().collect();
-            always.sort();
-            write_file(path, &PersistedFile { always })?;
-            Ok(merged)
-        });
-        match result {
-            Ok(merged) => {
+        match persisted.add(&new_key.0, &new_key.1) {
+            Ok(all) => {
                 let mut g = self.inner.lock().expect("extra-roots mutex poisoned");
-                g.always.extend(merged);
+                g.always.extend(all);
             }
-            Err(e) => {
-                tracing::warn!("could not persist extra-roots grants to {path:?}: {e:#}");
-            }
+            Err(e) => tracing::warn!("could not persist an extra-roots grant: {e:#}"),
         }
     }
-}
-
-/// On-disk shape: only the persisted `Always` set. Session/Once are never
-/// written.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct PersistedFile {
-    #[serde(default)]
-    always: Vec<GrantKey>,
-}
-
-pub(crate) fn resolve_path() -> Option<PathBuf> {
-    crate::config::state_dir::state_file(crate::config::state_dir::EXTRA_ROOTS_FILE)
-}
-
-fn read_file(path: &Path) -> Option<PersistedFile> {
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_yaml::from_str(&text).ok()
-}
-
-fn write_file(path: &Path, file: &PersistedFile) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let text = serde_yaml::to_string(file)?;
-    crate::config::atomic::atomic_write(path, &text)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -523,54 +479,33 @@ mod tests {
         assert!(!s.is_durably_allowed_under("read", &dir.join("a.rs")));
     }
 
+    /// A store over an `AlwaysRoots` loads its grants and records new
+    /// `Always` ones there — and only those.
     #[test]
-    fn always_round_trips_through_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("extra-roots.yml");
+    fn always_grants_load_from_and_record_into_the_seam() {
+        #[derive(Default)]
+        struct Memory(Mutex<Vec<(String, String)>>);
+        impl AlwaysRoots for Memory {
+            fn load(&self) -> Vec<(String, String)> {
+                self.0.lock().unwrap().clone()
+            }
+            fn add(&self, tool: &str, path: &str) -> anyhow::Result<Vec<(String, String)>> {
+                let mut g = self.0.lock().unwrap();
+                g.push((tool.into(), path.into()));
+                Ok(g.clone())
+            }
+        }
+        let seam = Arc::new(Memory::default());
+        seam.add("read", "/opt/old").unwrap();
 
-        let s = ExtraRootStore::load_from(Some(file.clone()));
-        s.record(
-            "read",
-            Path::new("/opt/thing"),
-            ApprovalScope::Always,
-            "req-1",
-        );
+        let s = ExtraRootStore::ephemeral().with_always_roots(seam.clone());
+        assert!(s.is_durably_allowed("read", Path::new("/opt/old")));
+        s.record("read", Path::new("/opt/new"), ApprovalScope::Always, "r1");
+        s.record("read", Path::new("/opt/tmp"), ApprovalScope::Session, "r2");
+        assert_eq!(seam.load().len(), 2, "only Always reaches the seam");
 
-        let reloaded = ExtraRootStore::load_from(Some(file.clone()));
-        assert!(reloaded.is_durably_allowed("read", Path::new("/opt/thing")));
-        assert!(!reloaded.is_durably_allowed("read", Path::new("/opt/other")));
-    }
-
-    /// Two "processes" (threads, each with its own `ExtraRootStore::load()`)
-    /// race to record *different* `Always` grants against the same on-disk
-    /// file. Without the lock's read-current-then-merge, the second writer's rewrite of its own stale
-    /// in-memory `always` set would clobber the first writer's grant — a lost
-    /// update. A freshly loaded third store must see both.
-    #[test]
-    fn concurrent_always_grants_from_two_stores_both_survive() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("extra-roots.yml");
-
-        let (fa, fb) = (file.clone(), file.clone());
-        let a = std::thread::spawn(move || {
-            let s = ExtraRootStore::load_from(Some(fa));
-            s.record("read", Path::new("/ext/a"), ApprovalScope::Always, "req-a");
-        });
-        let b = std::thread::spawn(move || {
-            let s = ExtraRootStore::load_from(Some(fb));
-            s.record("write", Path::new("/ext/b"), ApprovalScope::Always, "req-b");
-        });
-        a.join().unwrap();
-        b.join().unwrap();
-
-        let reloaded = ExtraRootStore::load_from(Some(file.clone()));
-        assert!(
-            reloaded.is_durably_allowed("read", Path::new("/ext/a")),
-            "grant recorded by the first store must survive a concurrent write"
-        );
-        assert!(
-            reloaded.is_durably_allowed("write", Path::new("/ext/b")),
-            "grant recorded by the second store must survive a concurrent write"
-        );
+        let fresh = ExtraRootStore::ephemeral().with_always_roots(seam);
+        assert!(fresh.is_durably_allowed("read", Path::new("/opt/new")));
+        assert!(!fresh.is_durably_allowed("read", Path::new("/opt/tmp")));
     }
 }

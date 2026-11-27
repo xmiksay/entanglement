@@ -129,3 +129,12 @@ fn a_file_created_while_disabled_and_deleted_after_re_enabling_restores() {
     assert_eq!(report.restored, vec!["c.txt"], "{report:?}");
     assert_eq!(f.read("c.txt").unwrap(), b"created");
 }
+
+#[test]
+fn sizes_format_exactly() {
+    const MIB: u64 = 1024 * 1024;
+    assert_eq!(format_size(8 * MIB), "8 MiB");
+    assert_eq!(format_size(256_000_000), "250000 KiB");
+    assert_eq!(format_size(3 * 1024 * MIB), "3 GiB");
+    assert_eq!(format_size(1000), "1000 bytes");
+}

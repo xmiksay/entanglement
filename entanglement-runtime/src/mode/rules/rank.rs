@@ -92,7 +92,7 @@ pub(super) fn best_entry<'a>(
         let entry_kind = kind(entry, tool_name);
         // A rule naming a non-maskable tool is inert (ADR-0232): only its
         // class (`propose_plan`'s `plan`) or a `*` rule grades it, which is
-        // what the config warning (`config::mode_warn`) promises.
+        // what skutter's config warning (`config::mode_warn`) promises.
         if entry_kind == Kind::Named && crate::tool_names::is_non_maskable(tool_name) {
             continue;
         }
