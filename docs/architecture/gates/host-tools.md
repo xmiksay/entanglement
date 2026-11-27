@@ -161,7 +161,10 @@ guessing again:
   `glob`/`grep` (+ `_json`) join `path` or default it to the workdir;
   `bash` joins or defaults `workdir`. Inside the root the result is root-relative, outside it
   absolute — so ADR-0125 normalization, argument- and workdir-scoped rules,
-  grants and containment see exactly what they would without a workdir, and
+  grants and containment see exactly what they would without a workdir
+  (which argument those rules match, and whether it is a path or a workdir,
+  is the tool's answer too: `Tool::permission_scope` + `permission_arg`,
+  #962), and
   containment is re-checked at every use (a workdir later swapped for a
   symlink out of the root trips the escape-root gate). `glob`/`grep` list
   matches relative to the workdir (absolute outside it) via the shared

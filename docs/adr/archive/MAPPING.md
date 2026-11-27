@@ -82,7 +82,7 @@ the code, never as a description of current behaviour — that is
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head — a local-only WebSocket protocol interface (Vue SPA primary, non-exclusive; browser surface out of scope) | current | — |
 | [0049](0049-plan-task-tools-as-runtime-state-tools.md) | `update_plan`/`update_tasks` as runtime state tools | current; partly superseded by 0145; amended by 0142, 0207 | — |
 | [0050](0050-per-endpoint-connection-pool-retry-rate-limit.md) | Per-endpoint connection pool, rate-limit, and retry | current; amended by 0141, 0156, 0157; changed by #918 | — |
-| [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys (`tool(pattern)`) | current; changed by #916 | — |
+| [0051](0051-argument-scoped-permission-rules.md) | Argument-scoped permission rule keys (`tool(pattern)`) | current; changed by #916; changed by #962 | — |
 | [0052](0052-approval-scope-and-persisted-grants.md) | Approval scope (`Once \| Session \| Always`) + persisted tool grants | current; changed by #966 | — |
 | [0053](0053-invert-core-provider-seam.md) | Invert the core↔provider seam: provider owns the LLM ABI as a leaf crate | current | — |
 | [0054](0054-canonicalizing-symlink-safe-root-containment.md) | Canonicalizing, symlink-safe host-tool root containment | current | — |
@@ -147,7 +147,7 @@ the code, never as a description of current behaviour — that is
 | [0113](0113-persistence-synthesizes-a-spawned-childs-initiating-prompt.md) | Persistence synthesizes a spawned child's initiating prompt from the cached `Spawn` | current | — |
 | [0114](0114-capability-level-permission-keys.md) | Capability-level permission keys (`read`/`write`/`call`) | superseded by 0207 | — |
 | [0115](0115-rhai-exec-bindings-call-bash.md) | `rhai` exec bindings: `exec`/`bash`, gated by the Call capability | current; amended by 0130, 0227; changed by #916 | — |
-| [0116](0116-workdir-scoped-permission-rules-for-bash-call.md) | Workdir-scoped permission rules for `bash`/`call` (`tool{pattern}`) | current; amended by 0130; changed by #916 | — |
+| [0116](0116-workdir-scoped-permission-rules-for-bash-call.md) | Workdir-scoped permission rules for `bash`/`call` (`tool{pattern}`) | current; amended by 0130; changed by #916; changed by #962 | — |
 | [0117](0117-mcp-tool-capability-fan-out.md) | Config-side capability hints fan MCP tools into `read`/`write`/`call` | current | — |
 | [0118](0118-ambiguous-stop-reason-bounded-retry.md) | Bounded retry on an ambiguous LLM stop, instead of ending the turn | current | — |
 | [0119](0119-rhai-bindings-route-through-the-escape-root-gate.md) | `rhai` file/exec bindings route through the escape-root gate | current; amended by 0227; changed by #916 | — |
@@ -156,7 +156,7 @@ the code, never as a description of current behaviour — that is
 | [0122](0122-per-provider-concurrency-and-rpm-as-catalog-data.md) | Per-provider concurrency and RPM as catalog data | current; amended by 0213; changed by #918 | — |
 | [0123](0123-agent-poll-zero-timeout-waits-for-notification.md) | `agent_poll` `timeout_secs: 0` waits for the child's notification | current; amended by 0155, 0161 | — |
 | [0124](0124-wire-refused-mcp-mutation-and-stdio-key-scrub.md) | MCP mutation is trusted-only, the wire gate fails closed, and stdio servers lose the provider keys | current; changed by #916 | — |
-| [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916 | — |
+| [0125](0125-permission-arguments-for-path-tools-are-normalized-root-relative.md) | Permission arguments for path tools are normalized root-relative | current; changed by #916; changed by #962 | — |
 | [0126](0126-session-scoped-directory-grants.md) | Session-scoped directory grants via `ApprovalScope::SessionDir` and TUI `/allow` | current; changed by #916; removed by #925 | — |
 | [0127](0127-ask-user-v2-multi-question-envelope.md) | `ask_user` v2 — multi-question envelope, always-on free text, multi-select | current; amended by 0143, 0146 | — |
 | [0128](0128-mcp-http-var-header-expansion-leak-surface.md) | MCP HTTP `${VAR}` header expansion is a documented, consented leak surface | current | — |

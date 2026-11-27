@@ -180,12 +180,16 @@ never asked about; `propose_plan` is (by its `plan` class). A tenant-keyed resol
 lines:
 
 ```rust
-struct TenantResolver { tenants: HashMap<&'static str, PermissionProfile> }
+struct TenantResolver {
+    tenants: HashMap<&'static str, PermissionProfile>,
+    tools: ToolRegistry, // the registry the executor dispatches against
+}
 
 #[async_trait]
 impl PermissionResolver for TenantResolver {
     async fn resolve(&self, session: &SessionId, tool: &str, input: &str) -> Grade {
-        let arg = permission_arg(tool, input);
+        // Each tool declares its own argument (#962), so ask the registry.
+        let arg = permission_arg(&self.tools, tool, input);
         match self.tenants.get(tenant_of(session)) {
             Some(profile) => profile.resolve(tool, arg.as_deref()).into(),
             // Fail closed on an unknown tenant, and say why.

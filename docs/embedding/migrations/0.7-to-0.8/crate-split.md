@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965, #966)
+# Migration notes — 0.7 → 0.8: crate split (#931, #964, #965, #966, #962)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md).
 
@@ -165,3 +165,45 @@ below. What changes:
   / `with_tool_cache(..)`; one that wants a live `/mcp add|remove` to survive
   a restart persists `ServerConfigs` on `OutEvent::McpChanged`. Drop the
   `grants` argument from `LiveDefinitions::new`.
+
+## Permission arguments come from the tool (#962)
+
+The permission pipeline no longer knows any host tool by name. What an
+argument-scoped `tool(pattern)` rule (and an `Always` grant) matches, and
+whether a call carries a workdir for a `tool{pattern}` rule, is the
+registered tool's own answer — as the workdir rewrite and the escape-root
+target already were (#930). Site and nexial call none of the changed
+functions (site's resolver has its own `permission_arg` analog).
+
+- **Removed API:** `permission_path::is_path_arg_tool`,
+  `permission_path::rooted_arg` (and its name list `PATH_ARG_TOOLS`).
+- **New API:** the defaulted trait methods `Tool::permission_scope()`
+  (a `tools::PermissionScope { arg: ArgKind, workdir: bool }`, where
+  `ArgKind` is `None`/`Path`/`Command`/`Text`) and
+  `Tool::permission_arg(input)`; `permission::permission_scope(&tools,
+  tool)`; `permission_path::rooted_path(root, path)` (lexical) and
+  `rooted_script(root, path)` (canonical, what `rhai` grades on);
+  `config::ScopedRule`, `Config::scoped_rules` and
+  `Config::warn_unscopable_rules(&tools)`.
+- **Changed API:** `permission::permission_arg`,
+  `permission::permission_workdir` and `permission_path::grading_arg` take
+  the `&ToolRegistry` first. Only the executor's own routes (`rhai`,
+  `agent`, `agent_send`) are answered without it.
+- **Changed behaviour:** an embedder tool registered under a host name
+  (`read`, `bash`, …) no longer gets that tool's argument, root-relative
+  grading, workdir scope or approval-card root line by name; any tool that
+  implements the two methods gets them, so an embedder tool can now be the
+  target of `tool(path)` rules. A config rule whose *scope* can never match
+  (`mcp__gh__x(foo)`, `read{/tmp/*}`, `bash(git *){/x}`) no longer warns at
+  config load: the name check stays there, the scope check runs where the
+  registry is known (`skutter` calls `warn_unscopable_rules` at engine
+  build). The `skutter` TUI and `run` headers and a script's nested-call
+  lines take the argument from the registry the same way; a `glob` card
+  shows its base `path` on its own line.
+- **Instead:** implement `permission_scope`/`permission_arg` on a tool
+  whose calls should be scopable (`ArgKind::Path` for a filesystem path,
+  graded root-relative; `Command` for a command line; `Text` otherwise;
+  `workdir: true` when its input carries a `workdir` string). Pass the
+  registry to `permission_arg`/`permission_workdir`/`grading_arg`, and call
+  `Config::warn_unscopable_rules` once your registry is populated if you
+  load `Config`.

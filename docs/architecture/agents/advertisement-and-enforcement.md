@@ -90,10 +90,12 @@
   `modes:` or `permissions:` rule naming a non-maskable tool warns at config
   load like a stale name (`config::mode_warn`), as does a rule whose tool
   part is a name glob (rule keys never glob the tool part; only a bare `*`
-  is a wildcard), that scopes a tool with no argument (`mcp__gh__x(foo)`,
-  #878) or with no workdir (`read{/tmp/*}` — only `bash` has one, #881), or
+  is a wildcard). A rule that scopes a tool with no argument
+  (`mcp__gh__x(foo)`, #878) or with no workdir (`read{/tmp/*}`, #881), or
   whose scope the matcher can't read (`bash(git *){/x}` — one scope per
-  key, #881). A per-tool rule (`mcp__<server>__<tool>`) grades an envelope
+  key, #881), warns once the engine's registry exists
+  (`Config::warn_unscopable_rules`, `config::scope_warn`): whether a tool
+  takes a scope is the registered tool's answer (#962). A per-tool rule (`mcp__<server>__<tool>`) grades an envelope
   call and a script's `mcp::<server>::<tool>()` binding identically — both
   reach the same dispatch seam under the inner name.
 - **`/tools`** (#560 P9,

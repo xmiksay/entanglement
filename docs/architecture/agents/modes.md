@@ -185,7 +185,9 @@ below realize one model:
   entries (`prompt` is the YAML spelling of `Permission::Ask` — the config
   surface uses the word a user thinks in, the enum keeps core's name), each
   keyed by a bare tool name, `*`, an **argument-scoped** `tool(pattern)`
-  (unchanged ADR-0051/#173 grammar — the `*`/`?` glob matches the command for
+  (unchanged ADR-0051/#173 grammar — the `*`/`?` glob matches the argument
+  the registered tool declares, `Tool::permission_scope` +
+  `Tool::permission_arg` (#962): the command for
   `bash`, the target path for `edit`/`write`/`read`/`apply_patch`,
   the `pattern` for `glob`, the file filter for `grep`, the script
   `path` for `rhai` — canonicalized, so a link grades as where it points
@@ -195,14 +197,16 @@ below realize one model:
   `general`, so `agent(general)` covers it) and the trimmed `agent_id`
   handle for `agent_send`
   ([ADR-0235](../../adr/archive/0235-scoped-spawn-rules-grade-the-target.md));
-  path args grade **root-relative**, ADR-0125; any other tool — every
-  `mcp__<server>__<tool>` among them — has no argument, so only its bare
-  rule matches, and a scoped key on one warns at config load
-  (`config::mode_warn`, #878)), a workdir-scoped `tool{pattern}` (unchanged
-  ADR-0116/#425 grammar — only `bash` carries a workdir, so a `{…}`
-  scope on any other tool never matches and warns at config load, #881; a
-  key carries one scope, so a combined `bash(git *){/x}` matches nothing and
-  warns too), or a bare capability-class name
+  an `ArgKind::Path` argument grades **root-relative**, ADR-0125; any
+  other tool — every `mcp__<server>__<tool>` among them — declares no
+  argument, so only its bare rule matches, and a scoped key on one warns
+  once the engine has its registry (`Config::warn_unscopable_rules`,
+  #878/#962)), a workdir-scoped `tool{pattern}` (unchanged ADR-0116/#425
+  grammar — only a tool whose scope declares a `workdir` carries one, among
+  the host tools `bash`, so a `{…}` scope on any other tool never matches
+  and warns the same way, #881; a key carries one scope, so a combined
+  `bash(git *){/x}` matches nothing and warns too), or a bare
+  capability-class name
   (`read`/`write`/`exec`/`plan`/`control` — a scoped key always names the
   literal tool instead, since scoping has no class grammar; this is how
   `plan` mode's plans-folder carve-out is written: `write(.entanglement/plans/*.md):

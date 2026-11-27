@@ -123,8 +123,9 @@ Nexial uses none of these items; site (0.6) names only
   an embedder tool that reuses a host name (`read`, `bash`, …) no longer
   inherits that host tool's rewrite or escape check by name — implement the
   two methods if it takes a filesystem path. The argument a scoped
-  `tool(pattern)` rule matches is still chosen by tool name (`read(src/*)`
-  grades `path`, root-relative), so such a tool keeps that grading.
+  `tool(pattern)` rule matches was still chosen by tool name here; #962
+  moved it onto the tool too
+  ([crate split](crate-split.md#permission-arguments-come-from-the-tool-962)).
 - **Instead:** update the `use` paths above. Site's
   `policy::SandboxConfig::none()` argument to the 0.6
   `spawn_tool_executor_with_policy` has no 0.8 counterpart — no executor

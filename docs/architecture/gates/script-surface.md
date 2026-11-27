@@ -145,7 +145,8 @@ floor).
 resolver veto, such as `skutter`'s `pre_tool_use`) — before the file is
 opened. The rule/grant argument is the script's **canonical** `path`,
 root-relative inside the root and absolute outside it (`permission_arg` +
-`permission_path::rooted_arg`, which canonicalizes for `rhai` alone; the
+`permission_path::rooted_script`, which canonicalizes — a plain path
+argument goes through the lexical `rooted_path`; the
 gate rewrites the input's `path` to that form before grading, against the
 escape-root policy's root or, with none wired, the launch's project root), so
 `rhai(scripts/deploy/*)` matches and a link in `scripts/deploy/` grades as
