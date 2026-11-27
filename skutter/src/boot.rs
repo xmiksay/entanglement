@@ -30,6 +30,8 @@ pub(crate) struct Engine {
     pub(crate) mcp_active: mcp::ActiveServers,
     pub(crate) mcp_available: Arc<mcp::AvailableMcp>,
     pub(crate) mcp_configs: mcp::ServerConfigs,
+    /// `Always` grants in the managed `grants.yml` (#966), for the executor.
+    pub(crate) grants: Arc<crate::state::FileGrantStore>,
     pub(crate) mcp_capabilities: HashMap<String, Vec<String>>,
     pub(crate) escape_root: EscapeRoot,
     pub(crate) sandbox_config: host::SandboxConfig,
@@ -112,6 +114,10 @@ pub(crate) async fn boot(
         crate::session_store::SessionStore::for_cwd(cwd),
         user_config.undo,
     );
+    // `skutter`'s managed-state files behind the library's in-memory seams
+    // (#966): the MCP roster takes the token/tool-name stores, the executor
+    // the grants.
+    let stores = crate::state::Stores::load();
     // The skill registry is shared: `list_skills` and `load_skill` (#115)
     // resolve against it at runtime.
     let (
@@ -134,6 +140,7 @@ pub(crate) async fn boot(
         live_skills.clone(),
         user_config,
         file_backups.clone(),
+        &stores,
     )
     .await;
     logging::startup_mark("tools");
@@ -233,6 +240,7 @@ pub(crate) async fn boot(
         mcp_active,
         mcp_available,
         mcp_configs,
+        grants: stores.grants,
         mcp_capabilities,
         escape_root,
         sandbox_config,

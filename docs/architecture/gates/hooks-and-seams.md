@@ -157,8 +157,9 @@ dispatch table without restarting the engine. An owned registry converts with
 `.shared()` (mirroring `.agents(catalog)` vs `.live_agents(shared)` for the
 agent catalog). The builder's grant store defaults to **in-memory**
 (`InMemoryGrantStore`, #747/#966 — the library never reads or writes a grants
-file); `skutter`'s `services.rs` sets
-`.grants(Arc::new(state::FileGrantStore::load()))` to persist `Always` grants.
+file); `skutter` passes the file-backed `state::FileGrantStore` from its
+`state::Stores` (built once at boot, with the MCP token and tool-name stores)
+to persist `Always` grants.
 `ToolRegistry` itself gains `unregister`/`unregister_prefix`/`contains`/
 `names` alongside `register`.
 

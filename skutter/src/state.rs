@@ -10,8 +10,10 @@ pub mod grants;
 pub mod mcp_config;
 pub mod mcp_tokens;
 pub mod mcp_tools;
+mod stores;
 
 pub use grants::FileGrantStore;
 pub use mcp_config::{save_mcp, spawn_mcp_config_writer};
 pub use mcp_tokens::McpTokenStore;
 pub use mcp_tools::FileMcpToolCache;
+pub use stores::Stores;

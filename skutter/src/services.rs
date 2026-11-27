@@ -72,6 +72,7 @@ pub(crate) fn start(
         mcp_active,
         mcp_available,
         mcp_configs,
+        grants,
         mcp_capabilities,
         escape_root,
         sandbox_config,
@@ -121,10 +122,6 @@ pub(crate) fn start(
         })
         .context("building the permission mode table from config.yml `modes:`")?
     });
-    // `skutter` persists `Always` grants to the managed `grants.yml` instead
-    // of the builder's in-memory default (#966); every check re-reads the
-    // file, so a grant another skutter instance recorded counts at once (#329).
-    let grants = Arc::new(crate::state::FileGrantStore::load());
     // Per-session plan-file staleness tracking (#513): constructed here, not
     // inside the executor, so the dedicated plans-folder watch (#627, below)
     // can share this exact instance — its out-of-band notice and the
@@ -182,6 +179,8 @@ pub(crate) fn start(
         .live_skills(live_skills.clone())
         .base(user_config.permissions.clone())
         .perm_modes(perm_modes)
+        // `Always` grants in the managed `grants.yml` (boot's `Stores`, #966),
+        // re-read when the file changed, so another instance's counts at once.
         .grants(grants)
         .resolver(resolver)
         // Escape-root approval (ADR-0109): the same store the host tools read.

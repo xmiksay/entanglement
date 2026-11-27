@@ -65,6 +65,7 @@ pub(crate) async fn build_config(
     skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     user_config: &config::Config,
     file_backups: file_backup::FileBackups,
+    stores: &crate::state::Stores,
 ) -> (
     EngineConfig,
     ModelInfo,
@@ -207,11 +208,9 @@ pub(crate) async fn build_config(
     // or `mcp(...)` on a server connects it, so a down server never delays
     // startup. Its tool schemas are never advertised; the provider-key scrub
     // (#164) applies to every stdio server it later spawns.
-    let mcp_available = Arc::new(
-        mcp::AvailableMcp::from_config(&user_config.mcp, secret_env.clone())
-            .with_tool_cache(Arc::new(crate::state::FileMcpToolCache::managed()))
-            .with_token_store(Arc::new(crate::state::McpTokenStore::load())),
-    );
+    // Credentials and last-seen tool names live in `skutter`'s managed files
+    // (#966), not the library's in-memory defaults.
+    let mcp_available = Arc::new(stores.mcp_roster(&user_config.mcp, secret_env.clone()));
     let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
     // The one advertised surface (ADR-0226): the registered tools that set
     // `Tool::advertised` plus the runtime-owned pseudo-tools (`agent`/

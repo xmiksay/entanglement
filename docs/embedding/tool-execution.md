@@ -44,8 +44,8 @@ let executor = ToolExecutor::builder(&holly, tools.shared()) // Holly + SharedRe
 **Persisted grants are the head's.** The library keeps grants in memory; a
 head that wants `Always` approvals to outlive the process implements
 `GrantStore` over its own storage and passes it — `skutter` passes its
-file-backed `state::FileGrantStore` (the managed `grants.yml`) in
-`services.rs`. The same holds for MCP state: `AvailableMcp` keeps OAuth
+file-backed `state::FileGrantStore` (the managed `grants.yml`) from the
+`state::Stores` it builds at boot. The same holds for MCP state: `AvailableMcp` keeps OAuth
 credentials and last-seen tool names in memory unless the head passes
 `.with_token_store(..)` / `.with_tool_cache(..)`, and a live `/mcp
 add|remove` changes only the in-memory `ServerConfigs` — persist it on
