@@ -1,14 +1,13 @@
 //! `/aux-model` subcommand parsing + persistence dispatch (Issue 5): kept in
 //! its own sibling module rather than folded into `tui/commands.rs` or
 //! `tui/event_loop.rs` — both already at/over the 400-line cap — mirroring how
-//! `/allow` was split into `allow_command.rs` (#486) and `/mcp` into
-//! `mcp_command.rs` (#373).
+//! `/mcp` was split into `mcp_command.rs` (#373).
 //!
 //! The command persists a per-purpose `(provider, model)` pin into the managed
 //! `aux-models.yml` via the installed [`AuxModelStore`], so the next auxiliary
 //! LLM call (session-title generator; compaction summary once wired) resolves
 //! it instead of the primary model. No wire traffic — this is head-side
-//! persistence, not an engine op (exactly like `/allow`'s direct store write).
+//! persistence, not an engine op.
 
 use crate::config::aux_models::{AuxModelStore, Purpose};
 

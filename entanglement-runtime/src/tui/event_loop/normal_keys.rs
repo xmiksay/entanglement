@@ -169,10 +169,6 @@ pub(super) async fn submit(app: &mut App, holly: &Holly) -> Result<bool> {
                         crate::tui::mcp_command::send_mcp(app, holly, &text).await;
                         return Ok(false);
                     }
-                    if cmd == crate::tui::commands::Command::Allow {
-                        crate::tui::allow_command::send_allow(app, &text);
-                        return Ok(false);
-                    }
                     if cmd == crate::tui::commands::Command::Name {
                         send_name(app, holly, &text).await;
                         return Ok(false);

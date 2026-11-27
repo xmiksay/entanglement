@@ -304,7 +304,6 @@ async fn launch_tui(
             head.http_client,
             user_config.editor.clone(),
             user_config.tui.clone(),
-            head.grants,
             head.mcp,
             head.advertising_state,
             launch,

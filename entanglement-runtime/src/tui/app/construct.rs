@@ -132,7 +132,6 @@ impl App {
             pending_generation_persist: None,
             aux_models: None,
             http_client: None,
-            grants: None,
             configured_editor: None,
             launch_mode: Default::default(),
             key_dialog: crate::tui::key_dialog::KeyDialog::new(key_providers),

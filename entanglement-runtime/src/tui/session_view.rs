@@ -95,9 +95,7 @@ pub struct SessionView {
     /// The session's live permission mode (ADR-0207), folded from
     /// `OutEvent::ModeChanged` the same way `agent` folds `AgentChanged` —
     /// every session gets one unconditionally at start (`session.rs` sends it
-    /// right after `AgentChanged`). Needed by `/allow` (#634): a `SessionDir`
-    /// grant is mode-scoped, so recording one has to know the mode it's
-    /// earned under.
+    /// right after `AgentChanged`).
     mode: String,
     /// The session's working directory (#764), from `WorkdirChanged`.
     workdir: Option<String>,

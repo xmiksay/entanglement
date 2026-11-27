@@ -19,7 +19,6 @@ use crate::tui::theme::Theme;
 // `App` is split across sibling submodules (issue #109); each contributes a
 // cohesive slice of the `impl App` surface. Fields stay private here — child
 // modules reach them through their descendant visibility.
-mod allow;
 pub(crate) mod appearance;
 mod approval_pager;
 mod aux;
@@ -123,11 +122,6 @@ pub struct App {
     // provider clients meter through, so the bottom info line can surface a
     // throttle indicator while an endpoint is backing off. `None` in tests.
     http_client: Option<entanglement_provider::HttpClient>,
-
-    // The shared tool-grant store (#486, ADR-0126): the same handle the tool
-    // executor's `Ask` upgrade reads, threaded in so `/allow <path>` can record
-    // a `SessionDir` grant directly — no wire round-trip. `None` in tests.
-    grants: Option<std::sync::Arc<crate::policy::DefaultGrantStore>>,
 
     // Persisted default editor from `config.yml` (#persist-editor). Wins over
     // `$VISUAL`/`$EDITOR` in the `/editor` round-trip; `None` ⇒ resolve from env.
@@ -313,9 +307,7 @@ impl App {
         self.sessions.active_view().agent()
     }
 
-    /// The active session's live permission mode (ADR-0207) — `/allow`
-    /// (#634) reads this to scope a `SessionDir` grant to the mode it's
-    /// earned under.
+    /// The active session's live permission mode (ADR-0207).
     pub fn mode(&self) -> &str {
         self.sessions.active_view().mode()
     }

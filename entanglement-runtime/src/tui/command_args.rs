@@ -71,7 +71,6 @@ impl Command {
             Command::Compact => render_help::<CompactArgs>(),
             Command::Set => render_help::<SetArgs>(),
             Command::Mcp => render_help::<McpArgs>(),
-            Command::Allow => render_help::<AllowArgs>(),
             Command::Stop => LifecycleArgs::command()
                 .name("stop")
                 .render_help()
@@ -97,7 +96,7 @@ impl Command {
     pub fn has_args(&self) -> bool {
         matches!(
             self,
-            Command::Compact | Command::Set | Command::Mcp | Command::Allow | Command::Stop
+            Command::Compact | Command::Set | Command::Mcp | Command::Stop
         )
     }
 }
@@ -179,16 +178,6 @@ pub(crate) fn parse_lifecycle_via_clap(text: &str, cmd: Command) -> Result<bool,
     let argv = tokens_after_slash(text, &cmd).unwrap_or_default();
     let args: LifecycleArgs = parse_or_usage(argv)?;
     Ok(args.all)
-}
-
-/// Parse `/allow <path>` via clap — just validates that a path token is present.
-/// The root-relative normalization itself stays in
-/// [`crate::tui::allow_command::normalize_allow_dir`] (it needs the head's
-/// `root`, which the clap layer doesn't see).
-pub(crate) fn parse_allow_via_clap(text: &str) -> Result<String, String> {
-    let argv = tokens_after_slash(text, &Command::Allow).unwrap_or_default();
-    let args: AllowArgs = parse_or_usage(argv)?;
-    Ok(args.path)
 }
 
 /// Parse `/mcp`'s subcommand via clap. Returns the parsed subcommand (or `None`

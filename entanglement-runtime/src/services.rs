@@ -31,7 +31,6 @@ pub(crate) struct Head {
     pub(crate) live_aux_models: Arc<Mutex<config::aux_models::AuxModelStore>>,
     pub(crate) reload_rx: tokio::sync::mpsc::UnboundedReceiver<watch::ReloadNotice>,
     pub(crate) http_client: HttpClient,
-    pub(crate) grants: Arc<DefaultGrantStore>,
     pub(crate) mcp: mcp::McpHandles,
     pub(crate) advertising_state: Arc<tool_advertising::AdvertisingState>,
     /// The registry the tool executor reads: a watching head registers here
@@ -257,7 +256,7 @@ pub(crate) fn start(
         live_skills.clone(),
         live_commands.clone(),
         live_agent_models.clone(),
-        grants.clone(),
+        grants,
         mcp_capabilities.clone(),
     )
     .with_file_backups(file_backups);
@@ -287,7 +286,6 @@ pub(crate) fn start(
         live_aux_models,
         reload_rx,
         http_client,
-        grants,
         mcp: mcp::McpHandles {
             avail: mcp_available,
             registry: tools,

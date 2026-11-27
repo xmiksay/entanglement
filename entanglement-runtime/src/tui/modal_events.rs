@@ -120,10 +120,6 @@ pub(super) async fn handle_command_palette_event(
                     // (#373), so a picked `/mcp` always runs `list` — the same
                     // default a bare typed `/mcp` falls back to.
                     super::mcp_command::send_mcp_list(app, holly).await;
-                } else if cmd == crate::tui::commands::Command::Allow {
-                    // A bare `/allow` has no path to grant (#486): prefill the
-                    // input so Enter routes through `allow_command::send_allow`.
-                    app.set_input_text("/allow ".to_string());
                 } else if cmd == crate::tui::commands::Command::Stop {
                     // Lifecycle commands (#6): the palette carries no `--all`
                     // flag, so a picked `/stop` acts on the active session only

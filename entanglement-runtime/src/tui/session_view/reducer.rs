@@ -141,10 +141,7 @@ impl SessionView {
             // Permission mode (ADR-0207): folded the same way `AgentChanged`
             // folds `agent` — every session gets a `ModeChanged` right after
             // its `AgentChanged` unconditionally at start (`session.rs`), so
-            // `mode()` is never stale for long. `/allow` (#634) is the first
-            // reader: a `SessionDir` grant is mode-scoped, so recording one
-            // needs to know the session's current mode. Full `/mode`
-            // display/switching is a later change.
+            // `mode()` is never stale for long.
             OutEvent::ModeChanged { mode, .. } => {
                 self.mode = mode;
                 true

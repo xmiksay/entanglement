@@ -76,10 +76,6 @@ impl App {
             // (plus, for `add`/`remove`, the trailing text) — both call sites
             // intercept it before reaching this dispatch.
             Command::Mcp => false,
-            // Same shape again (#486): `/allow <path>` needs the trailing path
-            // text, not available here — both call sites intercept it before
-            // reaching this dispatch.
-            Command::Allow => false,
             // `/tools` (#560 P9, ADR-0199 part 3) needs nothing `holly`/text
             // could add — the view builds its own row set from state already
             // on `App` — so it's fully handled here.

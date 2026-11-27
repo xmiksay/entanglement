@@ -27,7 +27,6 @@ pub enum Command {
     Set,
     Show,
     Mcp,
-    Allow,
     Tools,
     Stop,
     Name,
@@ -64,7 +63,6 @@ impl Command {
             Command::Set => "set",
             Command::Show => "show",
             Command::Mcp => "mcp",
-            Command::Allow => "allow",
             Command::Tools => "tools",
             Command::Stop => "stop",
             Command::Name => "name",
@@ -100,9 +98,6 @@ impl Command {
             }
             Command::Show => "Show the current effective generation parameters",
             Command::Mcp => "Manage MCP servers (list, add, remove)",
-            Command::Allow => {
-                "Allow a directory for read/grep/glob for the rest of this session"
-            }
             Command::Tools => {
                 "Browse this session's tool surface — host tools, MCP servers, skills (filter as you type, Tab cycles category)"
             }
@@ -157,7 +152,6 @@ pub fn all_commands() -> Vec<Command> {
         Command::Set,
         Command::Show,
         Command::Mcp,
-        Command::Allow,
         Command::Tools,
         Command::Stop,
         Command::Name,
@@ -308,7 +302,6 @@ mod tests {
         assert_eq!(parse_command("/set"), Some(Command::Set));
         assert_eq!(parse_command("/show"), Some(Command::Show));
         assert_eq!(parse_command("/mcp"), Some(Command::Mcp));
-        assert_eq!(parse_command("/allow"), Some(Command::Allow));
     }
 
     #[test]

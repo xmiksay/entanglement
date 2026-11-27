@@ -1,4 +1,3 @@
-mod allow_command;
 mod app;
 mod attention;
 mod aux_command;
@@ -92,7 +91,6 @@ pub async fn tui(
     http_client: HttpClient,
     configured_editor: Option<String>,
     tui_config: crate::config::TuiConfig,
-    grants: std::sync::Arc<crate::policy::DefaultGrantStore>,
     mcp_handles: crate::mcp::McpHandles,
     // The shared ADR-0196 §2-3 pinned-mode/discovered-tool-set handle (#560
     // P9, ADR-0199 part 3) — the same `Arc` the tool executor and the
@@ -160,7 +158,6 @@ pub async fn tui(
     app.set_http_client(http_client);
     app.set_configured_editor(configured_editor);
     app.set_launch_mode(launch_mode);
-    app.set_grants(grants);
     app.set_mcp_handles(mcp_handles);
     app.set_advertising_state(advertising_state);
     app.slash_mut().set_user_commands(user_commands);

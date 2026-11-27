@@ -108,14 +108,6 @@ pub struct McpArgs {
     pub cmd: Option<McpSub>,
 }
 
-/// `/allow <path>` (#486, ADR-0126): a single path, normalized root-relative by
-/// the caller.
-#[derive(Parser, Debug)]
-#[command(name = "/allow")]
-pub struct AllowArgs {
-    pub path: String,
-}
-
 /// `/stop`'s `--all`/`-a` flag (#6).
 #[derive(Parser, Debug)]
 #[command(name = "/lifecycle")]

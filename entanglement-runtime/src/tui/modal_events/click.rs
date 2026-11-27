@@ -222,8 +222,6 @@ async fn dispatch_palette_click(app: &mut App, holly: &Holly) {
                 .await;
         } else if cmd == crate::tui::commands::Command::Mcp {
             crate::tui::mcp_command::send_mcp_list(app, holly).await;
-        } else if cmd == crate::tui::commands::Command::Allow {
-            app.set_input_text("/allow ".to_string());
         } else if cmd == crate::tui::commands::Command::Stop {
             let target = app.active_session_id().clone();
             crate::tui::stop_command::request_stop(app, holly, target).await;

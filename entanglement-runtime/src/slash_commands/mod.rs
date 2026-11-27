@@ -61,7 +61,6 @@ pub const RESERVED_NAMES: &[&str] = &[
     "set",
     "show",
     "mcp",
-    "allow",
     "tools",
     "stop",
     "name",

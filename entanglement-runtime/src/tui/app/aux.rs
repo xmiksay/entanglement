@@ -1,7 +1,6 @@
-//! `/aux-model` persist + status render (Issue 5), mirroring the `/allow`
-//! command's direct-store-write pattern (`allow_command.rs`/ADR-0126): the pin
-//! is head-side persistence, not an engine op, so there is no wire round-trip
-//! and no confirm-on-event pairing (unlike `/model`'s `pending_model_persist`).
+//! `/aux-model` persist + status render (Issue 5): the pin is head-side
+//! persistence, not an engine op, so there is no wire round-trip and no
+//! confirm-on-event pairing (unlike `/model`'s `pending_model_persist`).
 
 use crate::config::aux_models::Purpose;
 
