@@ -217,6 +217,8 @@ No API change; three behaviours an embedder can see.
   scratch dir a reload's prompt context names (default: the project's).
 - **Behaviour:** `import "<name>"` now resolves in every run, and the
   `rhai` guide's `load_skill` result ends with the module listing.
+- **Removed in 0.8 (#926):** all of the above — see
+  [0.7 → 0.8 §importable rhai modules removed](0.7-to-0.8/scripts-and-runtime.md#importable-rhai-modules-removed-926).
 
 ## Per-call tool grading, host script namespaces and per-session skills (ADR-0249)
 

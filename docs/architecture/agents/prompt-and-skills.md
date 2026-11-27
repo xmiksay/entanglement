@@ -139,17 +139,6 @@
   `run_for_session`), a script's `skill::` namespaces and the `SkillActive`
   bookkeeping; `None` is the live registry. `SkillMeta::new`/`with_lib` build
   a skill in code, its lib compiled under the discovery rules.
-- **Importable modules (✅ #835, [ADR-0248](../../adr/archive/0248-importable-rhai-library-modules.md)):**
-  skill-independent `import "<name>" as m;` libraries. They are layered
-  like definitions: built-in < `${config_dir}/entanglement/rhai/modules/` <
-  `<root>/.entanglement/rhai/modules/`, a later layer winning on a name at
-  every import level.
-  - They follow `lib.rhai`'s rules (functions plus top-level `import`s),
-    are compiled at discovery and reloaded with the skill registry they
-    ride in.
-  - The built-in `rhai` guide's `load_skill` result lists them.
-  - Writing a `*.rhai` in a module dir always asks: the same write floor.
-  - Detail: [script surface](../gates/script-surface.md).
 - **Skills are additive-only — the `allowed_tools` mask is removed (✅ ADR-0194,
   [0194](../../adr/archive/0194-skills-are-additive-only.md), superseding
   [ADR-0106](../../adr/archive/0106-skill-scoped-allowed-tools-enforcement.md) and retiring

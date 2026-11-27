@@ -77,7 +77,7 @@ the code, never as a description of current behaviour — that is
 | [0043](0043-skill-preload-vs-access-independent-mechanisms.md) | Skill preload (`skills:`) vs access (`load_skill` mask) — independent mechanisms | current; partly superseded by 0229 | — |
 | [0044](0044-agents-skills-system-prompt-epic-synthesis.md) | Agents, skills & system prompt — epic synthesis (data-not-code subsystem) | current; partly superseded by 0229 | — |
 | [0045](0045-call-host-tool-argv-exec-tailed-output.md) | Host tool `call`: argv exec (no shell) with auto-tailed output | current; partly superseded by 0093; amended by 0161; removed by #916 | — |
-| [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool — embedded, capability-sandboxed script engine | current; amended by 0115, 0206, 0227, 0228, 0248 | — |
+| [0046](0046-rhai-sandboxed-script-tool.md) | `rhai` host tool — embedded, capability-sandboxed script engine | current; amended by 0115, 0206, 0227, 0228, 0248 (itself removed by #926) | — |
 | [0047](0047-local-trust-boundary.md) | Local trust boundary — the repository is trusted; config precedence system < user < repo; inspection over enforcement | current | — |
 | [0048](0048-serve-head-local-trust-model.md) | `serve` head — a local-only WebSocket protocol interface (Vue SPA primary, non-exclusive; browser surface out of scope) | current | — |
 | [0049](0049-plan-task-tools-as-runtime-state-tools.md) | `update_plan`/`update_tasks` as runtime state tools | current; partly superseded by 0145; amended by 0142, 0207 | — |
@@ -259,7 +259,7 @@ the code, never as a description of current behaviour — that is
 | [0225](0225-web-fetch-grades-redirect-hops.md) | `web_fetch` grades every redirect hop against the session's rules | current; amended by 0227; changed by #923 | — |
 | [0226](0226-one-advertised-surface-mcp-envelope-registered-is-available.md) | One advertised surface: the `mcp` envelope, list-style discovery, and MCP "registered = available" | current; partly superseded by 0227, 0228; amended by 0232; changed by #915; changed by #916; changed by #920; changed by #923 | — |
 | [0227](0227-one-binding-path-namespaces-http-skill-libraries.md) | One binding path: every rhai call through the dispatch seam, `mcp::`/`skill::` namespaces, `http()` with hidden credentials, endpoint tools removed | current; amended by 0228, 0233, 0243, 0249; changed by #920 | — |
-| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248; changed by #920; changed by #923 | — |
+| [0228](0228-rhai-path-and-args-skill-tools-frontmatter-removed.md) | `rhai` gains `path` and `args`; skill `tools:` frontmatter is removed; `load_skill` lists documented `lib.rhai` signatures | current; partly superseded by 0229; amended by 0230, 0247, 0248 (itself removed by #926); changed by #920; changed by #923 | — |
 | [0229](0229-every-skill-is-model-visible-user-only-removed.md) | Every skill is model-visible — `user_only` and the `disable-model-invocation` mapping are removed | current; changed by #920; changed by #923 | — |
 | [0230](0230-structured-card-reason-and-honest-scopes-on-tool-request.md) | `ToolRequest` carries a structured card `reason` and the `scopes` an approval honors | current; amended by 0237; changed by #925 | — |
 | [0231](0231-compaction-successor-inherits-background-work.md) | A compaction successor inherits its predecessor's background work | current; amended by 0234, 0238, 0241, 0242 | — |
@@ -279,5 +279,5 @@ the code, never as a description of current behaviour — that is
 | [0245](0245-a-decision-only-answers-its-own-kind-of-card.md) | A decision only answers its own kind of card | current; amended by 0247; changed by #922 | — |
 | [0246](0246-resume-under-ancestors-and-the-teardown-tail.md) | A resumed sub-agent answers to its ancestors, and inherits its predecessor's teardown tail | current; changed by #921; changed by #923 | — |
 | [0247](0247-attended-sessions-wait-for-their-approver.md) | Attended sessions wait for their approver | current | — |
-| [0248](0248-importable-rhai-library-modules.md) | Importable `rhai` library modules | current | — |
+| [0248](0248-importable-rhai-library-modules.md) | Importable `rhai` library modules | current; removed by #926 | — |
 | [0249](0249-in-process-mcp-servers-and-per-session-skills.md) | Per-call tool grading, host script namespaces and per-session skills | current | — |

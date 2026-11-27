@@ -204,10 +204,10 @@ doc, never here**:
   `script` or a script file `path`, `args` a constant map; the launch is
   graded like any tool on its `path` (Allow → Ask per command, Ask → one Run
   all / Ask per command / Reject card); a `rhai.trusted` folder's script runs
-  force-allowed with no card; `import` takes bare-name layered modules
-  listed by `load_skill rhai`; writes of trusted scripts, skill files and
-  modules always ask, in every mode
-  ([gates §script surface](../docs/architecture/gates/script-surface.md), [ADR-0046](../docs/adr/archive/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/archive/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0248](../docs/adr/archive/0248-importable-rhai-library-modules.md)).
+  force-allowed with no card; `import`/`eval` are disabled (a script is
+  one file); writes of trusted scripts and skill files always ask, in every
+  mode
+  ([gates §script surface](../docs/architecture/gates/script-surface.md), [ADR-0046](../docs/adr/archive/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/archive/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 - **MCP** — called only through `mcp(server, tool, args)` (core unwraps to
   `mcp__<server>__<tool>`), schemas never advertised; registered = available
   (`disabled: true` the one opt-out), lazy connect, live add/remove,
