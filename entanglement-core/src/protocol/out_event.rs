@@ -117,8 +117,10 @@ pub enum OutEvent {
     },
     /// An MCP server was hot-added or removed (lifecycle event, no `seq`), in
     /// reply to [`InMsg::McpAdd`]/[`InMsg::McpRemove`] (#375). `error` set
-    /// means the op was refused or failed and nothing changed (serde-defaulted,
-    /// so an older peer's frames still parse).
+    /// means the op was refused or failed and nothing changed — or, following
+    /// the success, that the head persisting the server set could not save it,
+    /// so the change holds for this process only (serde-defaulted, so an older
+    /// peer's frames still parse).
     McpChanged {
         name: String,
         action: McpAction,

@@ -194,8 +194,9 @@ impl Holly {
     }
 
     /// Broadcast an [`OutEvent::McpChanged`] reporting that `action` on `name`
-    /// was refused or failed — nothing changed. A head waiting on its
-    /// `/mcp add`/`remove` learns why instead of hearing nothing.
+    /// was refused or failed — nothing changed — or, after the success, that a
+    /// head could not persist it. A head waiting on its `/mcp add`/`remove`
+    /// learns why instead of hearing nothing.
     pub fn emit_mcp_change_failed(
         &self,
         name: String,

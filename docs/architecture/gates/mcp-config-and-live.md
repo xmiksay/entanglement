@@ -83,20 +83,21 @@ both dispatch and model-advertised schemas with no engine restart.
   logs are ignored on deserialize).
 - **Persistence is the head's** (#966): `mcp_add`/`mcp_remove` change only
   the in-memory `ServerConfigs`. `skutter` writes it back to `config.yml`
-  from a subscriber (`state::spawn_mcp_config_writer`) on every successful
-  `OutEvent::McpChanged` — `state::save_mcp`, a **surgical
+  from a subscriber (`state::spawn_mcp_config_writer`) when a successful
+  `OutEvent::McpChanged` changed the set — `state::save_mcp`, a **surgical
   `serde_yaml::Value` edit** of just the top-level `mcp` key (not the typed
   `Config`, which would drop unknown keys under `deny_unknown_fields`),
-  locked (§ADR-0084) and atomic. A write failure is logged; the live change
-  stands for the process. Unlike the
+  locked (§ADR-0084) and atomic. A lagged subscriber re-checks the set but
+  never rewrites an unchanged one (the round-trip drops comments). A write
+  failure follows the success as an `McpChanged` error naming the server:
+  the live change stands, for this process only. Unlike the
   managed sibling files (grants/agent-models/agent-generation/the provider-key
   env file), MCP servers stay part of the primary hand-edited `config.yml` —
   the surgical edit exists precisely to avoid disturbing whatever else
   (`permissions`, `hooks`, …) a user set alongside `mcp:`. Does not preserve
   comments (no layer in this config loader does).
-- A failed live add/remove is `tracing::warn!`-logged, not a new `OutEvent` —
-  matching the existing best-effort MCP philosophy (§ADR-0067): there is no
-  session to attach an error to.
+- A refused or failed live add/remove is an `McpChanged` carrying `error`
+  (engine-global, no session to attach it to), also `tracing::warn!`-logged.
 - **Out of scope here:** reconnect-on-external-config-edit (a file watcher) is
   a separate, unscheduled follow-up. The TUI `/mcp` surface landed next —
   §"TUI `/mcp` command" below.
