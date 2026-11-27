@@ -73,8 +73,10 @@ hook item. What changes:
   included, a script's nested calls not, the executor's own routes
   (`agent`, `poll`, `ask_user`, … — as in 0.7) not — and runs asynchronously
   after the result folded back instead of before, on its own worker, so a
-  formatter hook races the agent's next call on the same file. `user_prompt_submit` runs on the first event a
-  prompt causes. Details: [hooks §9](../../../architecture/gates/hooks-and-seams.md).
+  formatter hook races the agent's next call on the same file. Its `input`
+  is still the workdir-rewritten one (`path_grading::rewrite`, now public).
+  `user_prompt_submit` runs on the first event a prompt causes. Details:
+  [hooks §9](../../../architecture/gates/hooks-and-seams.md).
 - **Instead:** drop `Hooks::default()` from `spawn_tool_executor_with_policy`
   calls and any `.hooks(..)` builder call. An embedder that wants a veto
   wraps its resolver the way `HookResolver` does; one that wants to observe

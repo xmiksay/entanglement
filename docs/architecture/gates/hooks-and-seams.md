@@ -14,7 +14,7 @@ fan-out — so no new protocol or library surface exists.
 | point | fires | can block? | payload |
 | --- | --- | --- | --- |
 | `pre_tool_use` | while a call is graded: `HookResolver` wraps `skutter`'s `ModeResolver`, so it runs wherever the executor asks the resolver — every graded model call (the `agent`/`agent_send` gate and `propose_plan` included), a script's launch and each nested binding call, a redirect hop's in-call grade | **yes** — a non-zero exit grades the call `Deny`: the tool neither prompts nor runs and the model gets the plain mode-deny text; the hook's output is logged (`warn`), not shown | `{event, session, tool, input}` |
-| `post_tool_use` | on the `ToolOutput` of a host-tool call the runtime was asked to run (`ToolExec`, matched by `(session, request_id)`) — a refused call included, a script's nested calls not (they emit no `ToolExec`). The executor's own routes fire nothing, as in 0.7: `agent`, `agent_send`, `poll`, `ask_user`, `propose_plan`, `request_mode`, the `rhai` launch and the discovery tools but `load_skill` | no — observational (exit code logged, never fed to the model); it runs after the result folded back, so it cannot rewrite it | `{event, session, tool, input, output, is_error, exit_code}` — `is_error` (#636, ADR-0176) is the same structured classification that rides `OutEvent::ToolOutput`; `exit_code` (#681, ADR-0186) is the observed process exit status for `bash` (JSON `null` for every other tool and for a killed process) |
+| `post_tool_use` | on the `ToolOutput` of a host-tool call the runtime was asked to run (`ToolExec`, matched by `(session, request_id)`) — a refused call included, a script's nested calls not (they emit no `ToolExec`). The executor's own routes fire nothing, as in 0.7: `agent`, `agent_send`, `poll`, `ask_user`, `propose_plan`, `request_mode`, the `rhai` launch and the discovery tools but `load_skill` | no — observational (exit code logged, never fed to the model); it runs after the result folded back, so it cannot rewrite it | `{event, session, tool, input, output, is_error, exit_code}` — `input` as the executor ran it: a `/cd` session's relative path arguments joined onto its workdir (`path_grading::rewrite` over `ToolExec.workdir`, as in 0.7 and as `pre_tool_use` grades it), since the hook runs from the project root; `is_error` (#636, ADR-0176) is the same structured classification that rides `OutEvent::ToolOutput`; `exit_code` (#681, ADR-0186) is the observed process exit status for `bash` (JSON `null` for every other tool and for a killed process) |
 | `user_prompt_submit` | on an inbound `InMsg::Prompt` (run when the first event it causes arrives) | no — observational | `{event, session, prompt}` |
 | `session_start` | on `OutEvent::SessionStarted` — every session, root or child, incl. a compaction successor and each session a resume re-announces | no | `{event, session, source, parent, predecessor, agent, model, root}` — `source` is `resume` when an `InMsg::Resume`'s records name the id, else `compact` when it has a `predecessor`, else `fresh` |
 | `session_end` | on `OutEvent::SessionEnded` / `SessionHibernated` | no | `{event, session, reason, parent, agent}` — `reason`: `hibernated`, `compacted` (the source after its `Compacted`), else `closed` |
@@ -93,11 +93,14 @@ pluggable decision every call passes.
   point — so hooks fire in event order within each while a slow hook never
   lags the subscription, and a batch of slow `post_tool_use` hooks never
   delays an approval `notification`. The order *between* a `post_tool_use`
-  and another point's firing is not kept. Firings are best-effort under a broadcast lag:
-  dropped events fire nothing, and a pending turn end is forgotten rather
-  than misclassified. Engine-internal LLM calls (aux models:
-  `summarize`/`session_title`/`narrate`) open no session and so fire
-  nothing; a spawned child is an ordinary session and does.
+  and another point's firing is not kept. Firings are best-effort under a
+  broadcast lag: dropped events fire nothing, and a pending turn end is
+  forgotten rather than misclassified. Engine-internal LLM calls (aux
+  models: `summarize`/`session_title`/`narrate`) open no session and so
+  fire nothing; a spawned child is an ordinary session and does. The
+  skipped routes are a copy (`ROUTE_TOOLS`) of the runtime's private
+  `Intercept::classify` plus `request_mode`; a note there keeps them in
+  step.
 
 ### Pluggable policy seams — `PermissionResolver` + `GrantStore` — [ADR-0079](../../adr/archive/0079-pluggable-permission-resolver-and-grant-store.md) (#311)
 

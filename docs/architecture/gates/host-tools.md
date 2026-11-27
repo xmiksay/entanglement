@@ -53,7 +53,8 @@ registered, [ADR-0049](../../adr/archive/0049-plan-task-tools-as-runtime-state-t
 `propose_plan` never reaches `dispatch` at all, intercepted earlier like
 `ask_user`/the spawn family) can never execute, so it would be
 pointless to prompt the user for `Ask` approval, run a resolver (or a
-`skutter` `pre_tool_use` hook, §9) that could veto it, or let an `Always`-scoped approval record a grant for it. (The former
+`skutter` `pre_tool_use` hook, §9) that could veto it, or let an
+`Always`-scoped approval record a grant for it. (The former
 carve-out for an unregistered-but-advertised `bash` is gone: ADR-0195
 registers `bash` at startup, so there is no advertised-but-unregistered
 built-in whose decline needed its own wording. A call to a tool that is
@@ -149,7 +150,8 @@ guessing again:
   `bash`/`rhai` exec and the base of relative path arguments. The
   executor applies it as a **rewrite of the call's input** on each `ToolExec`,
   before grading, the escape-root gate and execution
-  (`path_grading::rewrite`; a rhai binding on the script bridge before it
+  (`path_grading::rewrite`, public so `skutter`'s `post_tool_use` payload
+  shows the same paths, §9; a rhai binding on the script bridge before it
   enters the seam). Which argument is a path is the tool's own answer —
   `Tool::join_workdir`, a defaulted trait method the host tools implement
   (#930), so the executor names no host tool; `rhai`'s script `path` is

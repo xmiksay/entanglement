@@ -40,9 +40,9 @@ reports work the mode already authorized, or asks the user, so the dispatch
 `agent_send` are the exception: still `Capability::Control`, but a spawn
 starts a session that runs tools, so `orchestration::spawn`/`agent_send`
 climb the same ladder as a host tool (`Dispatcher::gate` —
-grade + grants, `pre_tool_use`, mode deny, the unattended collapse, the
-approval park) before launching. A refusal is an ordinary `is_error`
-result, and no child starts. The spawn slot is reserved first (the guard is
+grade + grants (any resolver veto included), mode deny, the unattended
+collapse, the approval park) before launching. A refusal is an ordinary
+`is_error` result, and no child starts. The spawn slot is reserved first (the guard is
 loop state; the ladder may park in the detached task) and released on a
 refusal. The child's event receiver is taken only once the gate clears, so a
 long approval park can't lag it past the outbox capacity. A session that

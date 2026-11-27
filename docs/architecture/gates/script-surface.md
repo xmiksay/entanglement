@@ -13,7 +13,8 @@ call. The ladder (`dispatch/gates.rs`): script reachability → resolve the
 tool (`dispatch/resolve.rs`: scoped MCP overlay, lazy connect — a script waits
 on it no longer than its budget, §Dispatch-time lazy connect) → `Control` bypass
 (every Control-only tool but `agent`/`agent_send`, ADR-0232) →
-grade + grants → `pre_tool_use` → mode deny → escape-root →
+grade + grants (an embedder's resolver runs inside the grade — `skutter`'s
+`pre_tool_use` veto, [§9](hooks-and-seams.md)) → mode deny → escape-root →
 credentialed-`http` gate → run / unattended collapse / park
 (`dispatch/decision.rs`; "unattended" is the mode's `question_timeout` and
 no head watching the call's ancestor chain, and an attended park has no
@@ -21,7 +22,7 @@ deadline — `run_limits::unattended`/`expiry`,
 [ADR-0247](../../adr/archive/0247-attended-sessions-wait-for-their-approver.md)) →
 execute (`dispatch/execute.rs`: state tools,
 arg validation, in-call grader, `FileChange` capture, script budget, loop
-breaker, `post_tool_use`).
+breaker).
 
 **Live nested-call reports** ([ADR-0233](../../adr/archive/0233-live-only-nested-call-events-for-rhai-scripts.md), #821,
 `script::activity`). The bridge's service loop is the one place every binding
@@ -140,9 +141,10 @@ floor).
 
 **The launch** (`script::gate`) is graded like any tool
 ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
-`Dispatcher::grade` — the mode's rules, the ceiling and grants — then the `pre_tool_use` veto, all before the file is opened. The
-rule/grant argument is the script's **canonical** `path`, root-relative
-inside the root and absolute outside it (`permission_arg` +
+`Dispatcher::grade` — the mode's rules, the ceiling and grants (and any
+resolver veto, such as `skutter`'s `pre_tool_use`) — before the file is
+opened. The rule/grant argument is the script's **canonical** `path`,
+root-relative inside the root and absolute outside it (`permission_arg` +
 `permission_path::rooted_arg`, which canonicalizes for `rhai` alone; the
 gate rewrites the input's `path` to that form before grading, against the
 escape-root policy's root or, with none wired, the launch's project root), so

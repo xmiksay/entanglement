@@ -28,7 +28,7 @@
   it waited for, parking the request forever. Instead each registers a `oneshot` in
   a shared `runtime::pending::PendingDecisions` map keyed by `(session, request_id)`
   *before* emitting its request, and a **single light inbound router** (the
-  executor's `Stop`/`user_prompt_submit` watcher, now the sole inbound consumer for
+  executor's `Stop`/decision router, now the sole inbound consumer for
   decisions) fans each decision to its waiter and unwinds a session's waiters on
   `Stop`.
 - **Approval scope + persisted grants (✅ #174, [ADR-0052](../../adr/archive/0052-approval-scope-and-persisted-grants.md)):**
