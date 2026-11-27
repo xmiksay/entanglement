@@ -13,7 +13,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::{SkillMeta, SkillRegistry};
 use entanglement_runtime::tool_runner::ToolExecutor;
@@ -125,7 +125,7 @@ async fn run_calls(calls: &[(&str, &str)]) -> Vec<OutEvent> {
         .base(base)
         .perm_modes(perm_modes)
         .resolver(resolver)
-        .grants(Arc::new(DefaultGrantStore::load_from(None)) as Arc<dyn GrantStore>)
+        .grants(Arc::new(InMemoryGrantStore::new()) as Arc<dyn GrantStore>)
         .mode_table(table)
         .catalog(Arc::new(catalog))
         .spawn();

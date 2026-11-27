@@ -128,7 +128,7 @@ impl McpScopes {
         }
         let (client, defs) = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            super::super::connect_impl::connect_client_with_store(
+            super::super::connect_impl::connect_client(
                 name,
                 cfg,
                 &self.secret_env,

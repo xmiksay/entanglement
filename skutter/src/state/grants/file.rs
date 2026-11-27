@@ -1,15 +1,12 @@
-//! The managed grants file (`<state dir>/grants.yml`, ADR-0213):
-//! path resolution, on-disk shape, and the locked read/write helpers.
+//! The managed grants file (`<state dir>/grants.yml`, ADR-0213): on-disk
+//! shape and the read/write helpers.
 
 use std::collections::HashSet;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use super::GrantKey;
-
-use crate::config::state_dir::{self, GRANTS_FILE};
 
 /// On-disk shape of the managed grants file. A top-level `grants:` list keeps
 /// room for future keys and lets `deny_unknown_fields` flag typos.
@@ -21,39 +18,15 @@ struct GrantsFile {
 }
 
 /// One line of the grants file: a **scoped** entry (mode + rule, written by
-/// every grant this stage records) or a bare rule **string** — a pre-ADR-0207
-/// file, kept parseable so an existing user's file doesn't error out, but
-/// loaded with `mode: None` so it never matches a live call (ADR-0207 §8:
-/// "existing grants.yml entries have no mode; treat them as non-matching").
+/// every grant recorded since ADR-0207) or a bare rule **string** — a
+/// pre-ADR-0207 file, kept parseable so an existing user's file doesn't error
+/// out, but loaded with `mode: None` so it never matches a live call
+/// (ADR-0207 §8).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum GrantEntry {
     Scoped { mode: String, rule: String },
     Legacy(String),
-}
-
-/// Resolve the managed grants file path: `grants.yml` in the managed-state dir
-/// (`ENTANGLEMENT_STATE_DIR`, else `${config_dir}/entanglement`). `None` when
-/// neither is available (persistence then silently no-ops).
-pub(super) fn grants_file_path() -> Option<PathBuf> {
-    resolve_path(|name| std::env::var_os(name), default_state_dir)
-}
-
-/// [`grants_file_path`] over an injected env lookup and config-dir fallback,
-/// so the precedence is unit-testable without `set_var` (#747).
-fn resolve_path(
-    env: impl Fn(&str) -> Option<OsString>,
-    default_dir: impl FnOnce() -> Option<PathBuf>,
-) -> Option<PathBuf> {
-    state_dir::resolve(env, default_dir).map(|d| d.join(GRANTS_FILE))
-}
-
-/// `${config_dir}/entanglement`. Guarded under `cfg(test)` (#747): a unit
-/// test must use `FileGrantStore::load_from` / `DefaultGrantStore::load_from`,
-/// never the developer's own `grants.yml` (an `Always` grant there turns an
-/// expected Ask into Allow).
-fn default_state_dir() -> Option<PathBuf> {
-    crate::user_dirs::config_dir().map(|d| d.join("entanglement"))
 }
 
 /// Read + parse the grants file at `path` into a key set. A missing file, or any
@@ -116,49 +89,5 @@ pub(super) fn write_grants(path: &Path, grants: &HashSet<GrantKey>) -> anyhow::R
                   # Managed by skutter: a line is appended when you approve a tool with the\n\
                   # \"always\" scope. Each entry upgrades a matching Ask to Allow (exact match on\n\
                   # tool + argument); it never overrides a Deny. Delete a line to revoke.\n";
-    crate::config::atomic::atomic_write(path, &format!("{header}{body}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
-        let pairs: Vec<(String, String)> = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        move |name| {
-            pairs
-                .iter()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| OsString::from(v))
-        }
-    }
-
-    #[test]
-    fn the_state_dir_wins_over_the_config_dir() {
-        let path = resolve_path(lookup(&[(state_dir::STATE_DIR_ENV, "/tmp/st")]), || {
-            Some(PathBuf::from("/cfg/entanglement"))
-        });
-        assert_eq!(path, Some(PathBuf::from("/tmp/st/grants.yml")));
-    }
-
-    #[test]
-    fn config_dir_is_the_fallback_and_none_stays_none() {
-        let path = resolve_path(lookup(&[]), || Some(PathBuf::from("/cfg/entanglement")));
-        assert_eq!(path, Some(PathBuf::from("/cfg/entanglement/grants.yml")));
-        assert_eq!(resolve_path(lookup(&[]), || None), None);
-    }
-
-    #[test]
-    #[should_panic(expected = "resolved the real user config dir")]
-    fn the_real_grants_file_is_unreachable_under_test() {
-        let _ = grants_file_path_without_env();
-    }
-
-    /// The production resolution with no env override — reaches the guard.
-    fn grants_file_path_without_env() -> Option<PathBuf> {
-        resolve_path(lookup(&[]), default_state_dir)
-    }
+    entanglement_runtime::config::atomic::atomic_write(path, &format!("{header}{body}"))
 }

@@ -30,21 +30,11 @@ pub fn transport_label(cfg: &McpServerConfig) -> String {
 /// involved — split out of the old single-shot `connect_one` (#375) so a live
 /// `mcp_add` can run these *before* taking the registry's write lock, never
 /// holding it across an `.await`. `http` (#559) is forwarded to the HTTP
-/// transport so its traffic rides the shared endpoint pool.
+/// transport so its traffic rides the shared endpoint pool. `token_store` is
+/// where an `oauth:` server's bearer comes from — the roster's store for a
+/// global connect, the scope's slice for a session-keyed one (#684); `None`
+/// connects without a bearer.
 pub(crate) async fn connect_client(
-    name: &str,
-    cfg: &McpServerConfig,
-    secret_env: &[String],
-    http: &entanglement_core::HttpClient,
-) -> Result<(Arc<McpClient>, Vec<McpToolDef>)> {
-    connect_client_with_store(name, cfg, secret_env, http, None).await
-}
-
-/// [`connect_client`] with the OAuth credential source made explicit (#684):
-/// `token_store` is the per-scope store a session-keyed MCP scope supplies
-/// ([`super::scoped::McpScopes`]), and `None` falls back to the process-global
-/// managed file — byte-identical to every pre-#684 caller.
-pub(crate) async fn connect_client_with_store(
     name: &str,
     cfg: &McpServerConfig,
     secret_env: &[String],
@@ -71,13 +61,6 @@ pub(crate) async fn connect_client_with_store(
 /// The OAuth bearer source for a server that declares an `oauth:` block
 /// (ADR-0153), or `None` for one authenticated by static headers (or not at
 /// all) — in which case the transport behaves exactly as it did pre-ADR-0153.
-/// `store` is a per-scope credential slice when the connect belongs to a
-/// session-keyed MCP scope (#684); absent, the process-global managed file.
-///
-/// The global store is built per call rather than held in a process-wide
-/// handle: it is only a resolved path (no I/O until a load), connects are rare,
-/// and building it here keeps `ENTANGLEMENT_STATE_DIR` honoured at the
-/// moment of use.
 #[cfg(feature = "mcp-http")]
 fn oauth_token_source(
     name: &str,
@@ -85,10 +68,8 @@ fn oauth_token_source(
     store: Option<Arc<dyn entanglement_core::TokenStore>>,
 ) -> Option<Arc<dyn entanglement_core::AccessTokenSource>> {
     cfg.oauth.as_ref()?;
-    let store: Arc<dyn entanglement_core::TokenStore> =
-        store.unwrap_or_else(|| Arc::new(crate::config::McpTokenStore::load()));
     Some(Arc::new(entanglement_core::StoredTokenSource::new(
-        name, store,
+        name, store?,
     )))
 }
 
@@ -117,11 +98,11 @@ pub(crate) fn register_tools(
 }
 
 /// Record `server`'s freshly registered `tools` in `cache`, as the bare names
-/// `list_mcp` shows — on the blocking pool, since the write takes a file
-/// lock. A failure only costs the next process a tool list for an
-/// unconnected server, so it is logged, never surfaced.
+/// `list_mcp` shows — on the blocking pool, since a head's cache may take a
+/// file lock. A failure only costs a tool list for an unconnected server
+/// later, so it is logged, never surfaced.
 pub(crate) async fn record_last_seen(
-    cache: &McpToolCache,
+    cache: &Arc<dyn McpToolCache>,
     server: &str,
     cfg: &McpServerConfig,
     tools: &[String],

@@ -9,7 +9,6 @@ use entanglement_core::AgentCatalog;
 
 use crate::config::agent_models::AgentModelStore;
 use crate::mcp;
-use crate::policy::DefaultGrantStore;
 use crate::session_store::SessionStore;
 use crate::skills::SkillRegistry;
 use crate::system_prompt::PromptContext;
@@ -34,7 +33,6 @@ pub struct LiveDefinitions {
     pub agents: Arc<RwLock<AgentCatalog>>,
     pub skills: Arc<RwLock<Arc<SkillRegistry>>>,
     pub agent_models: Arc<Mutex<AgentModelStore>>,
-    pub grants: Arc<DefaultGrantStore>,
     /// The MCP capability index (#426), captured once at startup like the
     /// config ceiling permissions — `config.yml`'s `mcp:` section is watched
     /// for the same *file content* fingerprint as everything else here, but
@@ -59,14 +57,12 @@ impl LiveDefinitions {
         agents: Arc<RwLock<AgentCatalog>>,
         skills: Arc<RwLock<Arc<SkillRegistry>>>,
         agent_models: Arc<Mutex<AgentModelStore>>,
-        grants: Arc<DefaultGrantStore>,
         mcp_capabilities: mcp::McpCapabilityIndex,
     ) -> Self {
         Self {
             agents,
             skills,
             agent_models,
-            grants,
             mcp_capabilities,
             file_backups: None,
             sessions: None,
@@ -86,8 +82,8 @@ impl LiveDefinitions {
     }
 }
 
-/// Re-run the skill + agent-profile loaders, reload the grants/agent-models
-/// stores from disk, and swap the result into `live` — but only if every step
+/// Re-run the skill + agent-profile loaders, reload the agent-models store
+/// from disk, and swap the result into `live` — but only if every step
 /// succeeds. A malformed edit mid-save must not crash a long-running watcher
 /// or wipe out a previously-good in-memory registry (unlike startup, which
 /// fails fast) — log and keep serving the last-known-good state instead.
@@ -111,7 +107,6 @@ pub(super) fn reload(cwd: &Path, live: &LiveDefinitions) -> anyhow::Result<Strin
         agent_models.reload();
         agent_models.apply(&mut new_profiles);
     }
-    live.grants.reload();
 
     let agent_count = new_profiles.iter().count();
     let skill_count = new_skills.disclosures().len();

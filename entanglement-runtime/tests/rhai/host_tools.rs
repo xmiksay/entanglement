@@ -14,7 +14,7 @@ use entanglement_runtime::host::host_tools;
 use entanglement_runtime::host_ns::{HostFn, HostNamespace};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
-    DefaultGrantStore, Grade, GrantStore, ModeResolver, PermissionResolver,
+    Grade, GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
@@ -123,7 +123,7 @@ fn spawn_rhai_with_ns(
             None,
         ))
     });
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let default_ns_resolver: entanglement_runtime::host_ns::HostFnResolver =
         Arc::new(|_: &SessionId| {
             Some(vec![

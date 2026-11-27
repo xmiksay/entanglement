@@ -309,9 +309,8 @@ async fn user_denial_carries_only_the_reason_no_schema() {
             PermissionProfile::new(Permission::Allow),
             None,
         ));
-    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> = Arc::new(
-        entanglement_runtime::policy::DefaultGrantStore::load_from(None),
-    );
+    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
+        Arc::new(entanglement_runtime::policy::InMemoryGrantStore::new());
     let _executor = entanglement_runtime::tool_runner::ToolExecutor::builder(&holly, shared_tools)
         .agents(profiles)
         .live_skills(Arc::new(std::sync::RwLock::new(Arc::new(

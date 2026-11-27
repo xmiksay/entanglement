@@ -16,7 +16,7 @@ use entanglement_core::{
 use entanglement_runtime::file_backup::FileBackups;
 use entanglement_runtime::host::{host_tools_with, BashTool, HostToolOptions};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
-use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
+use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::session_store::SessionStore;
 use entanglement_runtime::tool_runner::ToolExecutor;
 use serde_json::json;
@@ -89,7 +89,7 @@ pub(super) fn engine(root: &Path, script: String, backups: Option<FileBackups>) 
         .base(base)
         .perm_modes(modes.clone())
         .resolver(resolver)
-        .grants(Arc::new(DefaultGrantStore::load_from(None)))
+        .grants(Arc::new(InMemoryGrantStore::new()))
         .mode_table(table())
         .spawn();
     (holly, modes)

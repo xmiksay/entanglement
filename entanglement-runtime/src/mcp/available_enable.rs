@@ -87,7 +87,13 @@ async fn connect_locked(
     if avail.needs_auth(name, &config) {
         bail!(auth_hint(name));
     }
-    let connect = connect_client(name, &config, avail.secret_env(), http);
+    let connect = connect_client(
+        name,
+        &config,
+        avail.secret_env(),
+        http,
+        Some(avail.token_store()),
+    );
     let (client, defs) = match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(result) => result?,
         Err(_) => bail!("connecting MCP server `{name}` timed out"),
@@ -261,8 +267,7 @@ mod tests {
     /// recorded failure.
     #[tokio::test]
     async fn auth_required_starts_no_cooldown_and_a_later_connect_is_used_at_once() {
-        let avail =
-            AvailableMcp::default().with_token_store(crate::config::McpTokenStore::at(None));
+        let avail = AvailableMcp::default();
         let mut cfg = crate::mcp::available::tests::stdio("true");
         cfg.oauth = Some(Default::default());
         avail.insert_user("kb", cfg);

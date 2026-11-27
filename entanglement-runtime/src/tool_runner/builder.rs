@@ -200,10 +200,10 @@ impl ToolExecutorBuilder {
         self
     }
 
-    /// Where "always allow" grants are recorded (#311). Default: **in-memory
-    /// only** (#747/#775) — an `Always` approval never reads or writes the
-    /// managed `grants.yml`. A production single-user head wanting persisted
-    /// grants passes `Arc::new(DefaultGrantStore::load())` explicitly.
+    /// Where "always allow" grants are recorded (#311). Default: an
+    /// [`InMemoryGrantStore`][crate::policy::InMemoryGrantStore] — an `Always`
+    /// grant lasts until the process exits. A head that persists grants
+    /// passes its own store (`skutter` keeps them in a managed file).
     pub fn grants(mut self, grants: Arc<dyn GrantStore>) -> Self {
         self.grants = Some(grants);
         self
@@ -354,7 +354,7 @@ mod tests {
             .base(base.clone())
             .mode_table(table.clone())
             .perm_modes(modes.clone())
-            .grants(Arc::new(crate::policy::DefaultGrantStore::load_from(None)));
+            .grants(Arc::new(crate::policy::InMemoryGrantStore::new()));
         assert_eq!(b.base, base);
         assert!(Arc::ptr_eq(b.mode_table.as_ref().unwrap(), &table));
         assert!(Arc::ptr_eq(&b.perm_modes, &modes));

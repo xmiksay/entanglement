@@ -23,7 +23,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
@@ -127,7 +127,7 @@ fn spawn_calling_with_mode_table(
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(agents)
         .base(PermissionProfile::new(Permission::Allow))

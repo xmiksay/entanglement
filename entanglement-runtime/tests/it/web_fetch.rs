@@ -20,7 +20,7 @@ use entanglement_runtime::capability::Capability;
 use entanglement_runtime::host::WebFetchTool;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_runner::grade_in_scope;
 use entanglement_runtime::tool_runner::ToolExecutor;
@@ -118,7 +118,7 @@ async fn run_in_mode(mode: &str, tool: &str, url: &str, window: Duration) -> Vec
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(&holly, shared)
         .agents(profiles)
         .base(PermissionProfile::new(Permission::Allow))

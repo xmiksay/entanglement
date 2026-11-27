@@ -21,4 +21,6 @@ pub mod serve;
 // User-defined slash commands — layered prompt templates (#733): pure
 // discovery + text expansion, consumed by the TUI and the `run` head.
 pub mod slash_commands;
+// The file-backed stores behind the library's in-memory seams (#966).
+pub mod state;
 mod user_dirs;

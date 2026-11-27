@@ -14,7 +14,7 @@ use entanglement_core::{
     OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_runner::{DiscoverySurface, ToolExecutor};
 use entanglement_runtime::{Tool, ToolRegistry};
@@ -91,7 +91,7 @@ async fn run_one_call(name: &str, input: &str, agent: &str) -> Vec<OutEvent> {
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(profiles)
         .base(base)

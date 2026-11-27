@@ -134,10 +134,7 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
             escape_root.as_ref().map(|er| er.root.clone()),
         ))
     });
-    // In-memory only (#747/#775): an executor that didn't ask for persisted
-    // grants must never read or write the developer's real `grants.yml`.
-    let grants =
-        grants.unwrap_or_else(|| Arc::new(crate::policy::DefaultGrantStore::load_from(None)));
+    let grants = grants.unwrap_or_else(|| Arc::new(crate::policy::InMemoryGrantStore::new()));
     // One gate for the tool that injects and the seam that forces approval.
     #[cfg(feature = "rhai")]
     if let Some(gate) = &http_gate {
@@ -207,10 +204,11 @@ fn spawn_executor(b: ToolExecutorBuilder) -> tokio::task::JoinHandle<()> {
         // Shared with the detached launch watchers and `poll` tasks (#605).
         let registry = crate::agent_registry::AgentRegistry::default();
         // "Always allow" grants (#174), now a pluggable [`GrantStore`] trait
-        // object (#311): the default persists to the managed file, a multi-tenant
-        // embedder to its DB. Shared with the per-request dispatch tasks, which
-        // record the wider scopes off an `Approve`; the loop reads it (sync
-        // `is_granted`) to skip the prompt for an already-granted call.
+        // object (#311): the default holds them in memory, `skutter` in a
+        // managed file, a multi-tenant embedder in its DB. Shared with the
+        // per-request dispatch tasks, which record the wider scopes off an
+        // `Approve`; the loop reads it (sync `is_granted`) to skip the prompt
+        // for an already-granted call.
         // In-flight tool tasks per session (#167). A `Stop` on the inbound
         // fan-out aborts every task registered for that session, so a running
         // `bash` command or `rhai` script is actually cancelled — core

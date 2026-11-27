@@ -102,7 +102,7 @@ pub(crate) mod test_support {
                 None,
             )),
             chain: vec![session.clone()],
-            grants: Arc::new(crate::policy::DefaultGrantStore::load_from(None)),
+            grants: Arc::new(crate::policy::InMemoryGrantStore::new()),
             session,
             mode: name,
             root: None,

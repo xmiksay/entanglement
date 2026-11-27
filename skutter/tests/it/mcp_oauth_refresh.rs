@@ -6,7 +6,7 @@
 //! Simulates "two processes sharing one token file" with two separate
 //! [`McpTokenStore`] handles pointed at the same path — exactly what two real
 //! `skutter` instances look like, since neither caches anything in memory
-//! (`config::mcp_tokens`'s module doc). A hand-rolled `tokio::net::TcpListener`
+//! (`skutter::state::mcp_tokens`'s module doc). A hand-rolled `tokio::net::TcpListener`
 //! mock token endpoint (no `wiremock`/`mockito` in this workspace, mirroring
 //! `entanglement-provider/tests/streaming.rs`) tracks how many times each
 //! specific `refresh_token` value is redeemed and 400s a second redemption of
@@ -20,7 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use entanglement_core::{AccessTokenSource, StoredAuth, StoredTokenSource, TokenSet, TokenStore};
-use entanglement_runtime::config::McpTokenStore;
+use skutter::state::McpTokenStore;
 
 // ── hand-rolled mock token endpoint ─────────────────────────────────────────
 

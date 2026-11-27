@@ -152,7 +152,7 @@ mod mcp_namespace {
     use axum::response::{IntoResponse, Response};
     use axum::routing::post;
     use axum::{Json, Router};
-    use entanglement_runtime::mcp::{McpServerConfig, McpToolCache};
+    use entanglement_runtime::mcp::{InMemoryMcpToolCache, McpServerConfig, McpToolCache};
     use serde_json::{json, Value};
 
     /// A streamable-HTTP MCP server with one `call` tool (a Rhai reserved
@@ -191,7 +191,7 @@ mod mcp_namespace {
             let _ = axum::serve(listener, Router::new().route("/mcp", post(stub))).await;
         });
         let dir = TempDir::new("unified-mcp");
-        let cache = McpToolCache::at(Some(dir.path.join("mcp-tools.yml")));
+        let cache = Arc::new(InMemoryMcpToolCache::default());
         cache
             .record("stub-srv", &url, &["call".to_string()])
             .unwrap();

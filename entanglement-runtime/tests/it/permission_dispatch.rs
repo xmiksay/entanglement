@@ -24,7 +24,7 @@ use entanglement_core::{
     LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
-use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver, PermissionResolver};
+use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver, PermissionResolver};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
@@ -1081,7 +1081,7 @@ async fn a_bash_deny_ceiling_clamps_the_curated_read_only_rules() {
         .active(active)
         .perm_modes(modes)
         .resolver(resolver)
-        .grants(Arc::new(DefaultGrantStore::load_from(None)))
+        .grants(Arc::new(InMemoryGrantStore::new()))
         .mode_table(builtin_modes())
         .spawn();
 

@@ -1,20 +1,22 @@
 //! Live MCP server management (#375, Phase 4 of the MCP umbrella): hot-add/
-//! remove a server in the running process, mirrored to `config.yml` so it
-//! survives a restart.
+//! remove a server in the running process. Nothing here writes a file
+//! (#966): a head that wants the change to survive a restart persists
+//! [`ServerConfigs`] on the `OutEvent::McpChanged` the responder emits
+//! (`skutter` rewrites `config.yml`'s `mcp:` section).
 //!
 //! `ActiveServers` tracks exactly what is currently connected — empty at
 //! startup (ADR-0226), filled by lazy connects and [`mcp_add`], drained by
 //! [`mcp_remove`]. `ServerConfigs` is the separate, wider live mirror of every
 //! *configured* server (including one that failed to connect or is
-//! `disabled`) — the full set [`crate::config::save_mcp`] must write back,
-//! since it replaces the whole `mcp:` section. Losing track of a
-//! never-connected entry there would silently drop it from `config.yml` on
-//! the next live add/remove.
+//! `disabled`) — the full set a head writes back, since it replaces the whole
+//! `mcp:` section. Losing track of a never-connected entry there would
+//! silently drop it from the config on the next live add/remove.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
+use entanglement_core::TokenStore;
 
 use crate::tools::SharedRegistry;
 
@@ -34,13 +36,13 @@ pub struct ActiveServer {
 pub type ActiveServers = Arc<Mutex<HashMap<String, ActiveServer>>>;
 
 /// The live mirror of every *configured* server — wider than [`ActiveServers`]
-/// (includes `disabled`/failed-to-connect entries) — so a `save_mcp` write
+/// (includes `disabled`/failed-to-connect entries) — so a head persisting it
 /// after one add/remove never drops an unrelated entry. Seeded at startup from
 /// the user config's `mcp:` section.
 pub type ServerConfigs = Arc<Mutex<HashMap<String, McpServerConfig>>>;
 
 /// Hot-connect a server: `connect` → register its tools into `registry` →
-/// track it in `active` → persist the full server set to `config.yml`.
+/// track it in `active` → record it in `configs`.
 ///
 /// Upsert semantics: re-adding an already-active name first drops its old
 /// tools/connection (unregister + let the old `Arc<McpClient>` drop), so
@@ -81,13 +83,14 @@ pub async fn mcp_add(
     {
         carry_forward_unspecified_fields(&mut cfg, &existing, &name);
     }
-    let (client, defs) = connect_client(&name, &cfg, secret_env, http).await?;
+    // A live-added spec never carries an `oauth:` block (`From<McpServerSpec>`),
+    // so there is no bearer to look up.
+    let (client, defs) = connect_client(&name, &cfg, secret_env, http, None).await?;
     let tools = install_server(registry, active, &name, client, defs, &cfg);
-    {
-        let mut all = configs.lock().expect("MCP server-config mutex poisoned");
-        all.insert(name.clone(), cfg);
-        crate::config::save_mcp(&all)?;
-    }
+    configs
+        .lock()
+        .expect("MCP server-config mutex poisoned")
+        .insert(name.clone(), cfg);
     tracing::info!("MCP server `{name}`: live-added, {} tool(s)", tools.len());
     Ok(tools)
 }
@@ -120,16 +123,16 @@ fn carry_forward_unspecified_fields(
     }
 }
 
-/// Connect (or reconnect) a server **without touching `config.yml`** — the
+/// Connect (or reconnect) a server **without touching `configs`** — the
 /// OAuth counterpart to [`mcp_add`] (ADR-0153).
 ///
-/// `/mcp connect` authorizes a server that is *already configured*, so the
-/// config must not be rewritten: doing so would round-trip the user's hand-
-/// authored `mcp:` block through serde and drop its comments for no reason.
+/// `/mcp connect` authorizes a server that is *already configured*, so no
+/// `McpChanged` follows and the head's config is not rewritten (that would
+/// round-trip the user's hand-authored `mcp:` block and drop its comments).
 /// Otherwise identical to `mcp_add`'s upsert — old tools unregistered, old
 /// connection dropped, new tools registered — with the awaits kept outside
 /// every lock (#372). `http` (#559) is the shared endpoint pool the connect
-/// rides.
+/// rides; `tokens` holds the credential just obtained.
 pub async fn mcp_reconnect(
     name: &str,
     cfg: &McpServerConfig,
@@ -137,14 +140,15 @@ pub async fn mcp_reconnect(
     active: &ActiveServers,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
+    tokens: Arc<dyn TokenStore>,
 ) -> Result<Vec<String>> {
-    let (client, defs) = connect_client(name, cfg, secret_env, http).await?;
+    let (client, defs) = connect_client(name, cfg, secret_env, http, Some(tokens)).await?;
     let tools = install_server(registry, active, name, client, defs, cfg);
     tracing::info!("MCP server `{name}`: reconnected, {} tool(s)", tools.len());
     Ok(tools)
 }
 
-/// Drop a server's live connection and tools **without touching `config.yml`**
+/// Drop a server's live connection and tools **without touching `configs`**
 /// (ADR-0153) — what `/mcp disconnect` needs after revoking a credential: the
 /// server stays configured, it simply has no usable session any more. A name
 /// that was never connected is a no-op.
@@ -159,7 +163,7 @@ pub fn mcp_disconnect_only(
 
 /// Disconnect a server: unregister the tools it registered, drop it from
 /// `active` (releasing the last `Arc<McpClient>` kills the subprocess/closes
-/// the HTTP session), and persist the removal. Errors only if `name` is not in
+/// the HTTP session), and from `configs`. Errors only if `name` is not in
 /// `configs` at all — removing a name that is configured but never connected
 /// (e.g. `disabled`, or failed at startup) still succeeds, dropping its
 /// leftover config entry.
@@ -170,11 +174,13 @@ pub fn mcp_remove(
     configs: &ServerConfigs,
 ) -> Result<()> {
     drop_server(registry, active, name);
-    let mut all = configs.lock().expect("MCP server-config mutex poisoned");
-    if all.remove(name).is_none() {
+    let removed = configs
+        .lock()
+        .expect("MCP server-config mutex poisoned")
+        .remove(name);
+    if removed.is_none() {
         bail!("no MCP server named `{name}` in the configuration");
     }
-    crate::config::save_mcp(&all)?;
     tracing::info!("MCP server `{name}`: removed live");
     Ok(())
 }

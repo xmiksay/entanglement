@@ -17,7 +17,9 @@ use entanglement_core::{
 };
 use entanglement_runtime::arg_validate::LOOP_BREAKER_NOTE;
 use entanglement_runtime::host::host_tools;
-use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig, McpToolCache};
+use entanglement_runtime::mcp::{
+    AvailableMcp, InMemoryMcpToolCache, McpServerConfig, McpToolCache,
+};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{DiscoverySurface, ToolExecutor};
@@ -70,7 +72,7 @@ async fn run_turn() -> Vec<OutEvent> {
         let _ = axum::serve(listener, Router::new().route("/mcp", post(stub))).await;
     });
     let dir = TempDir::new("schema-dedup");
-    let cache = McpToolCache::at(Some(dir.path.join("mcp-tools.yml")));
+    let cache = Arc::new(InMemoryMcpToolCache::default());
     cache
         .record("stub-srv", &url, &["call".to_string()])
         .unwrap();

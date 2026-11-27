@@ -17,7 +17,7 @@ use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::file_backup::FileBackups;
 use entanglement_runtime::host::{host_tools_with, HostToolOptions};
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
+use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::session_store::{pair_records, SessionStore};
 use entanglement_runtime::tool_runner::ToolExecutor;
 
@@ -95,7 +95,7 @@ pub(crate) fn spawn_with(
         .base(base)
         .perm_modes(perm_modes)
         .resolver(resolver)
-        .grants(Arc::new(DefaultGrantStore::load_from(None)))
+        .grants(Arc::new(InMemoryGrantStore::new()))
         .mode_table(table)
         .spawn();
     holly

@@ -34,7 +34,7 @@ use entanglement_runtime::{
     subagent, system_prompt, system_prompt_mode, throttle, tool_advertising, tool_names,
     tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
 };
-use skutter::{hooks, inspect, logging, serve, slash_commands};
+use skutter::{hooks, inspect, logging, serve, slash_commands, state};
 
 use anyhow::{Context, Result};
 use clap::Parser;

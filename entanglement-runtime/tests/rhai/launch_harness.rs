@@ -19,7 +19,7 @@ use entanglement_runtime::http_gate::HttpGate;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::path_grading::SessionWorkdirs;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::rhai_trust::TrustedFolders;
 use entanglement_runtime::skills::{LoadSkillTool, SkillRegistry};
@@ -208,7 +208,7 @@ pub async fn run_calls(root: &Path, calls: &[(&str, &str)], setup: Setup) -> See
         base.clone(),
         Some(root.to_path_buf()),
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let mut builder = ToolExecutor::builder(&holly, tools)
         .agents(agents)
         .base(base)

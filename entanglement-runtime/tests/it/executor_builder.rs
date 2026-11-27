@@ -14,7 +14,7 @@ use entanglement_core::{
     stream_from_response, AgentCatalog, ApprovalScope, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::policy::DefaultGrantStore;
+use entanglement_runtime::policy::{GrantStore, InMemoryGrantStore};
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::{Tool, ToolRegistry};
 
@@ -143,14 +143,12 @@ async fn bare_builder_matches_the_deprecated_four_arg_constructor() {
 }
 
 #[tokio::test]
-async fn grants_seam_persists_an_always_approval_to_the_given_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("grants.yml");
-
+async fn grants_seam_records_an_always_approval_in_the_given_store() {
     // `git push*` is on `build`'s prompt list, so it parks an approval.
     let (holly, reg) = engine(vec![bash_call("p", "git push origin")]);
+    let grants = Arc::new(InMemoryGrantStore::new());
     let _exec = ToolExecutor::builder(&holly, reg.shared())
-        .grants(Arc::new(DefaultGrantStore::load_from(Some(file.clone()))))
+        .grants(grants.clone())
         .spawn();
 
     let sid = SessionId::new("s1");
@@ -175,16 +173,10 @@ async fn grants_seam_persists_an_always_approval_to_the_given_file() {
         .await
         .unwrap();
 
-    let mut persisted = String::new();
-    for _ in 0..60 {
-        persisted = std::fs::read_to_string(&file).unwrap_or_default();
-        if persisted.contains("git push origin") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    let other = SessionId::new("other");
     assert!(
-        persisted.contains("git push origin"),
-        "Always grant should land in the wired DefaultGrantStore's file; got {persisted:?}"
+        crate::eventually(|| grants.is_granted(&other, "bash", Some("git push origin"), "build"))
+            .await,
+        "an Always grant should land in the wired store, for every session"
     );
 }

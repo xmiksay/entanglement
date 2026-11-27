@@ -10,10 +10,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
+use entanglement_core::TokenStore;
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::{McpServerConfig, McpToolCache};
-use crate::config::McpTokenStore;
+use super::{InMemoryMcpToolCache, InMemoryTokenStore, McpServerConfig, McpToolCache};
 
 #[path = "available_enable.rs"]
 mod enable;
@@ -27,7 +27,6 @@ pub use tier::{
 
 /// The available-server roster, shared (`Arc`) by the MCP responder (`/mcp`
 /// list/add/remove), the discovery tools and dispatch's lazy connect.
-#[derive(Default)]
 pub struct AvailableMcp {
     /// Mutable so a live `/mcp add`/`remove` keeps "registered = available"
     /// true without a restart.
@@ -46,17 +45,32 @@ pub struct AvailableMcp {
     /// The detached script-triggered connect per server (#831).
     script_connects: super::InFlight,
     /// Where connects record their tool names for `list_mcp`'s "last seen".
-    /// Inert by default so a test never writes the managed file; the binary
-    /// installs [`McpToolCache::managed`].
-    tool_cache: McpToolCache,
-    /// The OAuth credential store an `oauth:` server's "auth required" state
-    /// reads (ADR-0153). `None` — the default — is the managed
-    /// `mcp-tokens.yml`, resolved only when an `oauth:` server is checked, so
-    /// an embedder never sees "auth required" forever for a credential
-    /// `/mcp connect` stored.
-    tokens: Option<McpTokenStore>,
+    tool_cache: Arc<dyn McpToolCache>,
+    /// The OAuth credential store (ADR-0153): `/mcp connect` saves into it,
+    /// a global connect reads its bearer from it, and an `oauth:` server's
+    /// "auth required" state checks it.
+    tokens: Arc<dyn TokenStore>,
     /// Startup clash notices ([`clash_warnings`](Self::clash_warnings)).
     clash_warnings: Vec<String>,
+}
+
+/// Both stores default to memory (#966): nothing outlives the process unless
+/// the head plugs in its own ([`with_token_store`](AvailableMcp::with_token_store),
+/// [`with_tool_cache`](AvailableMcp::with_tool_cache)).
+impl Default for AvailableMcp {
+    fn default() -> Self {
+        Self {
+            servers: RwLock::default(),
+            secret_env: Vec::new(),
+            connecting: Mutex::default(),
+            disabled_names: HashSet::new(),
+            recent_connect_failures: Mutex::default(),
+            script_connects: super::InFlight::default(),
+            tool_cache: Arc::new(InMemoryMcpToolCache::default()),
+            tokens: Arc::new(InMemoryTokenStore::default()),
+            clash_warnings: Vec::new(),
+        }
+    }
 }
 
 impl AvailableMcp {
@@ -117,32 +131,35 @@ impl AvailableMcp {
         &self.clash_warnings
     }
 
-    /// Record connects into `cache` (the binary passes the managed file).
-    pub fn with_tool_cache(mut self, cache: McpToolCache) -> Self {
+    /// Record connects into `cache` instead of memory (`skutter` passes its
+    /// managed `mcp-tools.yml`).
+    pub fn with_tool_cache(mut self, cache: Arc<dyn McpToolCache>) -> Self {
         self.tool_cache = cache;
         self
     }
 
-    /// Read OAuth credentials from `tokens` instead of the managed store
-    /// (tests pin an explicit or inert one).
-    pub fn with_token_store(mut self, tokens: McpTokenStore) -> Self {
-        self.tokens = Some(tokens);
+    /// Keep OAuth credentials in `tokens` instead of memory (`skutter` passes
+    /// its managed `mcp-tokens.yml`).
+    pub fn with_token_store(mut self, tokens: Arc<dyn TokenStore>) -> Self {
+        self.tokens = tokens;
         self
     }
 
     /// Whether `name` declares `oauth:` but has no stored credential yet —
     /// a normal, recoverable state (`/mcp connect <name>`), checked before
-    /// any connect so it never surfaces as a transport failure.
+    /// any connect so it never surfaces as a transport failure. A store that
+    /// fails to load counts as no credential.
     pub fn needs_auth(&self, name: &str, cfg: &McpServerConfig) -> bool {
-        cfg.oauth.is_some()
-            && !match &self.tokens {
-                Some(tokens) => tokens.has(name),
-                None => McpTokenStore::load().has(name),
-            }
+        cfg.oauth.is_some() && !matches!(self.tokens.load(name), Ok(Some(_)))
+    }
+
+    /// The OAuth credential store.
+    pub fn token_store(&self) -> Arc<dyn TokenStore> {
+        self.tokens.clone()
     }
 
     /// The last-seen tool-name cache connects record into.
-    pub fn tool_cache(&self) -> &McpToolCache {
+    pub fn tool_cache(&self) -> &Arc<dyn McpToolCache> {
         &self.tool_cache
     }
 

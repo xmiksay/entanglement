@@ -14,7 +14,7 @@ use entanglement_core::{
     SessionId, ToolCall,
 };
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_runner::ToolExecutor;
 use entanglement_runtime::ToolRegistry;
@@ -127,7 +127,7 @@ fn spawn_executor(
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     ToolExecutor::builder(holly, tools)
         .agents(agents)
         .base(base)

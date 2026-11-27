@@ -22,7 +22,7 @@ use entanglement_runtime::host::{
 };
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::skills::{load_registry_in, LoadSkillTool};
 use entanglement_runtime::tool_names::RHAI_TOOL;
@@ -407,7 +407,7 @@ fn spawn_with_rhai_escape(
         base.clone(),
         Some(root.to_path_buf()),
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let escape_root = EscapeRoot {
         root: root.to_path_buf(),
         store: store.clone(),
@@ -616,7 +616,7 @@ fn spawn_with_policy_over(
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(holly, shared_tools)
         .agents(agents)
         .base(base)
@@ -1544,7 +1544,7 @@ async fn a_loaded_skill_never_restricts_a_rhai_binding() {
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(agents)
         .live_skills(skills)
@@ -1639,7 +1639,7 @@ fn spawn_with_rhai_background(
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let scripts = entanglement_runtime::script_ops::ScriptRegistry::new();
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .scripts(scripts.clone())

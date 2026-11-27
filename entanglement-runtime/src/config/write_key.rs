@@ -2,7 +2,7 @@
 //! (#560; the managed-file discipline of [ADR-0084], the "materialize into the
 //! file a user already hand-edits" principle of [ADR-0083]).
 //!
-//! [`mcp_persist`][super::mcp_persist] rewrites the `mcp:` section through a
+//! `skutter`'s `mcp:` writer rewrites that section through a
 //! `serde_yaml::Value` round-trip, which drops **every comment in the file**.
 //! That is tolerable for a section only `/mcp add|remove` ever authors; it is
 //! not tolerable for the keys the first-run scaffold (#219) documents inline —

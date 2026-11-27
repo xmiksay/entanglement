@@ -32,7 +32,7 @@ use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::mode::ModeTable;
 use entanglement_runtime::persistence::spawn_persistence_subscriber;
-use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
+use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::session_store::{pair_records, LogPayload, SessionStore};
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
@@ -181,7 +181,7 @@ fn spawn_with_root_and_table(
         base.clone(),
         Some(root.to_path_buf()),
     ));
-    let grants = Arc::new(DefaultGrantStore::load_from(None));
+    let grants = Arc::new(InMemoryGrantStore::new());
     let escape_root = EscapeRoot {
         root: root.to_path_buf(),
         store,

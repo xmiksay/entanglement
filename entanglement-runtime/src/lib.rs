@@ -53,7 +53,6 @@ pub mod extra_roots;
 pub mod file_backup;
 pub mod file_change;
 pub mod frontmatter;
-pub mod grants;
 pub mod history;
 pub mod host;
 // Host script namespaces for embedders (ADR-0249).

@@ -1,7 +1,7 @@
 //! `skutter inspect mcp-tokens` (#558).
 //!
 //! Surfaces which MCP servers hold a stored OAuth credential
-//! (`mcp-tokens.yml`, [`crate::config::McpTokenStore`], ADR-0153) — otherwise
+//! (`mcp-tokens.yml`, [`crate::state::McpTokenStore`], ADR-0153) — otherwise
 //! only visible one server at a time via `/mcp connect`/`/mcp` panel. Never
 //! prints a token value: only the server name, token endpoint, whether a
 //! refresh token is on file, and whether the access token looks expired —
@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use entanglement_core::{StoredAuth, TokenStore};
 
-use crate::config::McpTokenStore;
+use crate::state::McpTokenStore;
 
 /// Print every MCP server with a stored credential: token endpoint, refresh
 /// availability, and access-token expiry — never the token values themselves.

@@ -10,10 +10,11 @@
 //! `InMsg::McpAuth` (a connect opens a browser and mints a durable credential,
 //! so it must never be wire-driven — #472/ADR-0124's rationale).
 
+use std::sync::Arc;
+
 use anyhow::{bail, Context, Result};
 use entanglement_core::{AuthFlow, AuthOutcome, DeviceFlow, McpAuthAction, TokenStore};
 
-use crate::config::McpTokenStore;
 use crate::tools::SharedRegistry;
 
 use super::live::{ActiveServers, ServerConfigs};
@@ -36,7 +37,8 @@ pub struct PendingUrl {
 /// Run `action` for `server`. `on_url` is invoked once, mid-`Connect`, with the
 /// authorization URL — the responder uses it to emit the interim
 /// `McpAuthChanged` before the flow blocks on the browser. `http` (#559) is
-/// the shared endpoint pool the post-authorization reconnect rides.
+/// the shared endpoint pool the post-authorization reconnect rides; `store`
+/// is where a credential is saved, checked and revoked (the roster's store).
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     server: &str,
@@ -46,24 +48,28 @@ pub async fn run(
     active: &ActiveServers,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
+    store: Arc<dyn TokenStore>,
     on_url: impl FnOnce(PendingUrl),
 ) -> Result<AuthOutcome> {
-    let store = McpTokenStore::load();
     match action {
         McpAuthAction::Connect => {
-            connect(server, configs, registry, active, secret_env, http, on_url).await
+            connect(
+                server, configs, registry, active, secret_env, http, store, on_url,
+            )
+            .await
         }
         McpAuthAction::ConnectDeviceCode => {
-            connect_device(server, configs, registry, active, secret_env, http, on_url).await
+            connect_device(
+                server, configs, registry, active, secret_env, http, store, on_url,
+            )
+            .await
         }
         // Check and Disconnect are pure credential operations — they need the
         // store but neither the config nor a reconnect, so they delegate
         // straight to the provider's mechanism.
-        McpAuthAction::Check => {
-            entanglement_core::mcp_auth_check(std::sync::Arc::new(store.clone()), server).await
-        }
+        McpAuthAction::Check => entanglement_core::mcp_auth_check(store, server).await,
         McpAuthAction::Disconnect => {
-            let outcome = entanglement_core::mcp_auth_disconnect(&store, server).await?;
+            let outcome = entanglement_core::mcp_auth_disconnect(store.as_ref(), server).await?;
             // Drop the live connection too: its token source would now fail on
             // every request, so leaving the tools registered is worse than
             // removing them.
@@ -110,6 +116,7 @@ async fn connect(
     active: &ActiveServers,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
+    store: Arc<dyn TokenStore>,
     on_url: impl FnOnce(PendingUrl),
 ) -> Result<AuthOutcome> {
     let (cfg, oauth, url) = resolve_oauth_server(server, configs)?;
@@ -129,7 +136,6 @@ async fn connect(
     });
 
     let auth = pending.complete(AUTHORIZATION_TIMEOUT).await?;
-    let store = McpTokenStore::load();
     store
         .save(server, &auth)
         .with_context(|| format!("persisting the credential for MCP server `{server}`"))?;
@@ -138,7 +144,7 @@ async fn connect(
     // credential stored (it is valid — the server is simply unreachable), so a
     // later retry needs no re-authorization.
     if let Err(e) =
-        super::live::mcp_reconnect(server, &cfg, registry, active, secret_env, http).await
+        super::live::mcp_reconnect(server, &cfg, registry, active, secret_env, http, store).await
     {
         tracing::warn!(
             server = %server,
@@ -159,6 +165,7 @@ async fn connect_device(
     active: &ActiveServers,
     secret_env: &[String],
     http: &entanglement_core::HttpClient,
+    store: Arc<dyn TokenStore>,
     on_url: impl FnOnce(PendingUrl),
 ) -> Result<AuthOutcome> {
     let (cfg, oauth, url) = resolve_oauth_server(server, configs)?;
@@ -182,13 +189,12 @@ async fn connect_device(
     });
 
     let auth = pending.poll().await?;
-    let store = McpTokenStore::load();
     store
         .save(server, &auth)
         .with_context(|| format!("persisting the credential for MCP server `{server}`"))?;
 
     if let Err(e) =
-        super::live::mcp_reconnect(server, &cfg, registry, active, secret_env, http).await
+        super::live::mcp_reconnect(server, &cfg, registry, active, secret_env, http, store).await
     {
         tracing::warn!(
             server = %server,
@@ -212,6 +218,10 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    fn store() -> Arc<dyn TokenStore> {
+        Arc::new(crate::mcp::InMemoryTokenStore::default())
+    }
 
     fn configs_with(entries: Vec<(&str, McpServerConfig)>) -> ServerConfigs {
         Arc::new(Mutex::new(
@@ -259,9 +269,18 @@ mod tests {
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let http = crate::test_http_client();
-        let err = connect("srv", &configs, &registry, &active, &[], &http, |_| {})
-            .await
-            .unwrap_err();
+        let err = connect(
+            "srv",
+            &configs,
+            &registry,
+            &active,
+            &[],
+            &http,
+            store(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("no `oauth:` block"));
         // #561: a bearer-only server has no discovery endpoints to find, so the
         // error must point at the actual fix (static `headers:`), not just name
@@ -279,9 +298,18 @@ mod tests {
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let http = crate::test_http_client();
-        let err = connect("srv", &configs, &registry, &active, &[], &http, |_| {})
-            .await
-            .unwrap_err();
+        let err = connect(
+            "srv",
+            &configs,
+            &registry,
+            &active,
+            &[],
+            &http,
+            store(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("stdio transport"));
     }
 
@@ -293,9 +321,18 @@ mod tests {
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let http = crate::test_http_client();
-        let err = connect_device("srv", &configs, &registry, &active, &[], &http, |_| {})
-            .await
-            .unwrap_err();
+        let err = connect_device(
+            "srv",
+            &configs,
+            &registry,
+            &active,
+            &[],
+            &http,
+            store(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("no `oauth:` block"));
         assert!(err.to_string().contains("headers:"));
         assert!(err.to_string().contains("static bearer token"));
@@ -310,9 +347,18 @@ mod tests {
         let registry = SharedRegistry::default();
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
         let http = crate::test_http_client();
-        let err = connect_device("srv", &configs, &registry, &active, &[], &http, |_| {})
-            .await
-            .unwrap_err();
+        let err = connect_device(
+            "srv",
+            &configs,
+            &registry,
+            &active,
+            &[],
+            &http,
+            store(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("stdio transport"));
     }
 }

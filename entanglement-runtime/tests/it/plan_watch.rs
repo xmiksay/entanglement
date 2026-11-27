@@ -17,7 +17,7 @@ use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::host::host_tools_with_extra_roots;
 use entanglement_runtime::plan_files::PlanFileRegistry;
 use entanglement_runtime::plan_watch::spawn_plans_watcher;
-use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
+use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::tool_names::PROPOSE_PLAN_TOOL;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
 
@@ -109,7 +109,7 @@ fn spawn_with_root(root: &Path, llm_factory: Arc<dyn Fn() -> Box<dyn Llm> + Send
         base.clone(),
         Some(root.to_path_buf()),
     ));
-    let grants = Arc::new(DefaultGrantStore::load_from(None));
+    let grants = Arc::new(InMemoryGrantStore::new());
     let escape_root = EscapeRoot {
         root: root.to_path_buf(),
         store,

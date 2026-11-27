@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 
 use crate::boot::Engine;
 use crate::hooks::{HookResolver, Hooks};
-use crate::policy::{DefaultGrantStore, ModeResolver, PermissionResolver};
+use crate::policy::{ModeResolver, PermissionResolver};
 use crate::tool_runner::DiscoverySurface;
 use crate::{
     capability, config, history, logging, mcp, mode, persistence, plan_files, plan_watch, throttle,
@@ -44,6 +44,7 @@ pub(crate) struct Services {
     tool_executor: JoinHandle<()>,
     hooks: Option<JoinHandle<()>>,
     mcp_responder: JoinHandle<()>,
+    mcp_config_writer: JoinHandle<()>,
     throttle: JoinHandle<()>,
     session_title: JoinHandle<()>,
     narrate: JoinHandle<()>,
@@ -120,12 +121,10 @@ pub(crate) fn start(
         })
         .context("building the permission mode table from config.yml `modes:`")?
     });
-    // `grants` is built here rather than left to the builder's in-memory
-    // default (#747/#775): the head persists `Always` grants to the managed
-    // `grants.yml`, and the same store feeds the definitions watcher's
-    // `LiveDefinitions` below (#329), so a grant another skutter instance
-    // recorded is visible on the next reload.
-    let grants = Arc::new(DefaultGrantStore::load());
+    // `skutter` persists `Always` grants to the managed `grants.yml` instead
+    // of the builder's in-memory default (#966); every check re-reads the
+    // file, so a grant another skutter instance recorded counts at once (#329).
+    let grants = Arc::new(crate::state::FileGrantStore::load());
     // Per-session plan-file staleness tracking (#513): constructed here, not
     // inside the executor, so the dedicated plans-folder watch (#627, below)
     // can share this exact instance — its out-of-band notice and the
@@ -183,7 +182,7 @@ pub(crate) fn start(
         .live_skills(live_skills.clone())
         .base(user_config.permissions.clone())
         .perm_modes(perm_modes)
-        .grants(grants.clone())
+        .grants(grants)
         .resolver(resolver)
         // Escape-root approval (ADR-0109): the same store the host tools read.
         .escape_root(escape_root)
@@ -210,6 +209,13 @@ pub(crate) fn start(
     // `McpList`/`McpAdd`/`McpRemove` off the inbound fan-out, since it alone
     // holds `tools` + `mcp_active` + `mcp_configs` — mirrors
     // `history::spawn_history_responder`'s answer to `ReplayFrom`.
+    // The library changes only its in-memory server set (#966); this writes
+    // it back to `config.yml` after each successful live add/remove.
+    let mcp_config_writer = crate::state::spawn_mcp_config_writer(
+        &holly,
+        mcp_configs.clone(),
+        config::user_config_path(),
+    );
     let mcp_responder_handle = mcp::spawn_mcp_responder(
         &holly,
         tools.clone(),
@@ -269,7 +275,6 @@ pub(crate) fn start(
         live_profiles.clone(),
         live_skills.clone(),
         live_agent_models.clone(),
-        grants,
         mcp_capabilities.clone(),
     )
     .with_file_backups(file_backups);
@@ -311,6 +316,7 @@ pub(crate) fn start(
         tool_executor,
         hooks: hooks_handle,
         mcp_responder: mcp_responder_handle,
+        mcp_config_writer,
         throttle: throttle_handle,
         session_title: session_title_handle,
         narrate: narrate_handle,
@@ -337,6 +343,7 @@ impl Services {
             h.abort();
         }
         self.mcp_responder.abort();
+        self.mcp_config_writer.abort();
         self.throttle.abort();
         self.session_title.abort();
         self.narrate.abort();

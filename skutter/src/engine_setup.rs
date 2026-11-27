@@ -209,7 +209,8 @@ pub(crate) async fn build_config(
     // (#164) applies to every stdio server it later spawns.
     let mcp_available = Arc::new(
         mcp::AvailableMcp::from_config(&user_config.mcp, secret_env.clone())
-            .with_tool_cache(mcp::McpToolCache::managed()),
+            .with_tool_cache(Arc::new(crate::state::FileMcpToolCache::managed()))
+            .with_token_store(Arc::new(crate::state::McpTokenStore::load())),
     );
     let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
     // The one advertised surface (ADR-0226): the registered tools that set

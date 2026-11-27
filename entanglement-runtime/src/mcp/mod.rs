@@ -17,7 +17,9 @@
 //!   headers (#312) and optionally OAuth (ADR-0153), behind the `mcp-http`
 //!   feature. Since ADR-0153 it lives in `entanglement-provider::mcp` and is
 //!   re-exported here as [`HttpClient`]; what stays runtime-side is policy —
-//!   config, the registry, permissions, the token store.
+//!   config, the registry, permissions. Credentials come only through a
+//!   [`TokenStore`][entanglement_core::TokenStore] (in memory by default,
+//!   #966); nothing here reads or writes a file.
 //!
 //! [`client`] wraps both behind [`McpClient`]; [`tool`]'s [`McpTool`] proxy adapts
 //! whichever transport backs it.
@@ -46,8 +48,8 @@ pub mod client;
 #[path = "connect.rs"]
 mod connect_impl;
 mod in_flight;
-mod last_seen;
 pub mod live;
+mod memory;
 pub mod oauth_ops;
 pub mod responder;
 mod result;
@@ -58,7 +60,7 @@ pub mod tool;
 
 pub use available::AvailableMcp;
 pub use client::{McpClient, McpToolDef};
-pub use last_seen::McpToolCache;
+pub use memory::{InMemoryMcpToolCache, InMemoryTokenStore, McpToolCache};
 // Split out of this file along the 400-line file cap (#559): crate-internal
 // helpers every connect path (lazy connect, live `/mcp add`, `/mcp connect`)
 // shares.
@@ -91,9 +93,9 @@ pub use tool::McpTool;
 /// `url` (streamable HTTP) is present; supplying both, or neither, is a config
 /// error caught by [`transport`][Self::transport]. `deny_unknown_fields` makes a
 /// typo'd key a loud error, matching every other config section. `Serialize`
-/// (#375) lets a live `/mcp add`/`remove` write the section straight back to
-/// `config.yml` (`crate::config::save_mcp`) — the wire shape stays whatever a
-/// hand-edited file already used, field-for-field.
+/// (#375) lets a head write a live `/mcp add`/`remove` straight back to its
+/// config (`skutter` rewrites `config.yml`'s `mcp:` section) — the wire shape
+/// stays whatever a hand-edited file already used, field-for-field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
@@ -115,7 +117,8 @@ pub struct McpServerConfig {
     pub headers: HashMap<String, String>,
     /// OAuth for the HTTP transport (ADR-0153). Present (even empty) ⇒ this
     /// server authenticates with a browser-obtained bearer token from the
-    /// managed `mcp-tokens.yml` instead of a static header; every field inside
+    /// roster's [`TokenStore`][entanglement_core::TokenStore] instead of a
+    /// static header; every field inside
     /// is an override on what metadata discovery and dynamic client registration
     /// resolve on their own. Absent ⇒ pre-ADR-0153 behavior exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -13,7 +13,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use entanglement_core::{Holly, InMsg, LlmResponse, OutEvent, Permission, SessionId, ToolCall};
-use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig, McpToolCache};
+use entanglement_runtime::mcp::{
+    AvailableMcp, InMemoryMcpToolCache, McpServerConfig, McpToolCache,
+};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use serde_json::{json, Value};
 
@@ -108,8 +110,8 @@ fn rhai_turn(id: &str, script: &str, timeout: u64) -> LlmResponse {
 
 /// A `slow-srv` server at `url`, unconnected, whose last-seen `ping` makes
 /// the script namespace `mcp::slow_srv::ping`.
-fn setup_for(url: &str, dir: &TempDir) -> Setup {
-    let cache = McpToolCache::at(Some(dir.path.join("mcp-tools.yml")));
+fn setup_for(url: &str) -> Setup {
+    let cache = Arc::new(InMemoryMcpToolCache::default());
     cache
         .record("slow-srv", url, &["ping".to_string()])
         .unwrap();
@@ -201,7 +203,7 @@ async fn a_slow_connect_is_cut_at_the_script_budget_and_the_model_reuses_it() {
     });
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-slow");
-    let mut setup = setup_for(&url, &dir);
+    let mut setup = setup_for(&url);
     // The unwrapped name core hands the runtime for an `mcp` envelope call
     // (this harness wires no surface resolver, so core would not unwrap).
     setup.follow_up = vec![LlmResponse {
@@ -250,7 +252,7 @@ async fn a_blackholed_server_is_cut_at_the_script_budget() {
     });
     let dir = TempDir::new("connect-budget-blackhole");
     let t0 = Instant::now();
-    let (holly, sub, sid) = start(SCRIPT, &dir.path, setup_for(&url, &dir)).await;
+    let (holly, sub, sid) = start(SCRIPT, &dir.path, setup_for(&url)).await;
     let events = collect_timed(&holly, sub, &sid, t0).await;
     let (at, out) = rhai_at(&events);
     assert_cut_within_budget(at, &out);
@@ -270,7 +272,7 @@ async fn catch_loops_against_a_failing_server_connect_once() {
     });
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-loop");
-    let mut setup = setup_for(&url, &dir);
+    let mut setup = setup_for(&url);
     // t2 starts ~0.7 s in and outlives the 3 s failure by ~2.5 s.
     setup.follow_up = vec![
         rhai_turn("t2", LOOP, 5),
@@ -330,7 +332,7 @@ async fn a_spent_budget_starts_no_connect() {
     let url = serve(stub.clone()).await;
     let dir = TempDir::new("connect-budget-floor");
     let script = format!("{} {SCRIPT}", burn(1.0));
-    let mut setup = setup_for(&url, &dir);
+    let mut setup = setup_for(&url);
     setup.bash = true;
     let (holly, sub, sid) = start(&script, &dir.path, setup).await;
     let out = first_rhai(&collect_timed(&holly, sub, &sid, Instant::now()).await);
@@ -364,7 +366,7 @@ async fn a_connected_server_skips_the_floor() {
         try { b = mcp::slow_srv::ping(#{}); } catch (e) { b = "caught: " + e; }
         a + "|" + b
     "#;
-    let mut setup = setup_for(&url, &dir);
+    let mut setup = setup_for(&url);
     setup.timeout = 5;
     setup.bash = true;
     let (holly, sub, sid) = start(script, &dir.path, setup).await;

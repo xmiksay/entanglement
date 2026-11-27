@@ -78,8 +78,6 @@ mod mcp_http;
 mod mcp_lazy_connect;
 #[cfg(feature = "mcp-http")]
 mod mcp_oauth_device;
-#[cfg(feature = "mcp-http")]
-mod mcp_oauth_refresh;
 mod mcp_schema_violation;
 #[cfg(feature = "mcp-http")]
 mod mcp_scoped;

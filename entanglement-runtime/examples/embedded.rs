@@ -140,9 +140,8 @@ async fn main() -> anyhow::Result<()> {
     // `ToolExecutor::builder` (#724): only the seams this embedder replaces
     // are set; every other one keeps its documented default (built-in mode
     // table for spawn bounds, allow-all ceiling, private registries).
-    // Grants default to in-memory only — a single-user head that wants the
-    // managed `grants.yml` passes `Arc::new(DefaultGrantStore::load())`; this
-    // embedder routes them to its own store instead.
+    // Grants default to in-memory only (`skutter` passes its file-backed
+    // store); this embedder routes them to its own store instead.
     let _executor = tool_runner::ToolExecutor::builder(&holly, tools.shared())
         .agents(profiles)
         .resolver(resolver)

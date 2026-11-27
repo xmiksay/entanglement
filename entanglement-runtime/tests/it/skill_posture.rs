@@ -168,9 +168,8 @@ async fn a_loaded_skill_never_narrows_the_turn_and_posture_event_fires() {
             PermissionProfile::new(Permission::Allow),
             None,
         ));
-    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> = Arc::new(
-        entanglement_runtime::policy::DefaultGrantStore::load_from(None),
-    );
+    let grants: Arc<dyn entanglement_runtime::policy::GrantStore> =
+        Arc::new(entanglement_runtime::policy::InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(profiles)
         .live_skills(skills)

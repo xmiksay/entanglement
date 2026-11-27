@@ -33,8 +33,7 @@
 //!   key (`deny: [write]`) catches every write-capable tool, not just one
 //!   named literally `write`. Argument/path patterns (#173) build on it. It
 //!   is a pure *ceiling*; the orthogonal "always allow" grants (#174) that
-//!   *raise* an `Ask` live in a separate managed file ([`crate::grants`]), not
-//!   here.
+//!   *raise* an `Ask` live in a [`crate::policy::GrantStore`], not here.
 //! - `modes` — per-mode tuning (ADR-0207 §5): adds `allow`/`deny`/`prompt`
 //!   rules onto one of the four built-in modes (there is no syntax to define
 //!   a fifth, or to remove a shipped rule — longest-match already makes a
@@ -109,8 +108,6 @@ pub mod keybindings;
 pub mod keychord;
 mod layers;
 pub mod lock;
-pub mod mcp_persist;
-pub mod mcp_tokens;
 mod mode_warn;
 mod raw;
 mod rhai_trusted;
@@ -123,8 +120,6 @@ pub(crate) mod warn_once;
 pub mod write_key;
 
 pub use layers::{scaffold_if_missing, user_config_path, ConfigLayer};
-pub use mcp_persist::save_mcp;
-pub use mcp_tokens::McpTokenStore;
 pub use tui::TuiConfig;
 
 #[cfg(test)]

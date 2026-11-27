@@ -217,6 +217,7 @@ async fn run_auth_op(
         active,
         secret_env,
         http,
+        avail.token_store(),
         move |pending| {
             if !pending.browser_opened {
                 match &pending.user_code {
@@ -357,8 +358,7 @@ mod tests {
     #[test]
     fn full_list_surfaces_an_unauthenticated_oauth_server() {
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-        let avail =
-            AvailableMcp::default().with_token_store(crate::config::McpTokenStore::at(None));
+        let avail = AvailableMcp::default();
         avail.insert_user("remote-0226-unauthed", http_cfg(true));
         let list = full_list(&active, &avail);
         assert_eq!(list.len(), 1);

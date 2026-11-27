@@ -14,7 +14,7 @@ use entanglement_core::{
     ToolCall,
 };
 use entanglement_runtime::host::{host_tools, BashTool};
-use entanglement_runtime::policy::{DefaultGrantStore, ModeResolver};
+use entanglement_runtime::policy::{InMemoryGrantStore, ModeResolver};
 use entanglement_runtime::script_ops::ScriptRegistry;
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::ToolExecutor;
@@ -113,7 +113,7 @@ pub(super) fn engine_with(
         .base(base)
         .perm_modes(modes)
         .resolver(resolver)
-        .grants(Arc::new(DefaultGrantStore::load_from(None)))
+        .grants(Arc::new(InMemoryGrantStore::new()))
         .mode_table(table)
         .scripts(scripts)
         .spawn();

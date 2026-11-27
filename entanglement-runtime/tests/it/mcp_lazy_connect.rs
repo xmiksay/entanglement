@@ -28,9 +28,11 @@ use entanglement_core::{
     stream_from_response, Agent, AgentCatalog, EngineConfig, Holly, InMsg, Llm, LlmRequest,
     LlmResponse, LlmStream, OutEvent, Permission, PermissionProfile, SessionId, ToolCall,
 };
-use entanglement_runtime::mcp::{AvailableMcp, McpServerConfig, McpToolCache};
+use entanglement_runtime::mcp::{
+    AvailableMcp, InMemoryMcpToolCache, McpServerConfig, McpToolCache,
+};
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_advertising::surface::{tool_spec_resolver, SurfaceSources};
 use entanglement_runtime::tool_advertising::AdvertisingState;
@@ -216,7 +218,7 @@ async fn run_turns(
         PermissionProfile::new(Permission::Allow),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let _executor = ToolExecutor::builder(&holly, shared_tools)
         .agents(agents)
         .base(PermissionProfile::new(Permission::Allow))
@@ -320,8 +322,7 @@ fn outputs(events: &[OutEvent]) -> Vec<(String, String, bool)> {
 #[tokio::test]
 async fn list_never_connects_mcp_tools_connects_and_the_cache_records_it() {
     let url = spawn_ping_server().await;
-    let dir = tempfile::tempdir().unwrap();
-    let cache = McpToolCache::at(Some(dir.path().join("mcp-tools.yml")));
+    let cache = Arc::new(InMemoryMcpToolCache::default());
     let avail = roster("testsrv", mcp_entry(&url, false)).with_tool_cache(cache.clone());
     let scripted = vec![
         tool_call_response("l1", "list_mcp", "{}"),
@@ -367,8 +368,7 @@ async fn list_never_connects_mcp_tools_connects_and_the_cache_records_it() {
 /// Before any connect, `list_mcp` shows the last-seen tool names.
 #[tokio::test]
 async fn list_mcp_shows_last_seen_tool_names_for_an_unconnected_server() {
-    let dir = tempfile::tempdir().unwrap();
-    let cache = McpToolCache::at(Some(dir.path().join("mcp-tools.yml")));
+    let cache = Arc::new(InMemoryMcpToolCache::default());
     cache
         .record(
             "testsrv",
@@ -438,7 +438,7 @@ async fn a_direct_mcp_call_connects_at_dispatch_and_is_still_graded() {
         .base(PermissionProfile::new(Permission::Allow))
         .perm_modes(perm_modes)
         .resolver(resolver)
-        .grants(Arc::new(DefaultGrantStore::load_from(None)) as Arc<dyn GrantStore>)
+        .grants(Arc::new(InMemoryGrantStore::new()) as Arc<dyn GrantStore>)
         .mode_table(mode_table)
         .discovery(DiscoverySurface {
             advertising,

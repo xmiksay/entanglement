@@ -1,7 +1,7 @@
 //! Runtime-side file watcher for live-reloading definition dirs + managed
 //! files (#329). Watches the same directories `layers.rs` resolves for
-//! agents/skills/commands, plus the provider catalog, user config, and the three
-//! managed files (grants/agent-models/.env). On a debounced change it re-runs
+//! agents/skills/commands, plus the provider catalog, user config, and the
+//! managed files (agent-models/.env). On a debounced change it re-runs
 //! the relevant loaders and swaps the result into the **runtime's own**
 //! mirrors of the profile/skill registries — never core's `EngineConfig`,
 //! which core holds immutably for the process lifetime (ADR-0081 precedent:

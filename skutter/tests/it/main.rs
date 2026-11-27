@@ -16,8 +16,12 @@ mod attended_wake_tree;
 mod hook_events;
 mod hooks;
 mod launch_mode_typo;
+// The cross-process MCP OAuth refresh race over `state::McpTokenStore` (#631).
+mod mcp_oauth_refresh;
 mod provider_selection;
 mod serve;
 mod slash_commands;
 mod startup_warnings;
+// `skutter`'s managed-state files follow `ENTANGLEMENT_STATE_DIR` (#966).
+mod state_dir;
 mod user_config;

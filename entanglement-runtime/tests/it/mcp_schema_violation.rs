@@ -18,7 +18,7 @@ use entanglement_core::{
 };
 use entanglement_runtime::host::WriteTool;
 use entanglement_runtime::policy::{
-    DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
+    GrantStore, InMemoryGrantStore, ModeResolver, PermissionResolver,
 };
 use entanglement_runtime::tool_advertising::surface::{tool_spec_resolver, SurfaceSources};
 use entanglement_runtime::tool_advertising::AdvertisingState;
@@ -140,7 +140,7 @@ fn harness(write_root: PathBuf, script: Vec<LlmResponse>) -> Harness {
         base.clone(),
         None,
     ));
-    let grants: Arc<dyn GrantStore> = Arc::new(DefaultGrantStore::load_from(None));
+    let grants: Arc<dyn GrantStore> = Arc::new(InMemoryGrantStore::new());
     let executor = ToolExecutor::builder(&holly, tools.clone())
         .agents(profiles)
         .base(base)

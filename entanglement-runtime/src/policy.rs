@@ -3,12 +3,13 @@
 //! [`ToolExecutor::builder`][crate::tool_runner::ToolExecutor::builder]
 //! hard-codes nothing about *where* an allow/deny/ask decision or an "always
 //! allow" grant comes from: it drives two trait objects, a [`PermissionResolver`]
-//! and a [`GrantStore`]. The single-user CLI plugs in the defaults below — the
-//! session's permission **mode** clamped by the config ceiling
-//! ([`ModeResolver`], ADR-0207 stage 4) and the managed grants file
-//! ([`DefaultGrantStore`]). A multi-tenant embedder that stores rules per user
-//! in its own DB swaps both without forking the executor, keeping the shared
-//! interception ladder, spawn gating, rhai, and plan/tasks tools.
+//! and a [`GrantStore`]. The defaults are the session's permission **mode**
+//! clamped by the config ceiling ([`ModeResolver`], ADR-0207 stage 4) and
+//! grants held in memory ([`InMemoryGrantStore`]); nothing here touches the
+//! filesystem (#966) — `skutter` persists `Always` grants in its own store. A
+//! multi-tenant embedder that stores rules per user in its own DB swaps both
+//! without forking the executor, keeping the shared interception ladder, spawn
+//! gating, rhai, and plan/tasks tools.
 //!
 //! ## Where the seams sit in the ladder
 //!
@@ -20,7 +21,7 @@
 //! and only within the mode it was earned in (ADR-0207 §8) — a multi-tenant
 //! store's "always allow" write lands in its own DB and surfaces on the
 //! *next* call through its resolver, so [`is_granted`][GrantStore::is_granted]
-//! covers only the default file/session grants the CLI needs.
+//! covers only the session/always grants a single-user head records.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,15 +31,16 @@ use async_trait::async_trait;
 use entanglement_core::{ApprovalScope, Permission, PermissionProfile, SessionId};
 
 use crate::capability;
-use crate::grants::FileGrantStore;
 use crate::mode::ModeTable;
 use crate::permission::{clamp_to_base, permission_workdir};
 use crate::permission_path::grading_arg;
 use crate::tools::SharedRegistry;
 
 mod grade;
+mod memory;
 pub(crate) use grade::deny_text;
 pub use grade::Grade;
+pub use memory::InMemoryGrantStore;
 
 /// Decide the `Allow | Ask | Deny` grade for one concrete tool call. `session`
 /// lets a multi-tenant embedder derive the tenant; `input` (the raw JSON tool
@@ -84,8 +86,9 @@ pub trait GrantStore: Send + Sync {
     /// granted (session or always), upgrading a resolved `Ask` to `Allow`.
     fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool;
     /// Record an approval per its scope, tagged with the mode it was earned
-    /// in. `Once` records nothing; `Session` is in-memory; `Always` persists
-    /// (a file for the default, a DB row for a multi-tenant store).
+    /// in. `Once` records nothing; `Session` is in-memory; `Always` lasts as
+    /// long as the store keeps it (memory for the default, a file for
+    /// `skutter`, a DB row for a multi-tenant store).
     async fn record(
         &self,
         session: &SessionId,
@@ -199,64 +202,6 @@ impl PermissionResolver for ModeResolver {
         capabilities: &[capability::Capability],
     ) -> Grade {
         self.grade(session, tool, input, capabilities).into()
-    }
-}
-
-/// The single-user CLI grant store: the managed [`FileGrantStore`] behind a
-/// `Mutex` so the shared trait object can record and read grants. An `Always`
-/// grant persists to `${config_dir}/entanglement/grants.yml`.
-pub struct DefaultGrantStore {
-    inner: Mutex<FileGrantStore>,
-}
-
-impl DefaultGrantStore {
-    /// Load the persisted `Always` grants from the managed file.
-    pub fn load() -> Self {
-        Self {
-            inner: Mutex::new(FileGrantStore::load()),
-        }
-    }
-
-    /// A store over an explicit grants file — `None` keeps `Always` grants in
-    /// memory only (see [`FileGrantStore::load_from`]). Tests inject this
-    /// instead of reading the developer's real `grants.yml` (#747).
-    pub fn load_from(path: Option<std::path::PathBuf>) -> Self {
-        Self {
-            inner: Mutex::new(FileGrantStore::load_from(path)),
-        }
-    }
-
-    fn grants(&self) -> std::sync::MutexGuard<'_, FileGrantStore> {
-        self.inner.lock().expect("grants mutex poisoned")
-    }
-
-    /// Re-read the persisted `Always` grants from disk (#329) — the watcher's
-    /// hook for picking up a grant another skutter instance recorded, without
-    /// disturbing this process's in-memory `Session`-scoped grants.
-    pub fn reload(&self) {
-        self.grants().reload();
-    }
-}
-
-#[async_trait]
-impl GrantStore for DefaultGrantStore {
-    fn is_granted(&self, session: &SessionId, tool: &str, arg: Option<&str>, mode: &str) -> bool {
-        self.grants().is_granted(session, tool, arg, mode)
-    }
-
-    async fn record(
-        &self,
-        session: &SessionId,
-        tool: &str,
-        arg: Option<&str>,
-        scope: ApprovalScope,
-        mode: &str,
-    ) {
-        self.grants().record(session, tool, arg, scope, mode);
-    }
-
-    fn forget_session(&self, session: &SessionId) {
-        self.grants().forget_session(session);
     }
 }
 

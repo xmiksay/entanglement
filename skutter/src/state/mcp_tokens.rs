@@ -1,12 +1,12 @@
 //! Persisted OAuth credentials for MCP servers (ADR-0153).
 //!
-//! The runtime's [`TokenStore`] implementation: the *policy* half of MCP OAuth,
-//! backing the mechanism that lives in `entanglement-provider::oauth`. Owns
-//! the managed file `<state dir>/mcp-tokens.yml` (relocated by
-//! `ENTANGLEMENT_STATE_DIR`, ADR-0213), a sibling of `aux-models.yml` (Issue 5),
-//! `agent-models.yml` (#323), the grants file (#174), and the provider-key env
-//! file (#220) — **managed, not layered**: the runtime rewrites it freely, so it
-//! never mixes into the hand-edited `config.yml`.
+//! `skutter`'s [`TokenStore`] implementation, plugged into the runtime's MCP
+//! roster in place of its in-memory default (#966). Owns the managed file
+//! `<state dir>/mcp-tokens.yml` (relocated by `ENTANGLEMENT_STATE_DIR`,
+//! ADR-0213), a sibling of `aux-models.yml` (Issue 5), `agent-models.yml`
+//! (#323), the grants file (#174), and the provider-key env file (#220) —
+//! **managed, not layered**: `skutter` rewrites it freely, so it never mixes
+//! into the hand-edited `config.yml`.
 //!
 //! Shape (a [`BTreeMap`] so the file is stable across rewrites):
 //!
@@ -62,11 +62,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use entanglement_core::{StoredAuth, TokenStore};
+use entanglement_runtime::config::atomic::atomic_write;
+use entanglement_runtime::config::lock::with_locked_file;
+use entanglement_runtime::config::state_dir::{state_file, MCP_TOKENS_FILE, STATE_DIR_ENV};
 use serde::{Deserialize, Serialize};
-
-use super::atomic::atomic_write;
-
-use super::state_dir::{state_file, MCP_TOKENS_FILE, STATE_DIR_ENV};
 
 /// On-disk shape: a single `servers:` map.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -143,7 +142,7 @@ impl TokenStore for McpTokenStore {
     /// from stale in-memory state (#329).
     fn save(&self, server: &str, auth: &StoredAuth) -> Result<()> {
         let path = self.require_path()?;
-        super::lock::with_locked_file(&path, || {
+        with_locked_file(&path, || {
             let mut on_disk = read_tokens_for_write(&path)?;
             on_disk.insert(server.to_string(), auth.clone());
             persist_map(&path, &on_disk)
@@ -155,7 +154,7 @@ impl TokenStore for McpTokenStore {
     /// "not authorized", not fail.
     fn delete(&self, server: &str) -> Result<()> {
         let path = self.require_path()?;
-        super::lock::with_locked_file(&path, || {
+        with_locked_file(&path, || {
             let mut on_disk = read_tokens_for_write(&path)?;
             if on_disk.remove(server).is_none() {
                 return Ok(());
@@ -176,7 +175,7 @@ impl TokenStore for McpTokenStore {
         f: Box<dyn FnOnce(Option<StoredAuth>) -> Result<StoredAuth> + '_>,
     ) -> Result<StoredAuth> {
         let path = self.require_path()?;
-        super::lock::with_locked_file(&path, || {
+        with_locked_file(&path, || {
             let mut on_disk = read_tokens_for_write(&path)?;
             let current = on_disk.get(server).cloned();
             let updated = f(current)?;

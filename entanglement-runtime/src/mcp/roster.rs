@@ -98,8 +98,7 @@ mod tests {
 
     #[test]
     fn an_unconnected_server_is_listed_with_its_description_and_auth_posture() {
-        let avail =
-            AvailableMcp::default().with_token_store(crate::config::McpTokenStore::at(None));
+        let avail = AvailableMcp::default();
         avail.insert_user("kb", cfg("https://kb/mcp", false));
         avail.insert_user("remote", cfg("https://remote-0226-unauthed/mcp", true));
         let active: ActiveServers = Arc::new(Mutex::new(HashMap::new()));

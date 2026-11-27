@@ -12,20 +12,21 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::config::{Config, McpTokenStore};
+use crate::config::Config;
 use crate::mcp::{transport_label, AvailableMcp, McpToolCache};
+use crate::state::{FileMcpToolCache, McpTokenStore};
 
 /// Resolve the user config for `cwd` and print the available MCP server
 /// roster.
 pub fn inspect_mcp(cwd: &Path) -> Result<()> {
     let resolved = Config::resolve(cwd).context("resolving user config")?;
     let token_store = McpTokenStore::load();
-    let cache = McpToolCache::managed();
+    let cache = FileMcpToolCache::managed();
     print!("{}", render_mcp(&resolved.config, &token_store, &cache));
     Ok(())
 }
 
-fn render_mcp(config: &Config, tokens: &McpTokenStore, cache: &McpToolCache) -> String {
+fn render_mcp(config: &Config, tokens: &McpTokenStore, cache: &dyn McpToolCache) -> String {
     let avail = AvailableMcp::from_config(&config.mcp, Vec::new());
     let mut out = String::new();
     let _ = writeln!(
@@ -96,7 +97,7 @@ mod tests {
         let rendered = render_mcp(
             &empty_config(),
             &McpTokenStore::at(None),
-            &McpToolCache::at(None),
+            &FileMcpToolCache::at(None),
         );
         assert!(rendered.contains("registered MCP servers"), "{rendered}");
         assert!(rendered.contains("  (none)"), "{rendered}");
@@ -120,7 +121,7 @@ mod tests {
             },
         );
         let dir = tempfile::tempdir().unwrap();
-        let cache = McpToolCache::at(Some(dir.path().join("mcp-tools.yml")));
+        let cache = FileMcpToolCache::at(Some(dir.path().join("mcp-tools.yml")));
         cache
             .record("docs", "docs-server", &["search".into()])
             .unwrap();
