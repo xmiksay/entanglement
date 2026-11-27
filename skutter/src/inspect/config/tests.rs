@@ -6,7 +6,7 @@ use super::*;
 fn embedded_defaults_report_the_default_layer_and_engine_fallback_text() {
     let dir = tempfile::tempdir().unwrap();
     let resolved = Config::resolve_with(dir.path(), None).unwrap();
-    let rendered = render_config(&resolved);
+    let rendered = render_config(&resolved, &Hooks::default());
 
     assert!(rendered.contains("max_turns: 200") && rendered.contains("← default"));
     assert!(rendered.contains("idle_ttl_secs: (disabled — no auto-hibernation sweep)"));
@@ -28,7 +28,7 @@ fn undo_block_renders_effective_sizes_and_its_layer() {
     std::fs::write(&user_file, "undo: {enabled: false, max_root_bytes: 1GiB}\n").unwrap();
     let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
 
-    let rendered = render_config(&resolved);
+    let rendered = render_config(&resolved, &Hooks::default());
     assert!(
         rendered
             .contains("undo:     enabled=false max_file_bytes=8 MiB max_root_bytes=1 GiB ← user"),
@@ -48,7 +48,7 @@ fn user_layer_overrides_report_their_winning_layer() {
 
     let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
 
-    let rendered = render_config(&resolved);
+    let rendered = render_config(&resolved, &Hooks::default());
     assert!(rendered.contains("max_turns: 50") && rendered.contains("← user"));
     assert!(rendered.contains("idle_ttl_secs: 120") && rendered.contains("← user"));
     assert!(rendered.contains("auto_compact: false") && rendered.contains("← user"));
@@ -68,7 +68,7 @@ fn tui_block_and_load_warnings_are_rendered() {
     .unwrap();
     let resolved = Config::resolve_with(dir.path(), Some(&user_file)).unwrap();
 
-    let rendered = render_config(&resolved);
+    let rendered = render_config(&resolved, &Hooks::default());
     assert!(
         rendered.contains("tui:      notify=true mouse=true ← user"),
         "{rendered}"
@@ -106,7 +106,10 @@ fn rhai_trusted_folders_render_with_their_listing_layer() {
     .unwrap();
     let user_file = root.join("user-config.yml");
     std::fs::write(&user_file, "rhai: {trusted: [mine]}\n").unwrap();
-    let rendered = render_config(&Config::resolve_with(&root, Some(&user_file)).unwrap());
+    let rendered = render_config(
+        &Config::resolve_with(&root, Some(&user_file)).unwrap(),
+        &Hooks::default(),
+    );
     let block = format!(
         "rhai.trusted (the layers' lists add up; canonical folder ← listing layer):\n  {} ← user\n  {} ← project\n",
         root.join("mine").display(),
@@ -121,7 +124,10 @@ fn rhai_trusted_folders_render_with_their_listing_layer() {
         "rhai: {trusted: [scripts]}\nmodes: {build: {prompt: [\"bash(make *)\"]}}\n",
     )
     .unwrap();
-    let rendered = render_config(&Config::resolve_with(&root, Some(&user_file)).unwrap());
+    let rendered = render_config(
+        &Config::resolve_with(&root, Some(&user_file)).unwrap(),
+        &Hooks::default(),
+    );
     assert!(
         rendered.contains("user-layer trust suppressed in mode(s) build"),
         "{rendered}"
@@ -131,12 +137,18 @@ fn rhai_trusted_folders_render_with_their_listing_layer() {
         "rhai: {trusted: [scripts]}\npermissions: {prompt: [bash]}\n",
     )
     .unwrap();
-    let rendered = render_config(&Config::resolve_with(&root, Some(&user_file)).unwrap());
+    let rendered = render_config(
+        &Config::resolve_with(&root, Some(&user_file)).unwrap(),
+        &Hooks::default(),
+    );
     assert!(
         rendered.contains("user-layer trust suppressed in every mode"),
         "{rendered}"
     );
 
-    let empty = render_config(&Config::resolve_with(&root.join("mine"), None).unwrap());
+    let empty = render_config(
+        &Config::resolve_with(&root.join("mine"), None).unwrap(),
+        &Hooks::default(),
+    );
     assert!(empty.contains("listing layer):\n  (none)\n"), "{empty}");
 }

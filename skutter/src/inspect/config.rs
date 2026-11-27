@@ -13,13 +13,15 @@ use anyhow::{Context, Result};
 
 use crate::config::undo::format_size;
 use crate::config::{Config, ConfigLayer, Resolved};
+use crate::hooks::Hooks;
 
 /// Resolve the user config for `cwd` and print the merged values with their
 /// winning layer, the permission ceiling, the discovered layer sources, and
-/// the catalog's advanced wire facts (ADR-0213).
-pub fn inspect_config(cwd: &Path) -> Result<()> {
+/// the catalog's advanced wire facts (ADR-0213). `hooks` is the `hooks:`
+/// section the caller already parsed (a bad one fails startup first).
+pub fn inspect_config(cwd: &Path, hooks: &Hooks) -> Result<()> {
     let resolved = Config::resolve(cwd).context("resolving user config")?;
-    let mut out = render_config(&resolved);
+    let mut out = render_config(&resolved, hooks);
     match entanglement_core::Catalog::load() {
         Ok(catalog) => super::catalog_facts::render(&mut out, &catalog),
         Err(e) => {
@@ -36,7 +38,7 @@ advanced catalog: (failed to load: {e:#})"
 
 /// Render the resolved config: discovered layers, per-field values + provenance,
 /// and the permission ceiling.
-fn render_config(resolved: &Resolved) -> String {
+fn render_config(resolved: &Resolved, hooks: &Hooks) -> String {
     let c = &resolved.config;
     let prov: std::collections::HashMap<&str, ConfigLayer> = resolved
         .provenance
@@ -184,24 +186,18 @@ fn render_config(resolved: &Resolved) -> String {
     }
 
     let _ = writeln!(out, "\nhooks (← {}):", from("hooks"));
-    match crate::hooks::Hooks::parse(&c.hooks) {
-        Err(e) => {
-            let _ = writeln!(out, "  (invalid: {e:#})");
-        }
-        Ok(h) if h.is_empty() => {
-            let _ = writeln!(out, "  (none)");
-        }
-        Ok(h) => {
-            render_hook_list(&mut out, "pre_tool_use", &h.pre_tool_use);
-            render_hook_list(&mut out, "post_tool_use", &h.post_tool_use);
-            render_hook_list(&mut out, "user_prompt_submit", &h.user_prompt_submit);
-            render_hook_list(&mut out, "session_start", &h.session_start);
-            render_hook_list(&mut out, "session_end", &h.session_end);
-            render_hook_list(&mut out, "stop", &h.stop);
-            render_hook_list(&mut out, "pre_compact", &h.pre_compact);
-            render_hook_list(&mut out, "subagent_stop", &h.subagent_stop);
-            render_hook_list(&mut out, "notification", &h.notification);
-        }
+    if hooks.is_empty() {
+        let _ = writeln!(out, "  (none)");
+    } else {
+        render_hook_list(&mut out, "pre_tool_use", &hooks.pre_tool_use);
+        render_hook_list(&mut out, "post_tool_use", &hooks.post_tool_use);
+        render_hook_list(&mut out, "user_prompt_submit", &hooks.user_prompt_submit);
+        render_hook_list(&mut out, "session_start", &hooks.session_start);
+        render_hook_list(&mut out, "session_end", &hooks.session_end);
+        render_hook_list(&mut out, "stop", &hooks.stop);
+        render_hook_list(&mut out, "pre_compact", &hooks.pre_compact);
+        render_hook_list(&mut out, "subagent_stop", &hooks.subagent_stop);
+        render_hook_list(&mut out, "notification", &hooks.notification);
     }
 
     let _ = writeln!(out, "\nmcp servers (← {}):", from("mcp"));

@@ -91,6 +91,24 @@ fn a_session_end_forgets_its_open_calls() {
     assert!(t.execs.is_empty());
 }
 
+/// Without a `post_tool_use` command nothing is kept per call, and a lag
+/// drops the calls whose `ToolOutput` it may have swallowed.
+#[test]
+fn open_calls_are_kept_only_when_needed_and_dropped_on_lag() {
+    let mut idle = Tracker {
+        skip_execs: true,
+        ..Tracker::default()
+    };
+    idle.observe(&exec("s", "r1", "read", "{}"));
+    assert!(idle.execs.is_empty());
+    assert!(idle.observe(&output("s", "r1", "x", false, None)).is_none());
+
+    let mut t = Tracker::default();
+    t.observe(&exec("s", "r1", "read", "{}"));
+    t.forget_after_lag();
+    assert!(t.execs.is_empty());
+}
+
 #[test]
 fn a_prompt_fires_user_prompt_submit_with_its_text() {
     let mut t = Tracker::default();

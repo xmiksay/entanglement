@@ -59,8 +59,9 @@ async fn main() -> Result<()> {
         ..
     } = config::Config::resolve(&cwd).context("loading user config")?;
     // The library passes `hooks:` through unparsed (#964); a typo in it stays
-    // as loud as one anywhere else in the file, for every subcommand.
-    hooks::Hooks::parse(&user_config.hooks).context("loading user config")?;
+    // as loud as one anywhere else in the file, for every subcommand. Parsed
+    // once here and handed to `inspect config` and the services.
+    let hooks = hooks::Hooks::parse(&user_config.hooks).context("loading user config")?;
 
     // Session-log auto-prune on startup (Issue 4, Phase 4.2): best-effort,
     // scoped to this cwd's session dir only. A read-only data dir or a transient
@@ -133,7 +134,7 @@ async fn main() -> Result<()> {
             InspectCmd::Skills { name, disclosures } => {
                 inspect::inspect_skills(&cwd, name.as_deref(), *disclosures)
             }
-            InspectCmd::Config => inspect::inspect_config(&cwd),
+            InspectCmd::Config => inspect::inspect_config(&cwd, &hooks),
             InspectCmd::AuxModels => inspect::inspect_aux_models(),
             InspectCmd::McpTokens => inspect::inspect_mcp_tokens(),
             InspectCmd::Mcp => inspect::inspect_mcp(&cwd),
@@ -214,7 +215,7 @@ async fn main() -> Result<()> {
     }
 
     let engine = boot::boot(&cwd, &user_config, &catalog).await?;
-    let (holly, head, services) = services::start(engine, &cwd, &user_config, &catalog)?;
+    let (holly, head, services) = services::start(engine, &cwd, &user_config, hooks, &catalog)?;
     let result = heads::dispatch(cli, &holly, head, catalog, &user_config, &cwd).await;
     services.shutdown(&holly).await;
     result

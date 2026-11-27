@@ -59,6 +59,7 @@ pub(crate) fn start(
     engine: Engine,
     cwd: &Path,
     user_config: &config::Config,
+    hooks: Hooks,
     catalog: &Catalog,
 ) -> Result<(Holly, Head, Services)> {
     let Engine {
@@ -138,7 +139,7 @@ pub(crate) fn start(
     // these `perm_modes`/`mode_table`/`tools`/ceiling, with root-relative arg
     // normalization off `escape_root` (#485, ADR-0125) — and every other point
     // is a watcher on the event stream, subscribed here before any prompt.
-    let hooks = Arc::new(Hooks::parse(&user_config.hooks)?);
+    let hooks = Arc::new(hooks);
     let mode_resolver: Arc<dyn PermissionResolver> = Arc::new(ModeResolver::new(
         perm_modes.clone(),
         mode_table.clone(),

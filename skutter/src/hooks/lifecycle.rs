@@ -16,18 +16,16 @@
 //! so hooks run in event order while a slow hook never lags the subscription.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
-use entanglement_core::{AgentState, CompactionMode, Holly, InMsg, OutEvent, SessionId};
+use entanglement_core::{AgentState, CompactionMode, InMsg, OutEvent, SessionId};
 use serde_json::{json, Value};
-use tokio::sync::broadcast::{self, error::RecvError, error::TryRecvError};
-use tokio::sync::mpsc;
-use tokio::task::{JoinHandle, JoinSet};
 
 use super::{parse_input, HookEvent, Hooks};
 use resume::ResumeMarks;
+pub use watch::spawn;
 
 mod resume;
+mod watch;
 
 /// Every point this module drives, for [`Hooks::has_observers`].
 pub(super) const OBSERVED: [HookEvent; 8] = [
@@ -74,6 +72,9 @@ pub(crate) struct Tracker {
     /// `(tool, input)` of each call the runtime was asked to run, by
     /// `(session, request_id)`, until its `ToolOutput` fires `post_tool_use`.
     execs: HashMap<(SessionId, String), (String, String)>,
+    /// No `post_tool_use` command: keep no `execs`, so a long-lived session
+    /// with only other points configured can't grow the map.
+    skip_execs: bool,
 }
 
 impl Tracker {
@@ -195,7 +196,7 @@ impl Tracker {
                 tool,
                 input,
                 ..
-            } => {
+            } if !self.skip_execs => {
                 let key = (session.clone(), request_id.clone());
                 self.execs.insert(key, (tool.clone(), input.clone()));
                 None
@@ -260,11 +261,12 @@ impl Tracker {
     }
 
     /// After a broadcast lag the `Done`/`Status` pairing can't be trusted,
-    /// and a pending resume whose `SessionStarted` was among the dropped
-    /// events would otherwise keep its mark forever.
+    /// and a pending resume or call whose closing event was among the dropped
+    /// ones would otherwise keep its entry forever.
     pub(crate) fn forget_after_lag(&mut self) {
         self.ended_turn.clear();
         self.resuming = ResumeMarks::default();
+        self.execs.clear();
     }
 
     /// A finished turn: `stop` for a root, `subagent_stop` for a spawned child.
@@ -320,82 +322,6 @@ fn fire(event: HookEvent, session: &SessionId, tool: Option<&str>, extra: Value)
         tool: tool.map(str::to_string),
         payload,
     }
-}
-
-/// Spawn the watcher when any observer point has a command (`None`
-/// otherwise — the norm). Both receivers are subscribed here, before this
-/// returns, so a first `Prompt` or `SessionStarted` is never missed. Abort the
-/// handle to stop it (its two tasks live in a `JoinSet` dropped with it).
-pub fn spawn(holly: &Holly, hooks: Arc<Hooks>) -> Option<JoinHandle<()>> {
-    if !hooks.has_observers() {
-        return None;
-    }
-    let events = holly.subscribe();
-    let inbound = holly.subscribe_inbound();
-    Some(tokio::spawn(async move {
-        let mut tasks = JoinSet::new();
-        watch(&mut tasks, hooks, events, inbound);
-        while tasks.join_next().await.is_some() {}
-    }))
-}
-
-/// The tracker feeding one sequential worker, so hooks run in event order
-/// while a slow hook never lags the subscription.
-fn watch(
-    tasks: &mut JoinSet<()>,
-    hooks: Arc<Hooks>,
-    mut events: broadcast::Receiver<OutEvent>,
-    mut inbound: broadcast::Receiver<InMsg>,
-) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Firing>();
-    let runner = hooks.clone();
-    tasks.spawn(async move {
-        while let Some(f) = rx.recv().await {
-            let tool = f.tool.as_deref();
-            runner
-                .run_observer(f.event, &f.session, tool, &f.payload)
-                .await;
-        }
-    });
-    tasks.spawn(async move {
-        let mut tracker = Tracker::default();
-        let send = |f: Firing| hooks.specs(f.event).is_empty() || tx.send(f).is_ok();
-        loop {
-            let ev = match events.recv().await {
-                Ok(ev) => ev,
-                // Firings are best-effort under lag: dropped events fire
-                // nothing. A pending turn end is forgotten rather than
-                // classified off a `Status` whose `Done` may have been lost.
-                Err(RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "hook watcher lagged");
-                    tracker.forget_after_lag();
-                    continue;
-                }
-                Err(RecvError::Closed) => break,
-            };
-            // The supervisor fans a frame out before handling it, so every
-            // `Prompt`/`Resume` that caused this event is already buffered
-            // here (a prompt's hook fires on the first event it causes).
-            loop {
-                match inbound.try_recv() {
-                    Ok(msg) => {
-                        if let Some(f) = tracker.observe_in(&msg) {
-                            if !send(f) {
-                                return;
-                            }
-                        }
-                    }
-                    Err(TryRecvError::Lagged(_)) => continue,
-                    Err(_) => break,
-                }
-            }
-            if let Some(f) = tracker.observe(&ev) {
-                if !send(f) {
-                    break;
-                }
-            }
-        }
-    });
 }
 
 #[cfg(test)]
