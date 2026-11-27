@@ -13,7 +13,7 @@ use crate::mode::ModeTable;
 use crate::providers::select_provider;
 use crate::tool_runner::EscapeRoot;
 
-mod default_tools;
+pub(crate) mod default_tools;
 use crate::{
     config, extra_roots, file_backup, host, jobs, mcp, path_grading, retained_output, script_ops,
     session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,

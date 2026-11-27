@@ -75,28 +75,35 @@ pub(crate) fn register_session_tools(
     tools.register(host::GrepJsonTool::new(root).with_workdirs(workdirs));
 }
 
+/// The registry `build_config` assembles at startup — [`register_default_tools`]
+/// with no env var or opt-in of any kind, then [`register_session_tools`] —
+/// for tests that must see exactly what startup registers.
+#[cfg(test)]
+pub(crate) fn startup_registry() -> ToolRegistry {
+    let mut tools = register_default_tools(
+        std::env::temp_dir(),
+        DefaultTools {
+            host: host::HostToolOptions::default(),
+            secret_env: Vec::new(),
+            sandbox_resolver: Arc::new(host::SandboxPolicy::none()),
+            jobs: crate::jobs::JobRegistry::new(),
+        },
+    );
+    register_session_tools(
+        &mut tools,
+        std::env::temp_dir(),
+        Arc::new(RwLock::new(Arc::new(SkillRegistry::default()))),
+        SessionWorkdirs::default(),
+    );
+    tools
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{register_default_tools, register_session_tools, DefaultTools};
-    use crate::host::SandboxPolicy;
-
-    /// The advertised roster `register_default_tools` produces with no env var
-    /// or opt-in of any kind — the ADR-0195 posture: `bash` is registered
-    /// unconditionally at startup, exactly like the sextet.
-    fn default_registry() -> crate::ToolRegistry {
-        register_default_tools(
-            std::env::temp_dir(),
-            DefaultTools {
-                host: crate::host::HostToolOptions::default(),
-                secret_env: Vec::new(),
-                sandbox_resolver: std::sync::Arc::new(SandboxPolicy::none()),
-                jobs: crate::jobs::JobRegistry::new(),
-            },
-        )
-    }
+    use super::startup_registry;
 
     fn tool_names() -> Vec<String> {
-        default_registry()
+        startup_registry()
             .specs()
             .into_iter()
             .map(|s| s.name.to_string())
@@ -134,15 +141,7 @@ mod tests {
     /// first-request surface the `KERNEL` name filter produced.
     #[test]
     fn the_flag_surface_is_byte_identical_to_the_former_kernel() {
-        let mut registry = default_registry();
-        register_session_tools(
-            &mut registry,
-            std::env::temp_dir(),
-            std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(
-                crate::skills::SkillRegistry::default(),
-            ))),
-            crate::path_grading::SessionWorkdirs::default(),
-        );
+        let registry = startup_registry();
 
         let mut former: Vec<_> = registry
             .specs()

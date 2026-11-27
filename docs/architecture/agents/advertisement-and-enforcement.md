@@ -93,9 +93,12 @@
   is a wildcard). A rule that scopes a tool with no argument
   (`mcp__gh__x(foo)`, #878) or with no workdir (`read{/tmp/*}`, #881), or
   whose scope the matcher can't read (`bash(git *){/x}` — one scope per
-  key, #881), warns once the engine's registry exists
-  (`Config::warn_unscopable_rules`, `config::scope_warn`): whether a tool
-  takes a scope is the registered tool's answer (#962). A per-tool rule (`mcp__<server>__<tool>`) grades an envelope
+  key, #881), warns once the engine's registry is complete
+  (`Config::warn_unscopable_rules`, `config::scope_warn`; skutter checks
+  right after the executor's `spawn`, which registers `http`): whether a
+  tool takes a scope is the registered tool's answer (#962). `skutter
+  inspect` and the TUI's config reload build no registry, so the scope
+  warnings appear only in the startup log. A per-tool rule (`mcp__<server>__<tool>`) grades an envelope
   call and a script's `mcp::<server>::<tool>()` binding identically — both
   reach the same dispatch seam under the inner name.
 - **`/tools`** (#560 P9,

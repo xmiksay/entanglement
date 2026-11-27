@@ -16,8 +16,11 @@ use crate::policy::{ModeResolver, PermissionResolver};
 use crate::tool_runner::DiscoverySurface;
 use crate::{
     capability, config, history, logging, mcp, mode, persistence, plan_files, plan_watch, throttle,
-    tool_advertising, tool_runner, watch,
+    tool_advertising, tool_runner, watch, SharedRegistry,
 };
+
+#[cfg(test)]
+mod tests;
 
 /// What the interactive heads (the TUI in particular) consume once the
 /// services are running.
@@ -37,6 +40,20 @@ pub(crate) struct Head {
     /// The registry the tool executor reads: a watching head registers here
     /// so its sessions' cards wait for it (ADR-0247).
     pub(crate) attendance: entanglement_runtime::attendance::Attendance,
+}
+
+/// Spawn `executor`, then check `config.yml`'s scoped rules (#962) against
+/// the registry it completed — the builder registers the script-only `http`
+/// tool at spawn, so a check any earlier calls every `http(...)` rule dead.
+/// Returns the executor and how many rules warned.
+fn spawn_then_check_scopes(
+    executor: tool_runner::ToolExecutorBuilder,
+    tools: &SharedRegistry,
+    user_config: &config::Config,
+) -> (JoinHandle<()>, usize) {
+    let handle = executor.spawn();
+    let registry = tools.read().expect("tool registry lock poisoned");
+    (handle, user_config.warn_unscopable_rules(&registry))
 }
 
 /// The background tasks [`Services::shutdown`] tears down.
@@ -117,9 +134,6 @@ pub(crate) fn start(
     let perm_modes = sandbox_config.modes.clone();
     let mode_table = Arc::new({
         let registry = tools.read().expect("tool registry lock poisoned");
-        // A scoped rule's tool must take that scope — the registered tool's
-        // answer (#962), so checked here rather than at config load.
-        user_config.warn_unscopable_rules(&registry);
         mode::build_table(&user_config.modes, &|name| {
             capability::capability_of(name, &registry)
         })
@@ -204,8 +218,8 @@ pub(crate) fn start(
             validation: std::sync::Arc::new(crate::arg_validate::LoopBreaker::new()),
             // The shared endpoint-pool client every lazy MCP connect rides.
             http: Some(http_client.clone()),
-        })
-        .spawn();
+        });
+    let (tool_executor, _) = spawn_then_check_scopes(tool_executor, &tools, user_config);
 
     // Live MCP server management (#375): a runtime service answering
     // `McpList`/`McpAdd`/`McpRemove` off the inbound fan-out, since it alone
