@@ -12,12 +12,17 @@
 //! rewrites the source log, there is no history for a hook to rescue first.
 //!
 //! The [`Tracker`] is the pure part: it folds events into [`Firing`]s. The
-//! [`spawn`]ed task feeds it and hands each firing to one sequential worker,
-//! so hooks run in event order while a slow hook never lags the subscription.
+//! [`spawn`]ed task feeds it and hands each firing to a sequential worker —
+//! one for `post_tool_use`, one for the rest — so hooks run in event order
+//! within each while a slow hook never lags the subscription.
 
 use std::collections::{HashMap, HashSet};
 
 use entanglement_core::{AgentState, CompactionMode, InMsg, OutEvent, SessionId};
+use entanglement_runtime::tool_names::{
+    AGENT_SEND_TOOL, AGENT_TOOL, ASK_USER_TOOL, LIST_AGENTS_TOOL, LIST_MCP_TOOL, LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL, MCP_TOOLS_TOOL, POLL_TOOL, PROPOSE_PLAN_TOOL, REQUEST_MODE_TOOL, RHAI_TOOL,
+};
 use serde_json::{json, Value};
 
 use super::{parse_input, HookEvent, Hooks};
@@ -37,6 +42,24 @@ pub(super) const OBSERVED: [HookEvent; 8] = [
     HookEvent::PreCompact,
     HookEvent::SubagentStop,
     HookEvent::Notification,
+];
+
+/// Calls the executor answers on its own route, never through the host-tool
+/// execute step: 0.7 ran `post_tool_use` only from that step, so these never
+/// fired it — a sub-agent's answer or an `ask_user` reply is not a tool result.
+const ROUTE_TOOLS: [&str; 12] = [
+    AGENT_TOOL,
+    AGENT_SEND_TOOL,
+    POLL_TOOL,
+    ASK_USER_TOOL,
+    PROPOSE_PLAN_TOOL,
+    REQUEST_MODE_TOOL,
+    RHAI_TOOL,
+    LIST_AGENTS_TOOL,
+    LIST_MODELS_TOOL,
+    LIST_SKILLS_TOOL,
+    LIST_MCP_TOOL,
+    MCP_TOOLS_TOOL,
 ];
 
 /// One hook point to run: its payload already carries `event` and `session`.
@@ -69,8 +92,9 @@ pub(crate) struct Tracker {
     /// the turn ended (`emit_turn_done`/`emit_turn_error` always pair them).
     ended_turn: HashSet<SessionId>,
     last_error: HashMap<SessionId, String>,
-    /// `(tool, input)` of each call the runtime was asked to run, by
-    /// `(session, request_id)`, until its `ToolOutput` fires `post_tool_use`.
+    /// `(tool, input)` of each host-tool call the runtime was asked to run
+    /// (no [`ROUTE_TOOLS`]), by `(session, request_id)`, until its
+    /// `ToolOutput` fires `post_tool_use`.
     execs: HashMap<(SessionId, String), (String, String)>,
     /// No `post_tool_use` command: keep no `execs`, so a long-lived session
     /// with only other points configured can't grow the map.
@@ -196,7 +220,7 @@ impl Tracker {
                 tool,
                 input,
                 ..
-            } if !self.skip_execs => {
+            } if !self.skip_execs && !ROUTE_TOOLS.contains(&tool.as_str()) => {
                 let key = (session.clone(), request_id.clone());
                 self.execs.insert(key, (tool.clone(), input.clone()));
                 None

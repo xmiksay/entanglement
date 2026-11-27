@@ -1,5 +1,6 @@
 //! The watcher task: feeds the [`Tracker`] from the outbound and inbound
-//! streams and runs its firings on one sequential worker.
+//! streams and runs its firings on two sequential workers — `post_tool_use`
+//! on its own, so a slow one never delays an approval `notification`.
 
 use std::sync::Arc;
 
@@ -27,30 +28,30 @@ pub fn spawn(holly: &Holly, hooks: Arc<Hooks>) -> Option<JoinHandle<()>> {
     }))
 }
 
-/// The tracker feeding one sequential worker, so hooks run in event order
-/// while a slow hook never lags the subscription.
+/// The tracker feeding two sequential workers, so hooks run in event order
+/// within each while a slow hook never lags the subscription. A busy batch's
+/// `post_tool_use` firings (each up to `timeout_secs`) queue on their own
+/// worker; every other point keeps its latency.
 fn watch(
     tasks: &mut JoinSet<()>,
     hooks: Arc<Hooks>,
     mut events: broadcast::Receiver<OutEvent>,
     mut inbound: broadcast::Receiver<InMsg>,
 ) {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Firing>();
-    let runner = hooks.clone();
-    tasks.spawn(async move {
-        while let Some(f) = rx.recv().await {
-            let tool = f.tool.as_deref();
-            runner
-                .run_observer(f.event, &f.session, tool, &f.payload)
-                .await;
-        }
-    });
+    let tools = worker(tasks, hooks.clone());
+    let lifecycle = worker(tasks, hooks.clone());
     tasks.spawn(async move {
         let mut tracker = Tracker {
             skip_execs: hooks.specs(HookEvent::PostToolUse).is_empty(),
             ..Tracker::default()
         };
-        let send = |f: Firing| hooks.specs(f.event).is_empty() || tx.send(f).is_ok();
+        let send = |f: Firing| {
+            let tx = match f.event {
+                HookEvent::PostToolUse => &tools,
+                _ => &lifecycle,
+            };
+            hooks.specs(f.event).is_empty() || tx.send(f).is_ok()
+        };
         loop {
             let ev = match events.recv().await {
                 Ok(ev) => ev,
@@ -87,4 +88,18 @@ fn watch(
             }
         }
     });
+}
+
+/// One sequential worker running the firings sent to it, in order.
+fn worker(tasks: &mut JoinSet<()>, hooks: Arc<Hooks>) -> mpsc::UnboundedSender<Firing> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Firing>();
+    tasks.spawn(async move {
+        while let Some(f) = rx.recv().await {
+            let tool = f.tool.as_deref();
+            hooks
+                .run_observer(f.event, &f.session, tool, &f.payload)
+                .await;
+        }
+    });
+    tx
 }

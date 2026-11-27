@@ -66,6 +66,30 @@ fn a_failed_call_carries_is_error_and_a_null_exit_code() {
     assert_eq!(f.payload["exit_code"], Value::Null);
 }
 
+/// The executor's own routes fire nothing, as in 0.7 (`post_tool_use` ran
+/// only from the host-tool execute step); `load_skill`/`update_tasks` took
+/// that step through the `Control` bypass, so they still fire.
+#[test]
+fn route_tools_fire_no_post_tool_use() {
+    let mut t = Tracker::default();
+    for (i, tool) in ROUTE_TOOLS.iter().enumerate() {
+        let rid = format!("r{i}");
+        t.observe(&exec("s", &rid, tool, "{}"));
+        assert!(
+            t.observe(&output("s", &rid, "x", false, None)).is_none(),
+            "{tool}"
+        );
+    }
+    assert!(t.execs.is_empty());
+    for tool in ["load_skill", "update_tasks", "mcp__gh__issue"] {
+        t.observe(&exec("s", tool, tool, "{}"));
+        assert!(
+            t.observe(&output("s", tool, "x", false, None)).is_some(),
+            "{tool}"
+        );
+    }
+}
+
 /// A result core produced without asking the runtime (no `ToolExec`) fires
 /// nothing, and each `ToolExec` fires once.
 #[test]

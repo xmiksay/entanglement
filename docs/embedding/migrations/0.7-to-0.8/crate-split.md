@@ -69,10 +69,11 @@ hook item. What changes:
   the graded tool name (`read_raw` → `read`, `glob_json` → `glob`,
   `grep_json` → `grep`, a `call_grading` target), so a `tools: [read_raw]`
   filter never matches. `post_tool_use` fires on the `ToolOutput` of every
-  call the runtime was asked to run (`ToolExec`) — a refused one included, a
-  script's nested calls not — and runs asynchronously after the result
-  folded back instead of before, so a formatter hook races the agent's next
-  call on the same file. `user_prompt_submit` runs on the first event a
+  host-tool call the runtime was asked to run (`ToolExec`) — a refused one
+  included, a script's nested calls not, the executor's own routes
+  (`agent`, `poll`, `ask_user`, … — as in 0.7) not — and runs asynchronously
+  after the result folded back instead of before, on its own worker, so a
+  formatter hook races the agent's next call on the same file. `user_prompt_submit` runs on the first event a
   prompt causes. Details: [hooks §9](../../../architecture/gates/hooks-and-seams.md).
 - **Instead:** drop `Hooks::default()` from `spawn_tool_executor_with_policy`
   calls and any `.hooks(..)` builder call. An embedder that wants a veto

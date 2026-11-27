@@ -1,6 +1,6 @@
 //! Lifecycle hooks (#199, ADR-0066) — user-configured external commands run
 //! around tool execution and on prompt ingress, for policy, telemetry, and
-//! formatting side-effects.
+//! notifications.
 //!
 //! Hooks are `skutter`'s, not the library's (#964): the runtime executor runs
 //! none. They hang off the two seams every embedder already has — the
@@ -13,9 +13,9 @@
 //!   call** (graded `Deny`, the hook's output logged): the tool never runs.
 //!   This is the policy gate — a hook can veto a `bash rm …` or an `edit`
 //!   outside a path.
-//! - **`post_tool_use`** — fires on the `ToolOutput` of a call the runtime
-//!   was asked to run (`ToolExec`). Observational: the exit code is logged
-//!   but never fed back to the model.
+//! - **`post_tool_use`** — fires on the `ToolOutput` of a host-tool call the
+//!   runtime was asked to run (`ToolExec`; not `agent`/`poll`/`ask_user`/…).
+//!   Observational: the exit code is logged, never fed back to the model.
 //! - **`user_prompt_submit`** — fires on an inbound `InMsg::Prompt`.
 //!   Observational (telemetry/logging); it does not gate the prompt.
 //! - **`session_start`/`session_end`/`stop`/`pre_compact`/`subagent_stop`/
