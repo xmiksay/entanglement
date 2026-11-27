@@ -7,6 +7,17 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// Resolve `rel` against `root` and refuse anything outside it — for a tool
+/// that never leaves the root, whatever the escape-root check decided
+/// (`read_raw`, rhai-internal, stays strictly contained as in 0.7).
+pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf> {
+    let (resolved, contained) = resolve_and_contained(root, rel)?;
+    if !contained {
+        return Err(anyhow::anyhow!("path escapes working directory: {rel}"));
+    }
+    Ok(resolved)
+}
+
 /// The absolute out-of-root target `rel` resolves to under `root`, or `None`
 /// when `rel` stays contained (or can't be resolved at all). The escape-root
 /// check (ADR-0109) asks for exactly this path, matching the resolution the
@@ -22,8 +33,9 @@ pub fn escaping_path(root: &Path, rel: &str) -> Option<PathBuf> {
 /// canonicalization of the deepest existing ancestor (#163) — returning the
 /// absolute target and whether it stays contained under `root`. The containment
 /// flag is the AND of the lexical and canonical checks: the escape-root check
-/// asks about a `false`, and a tool it cleared uses the path either way. A genuinely malformed path (a `..` popping past the filesystem root)
-/// is still a hard `Err`.
+/// asks about a `false`, a tool it cleared uses the path either way, and
+/// [`resolve_under_root`] refuses it. A genuinely malformed path (a `..`
+/// popping past the filesystem root) is still a hard `Err`.
 pub fn resolve_and_contained(root: &Path, rel: &str) -> Result<(PathBuf, bool)> {
     // Canonicalize the root defensively so containment holds even when the head
     // (or a test) passes a non-canonical root; startup also canonicalizes cwd.

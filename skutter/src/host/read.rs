@@ -3,6 +3,7 @@
 //! (detected by extension) comes back as a base64 image **content block** the
 //! provider renders to its native image format (#221).
 
+use super::containment::resolve_under_root;
 use super::resolve_path;
 use crate::capability::Capability;
 use crate::output::truncate_output;
@@ -237,7 +238,9 @@ impl Tool for ReadRawTool {
     async fn run(&self, input: &str) -> Result<String> {
         let parsed: ReadRawInput = serde_json::from_str(input)
             .context("invalid input to read_raw: expected {\"path\": string}")?;
-        let full = resolve_path(&self.root, &parsed.path)?;
+        // `read_raw` is rhai-internal; it stays strictly root-contained even
+        // when the escape-root check cleared the call it grades as (`read`).
+        let full = resolve_under_root(&self.root, &parsed.path)?;
         let bytes = tokio::fs::read(&full)
             .await
             .with_context(|| format!("reading {}", parsed.path))?;
@@ -371,7 +374,8 @@ mod tests {
     }
 
     /// #968: the escape-root check asks before an out-of-root path reaches
-    /// the tool, so both read variants read whatever path they are given.
+    /// `read`, so the tool reads whatever path it is given; `read_raw` stays
+    /// strictly root-contained (`read_raw_path_escaping_root_is_rejected`).
     #[tokio::test]
     async fn an_out_of_root_path_is_the_escape_checks_question() {
         let dir = tmp();
@@ -383,11 +387,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, "1: x\n");
-        let raw = ReadRawTool::new(root)
+        let err = ReadRawTool::new(root)
             .run(r#"{"path":"../outer"}"#)
             .await
-            .unwrap();
-        assert_eq!(raw, "x\n");
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -421,5 +428,33 @@ mod tests {
         let tool = ReadRawTool::new(dir.path().to_path_buf());
         let out = tool.run(r#"{"path":"cfg.json"}"#).await.unwrap();
         assert_eq!(out, r#"{"a":1}"#);
+    }
+
+    #[tokio::test]
+    async fn read_raw_path_escaping_root_is_rejected() {
+        let dir = tmp();
+        let tool = ReadRawTool::new(dir.path().to_path_buf());
+        let err = tool.run(r#"{"path":"../secret"}"#).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
+    }
+
+    /// An absolute out-of-root path is refused too: a script with a scratch
+    /// or extra-root grant still can't widen `read_raw` past the root.
+    #[tokio::test]
+    async fn read_raw_absolute_path_outside_root_is_rejected() {
+        let dir = tmp();
+        let outside = tmp();
+        let secret = outside.path().join("secret.json");
+        std::fs::write(&secret, "{}").unwrap();
+        let tool = ReadRawTool::new(dir.path().to_path_buf());
+        let input = serde_json::json!({ "path": secret }).to_string();
+        let err = tool.run(&input).await.unwrap_err();
+        assert!(
+            format!("{err}").contains("escapes working directory"),
+            "{err}"
+        );
     }
 }

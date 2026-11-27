@@ -20,7 +20,7 @@
 //! [`Tool::escape_target`]: crate::tools::Tool::escape_target
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use async_trait::async_trait;
 use entanglement_core::{CardReason, SessionId};
@@ -77,7 +77,9 @@ impl EscapeResolver {
         let (target, arg) = if tool == RHAI_TOOL {
             (str_arg(input, "path")?, None)
         } else {
-            let tools = self.tools.read().expect("tool registry lock poisoned");
+            // Read through poison like the library executor: a panicked
+            // registry writer must not take the permission path down with it.
+            let tools = self.tools.read().unwrap_or_else(PoisonError::into_inner);
             let t = tools.get(tool)?;
             let arg = match t.permission_scope().arg {
                 ArgKind::Path => None,
