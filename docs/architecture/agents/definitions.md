@@ -5,14 +5,14 @@
 - **File-defined (✅ #112, [ADR-0034](../../adr/archive/0034-file-based-agent-definitions.md),
   roster collapsed by [ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md)
   §1):** agents are markdown files with YAML frontmatter (the config bundle)
-  + a body (the system prompt), discovered at startup by the **runtime**
-  (`entanglement_runtime::agents::load_registry_in`) into a `AgentCatalog`.
+  + a body (the system prompt), discovered at startup by **`skutter`**
+  (`skutter::agents::load_registry_in`, #932; the library loads no
+  definition file) into a `AgentCatalog`.
   Three layers, later wins on a `name` collision: embedded built-ins —
   **`general`, `plan`, `debug`** — shipped as `include_str!` `.md` and parsed
   through the *same* loader) < user (`~/.claude/agents/*.md` then
   `${config_dir}/entanglement/agents/*.md`, or exactly
-  `ENTANGLEMENT_AGENTS_DIR` — the embedder's `layers::UserLayer`, which
-  `skutter` resolves; the library reads no env var or user dir, #967) <
+  `ENTANGLEMENT_AGENTS_DIR` — `skutter::layers::UserLayer`, #967) <
   project (`.claude/agents` then `.agents/agents` then
   `<root>/.entanglement/agents/*.md`). Editing a
   built-in = dropping a same-`name` file in a higher layer — one mechanism
@@ -50,8 +50,8 @@
   files). Exec-tool choice (`bash` vs `rhai`) is deliberately
   **not** in any body: it lives once, in the `bash` tool description
   ([gates & host tools](../gates-and-host-tools.md), #740). Embedders using core directly get that single fallback via
-  `AgentCatalog::new()`; the runtime rebuilds the full set from the
-  embedded markdown (`entanglement_runtime::agents::built_in_registry`). Add
+  `AgentCatalog::new()`; `skutter` rebuilds the full set from the
+  embedded markdown (`skutter::agents::built_in_registry`). Add
   your own with `AgentCatalog::insert`.
 - **The four built-in modes, at a glance** — what a session can actually do,
   independent of which agent runs it. Source of truth:

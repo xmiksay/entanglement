@@ -350,7 +350,7 @@ pub enum InMsg {
     /// has no name yet — a no-op (still acked, with the unchanged state) once
     /// the session already carries one, whether set by an earlier `/name` or
     /// restored by resume. Never clears an existing name. The auto session-title
-    /// generator (`entanglement-runtime::session_title`) always sets this so a
+    /// generator (`skutter::session_title`) always sets this so a
     /// late-arriving generated title can never race a user-set `/name`; a
     /// user-authored rename leaves it `false` (default) so it always wins.
     SetSessionMeta {

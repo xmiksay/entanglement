@@ -113,7 +113,8 @@ same permission modes as `read`/`bash`. Their schemas are **never advertised**
     `InMsg::McpAuth { name, action: Connect|Check|Disconnect }` →
     `OutEvent::McpAuthChanged` (a forged connect would open a browser and mint a
     durable credential; even `Check` mutates state by refreshing), answered by the
-    same `mcp::spawn_mcp_responder` that answers `McpList` — each op detached, since
+    same `skutter::mcp::spawn_mcp_responder` that answers `McpList` (the flows are
+    `skutter::mcp::oauth_ops`, #932) — each op detached, since
     a connect parks up to five minutes on the browser. Startup **never** opens a
     browser: an unauthenticated OAuth server is skipped non-fatally and reported as
     `needs auth` in `/mcp list`. TUI: `/mcp connect|check|disconnect <name>` plus

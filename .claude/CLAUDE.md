@@ -32,8 +32,8 @@ Four crates, dependency direction `provider (leaf) ← core ← runtime ← skut
 | --- | --- | --- |
 | `entanglement-provider` | leaf: the `Llm` trait + DTOs, all LLM clients (OpenAI-compat, Anthropic, Gemini, Responses), per-endpoint pool/retry/rate-limit, the YAML catalog, the MCP client mechanism (HTTP transport + OAuth). [provider](../docs/architecture/provider.md) | no `entanglement-*` deps; owns `reqwest`. |
 | `entanglement-core` | actor engine: `Holly`, protocol, turn loop, `Context`. Advertises tool *schemas* only — no executable tools, no policy. Re-exports the provider ABI. [engine](../docs/architecture/engine.md) | no UI/web-server deps (`clap`/`axum`/`crossterm`/`ratatui`); `make tree` enforces. |
-| `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, permission dispatch, sub-agents, persistence. Ships no host tool and keeps no filesystem-root logic (#968). Reads no config/env file and resolves no user dir — the embedder hands it plain values (#967). No binary. Features `provider`/`mcp-http`/`rhai`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931, #968). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
-| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, the host tools with their containment, escape-root check, `/cd` and bwrap sandbox (#968), user slash commands, lifecycle hooks (#964), the file-backed grants/MCP/escape-root stores (#966), the layered `config.yml` + managed pin files + definitions watcher + key writer (#967), log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
+| `entanglement-runtime` | embedder library: `Tool`/`ToolRegistry`, permission dispatch, sub-agents, the persistence tap over a `RecordSink` + the log record types. Ships no host tool and keeps no filesystem-root logic (#968). Reads no config/env file and resolves no user dir — the embedder hands it plain values (#967). Stores no session log, loads no agent/skill file, runs no aux model, keeps no global MCP roster (#932). No binary. Features `provider`/`mcp-http`/`rhai`, all default ([ADR-0025](../docs/adr/archive/0025-runtime-cargo-feature-gates.md), changed by #931, #968, #932). [gates & host tools](../docs/architecture/gates-and-host-tools.md) | default and `--no-default-features` stay CLI/TUI/web-server-free; `make check-lean` enforces. |
+| `skutter` | the coding CLI (binary `skutter`, `publish = false`): `run`/`pipe`/`tui`/`serve` + `sessions`/`inspect`/`config set-key`, the host tools with their containment, escape-root check, `/cd` and bwrap sandbox (#968), user slash commands, lifecycle hooks (#964), the file-backed grants/MCP/escape-root stores (#966), the layered `config.yml` + managed pin files + definitions watcher + key writer (#967), the on-disk session store + file sink + `ReplayFrom` answerer + per-write backups, file-based agents/skills + system-prompt assembly, the aux models (titles, narrator), the global MCP roster + live add/remove + OAuth flows (#932), log setup. Built on the runtime's public API. [heads & persistence](../docs/architecture/heads-and-persistence.md) | the only crate allowed `clap`/`axum`/`ratatui`/`crossterm`. |
 
 ## Commands — drive through `make`
 
@@ -197,7 +197,8 @@ doc, never here**:
   (a reasoned `Grade::Ask`) before a path outside the root, optional
   bubblewrap sandbox as a mode fact; the library keeps none (#968)
   ([gates §8](../docs/architecture/gates/host-tools.md), [ADR-0054](../docs/adr/archive/0054-canonicalizing-symlink-safe-root-containment.md)/[ADR-0109](../docs/adr/archive/0109-escape-root-access-via-approval.md)/[ADR-0104](../docs/adr/archive/0104-bubblewrap-sandbox-for-bash-call.md)).
-- **Undo/rewind is per-write backups, not git** — exec changes are never
+- **Undo/rewind is per-write backups, not git** (`skutter`'s; the library
+  only scopes each call's `ToolExec` seq, #932) — exec changes are never
   tracked; replay never touches the disk; each change records the live tree
   it was made in, so a successor's rewind reaches its moved sub-agents' writes
   ([gates §undo](../docs/architecture/gates/web-fetch-and-undo.md), [ADR-0212](../docs/adr/archive/0212-undo-rewind-via-per-write-file-backups.md)/[ADR-0236](../docs/adr/archive/0236-rewind-follows-adopted-sub-agents.md)).
@@ -213,8 +214,9 @@ doc, never here**:
   ([gates §script surface](../docs/architecture/gates/script-surface.md), [ADR-0046](../docs/adr/archive/0046-rhai-sandboxed-script-tool.md)/[ADR-0185](../docs/adr/archive/0185-rhai-joins-background-and-poll.md)/[ADR-0227](../docs/adr/archive/0227-one-binding-path-namespaces-http-skill-libraries.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)).
 - **MCP** — called only through `mcp(server, tool, args)` (core unwraps to
   `mcp__<server>__<tool>`), schemas never advertised; registered = available
-  (`disabled: true` the one opt-out), lazy connect, live add/remove,
-  OAuth, per-user scopes; servers come from the user `mcp:` map only
+  (`disabled: true` the one opt-out), lazy connect, per-user scopes; the
+  global roster, live add/remove and the OAuth flows are `skutter`'s (#932);
+  servers come from the user `mcp:` map only
   ([gates §10](../docs/architecture/gates/mcp.md), [ADR-0067](../docs/adr/archive/0067-mcp-client-as-runtime-tool-provider.md)/[ADR-0226](../docs/adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)/[ADR-0153](../docs/adr/archive/0153-mcp-server-oauth.md)/[ADR-0188](../docs/adr/archive/0188-session-keyed-per-user-mcp-scopes.md)).
 - **Discovery is six `Control` tools** — `list_agents`/`list_models`/
   `list_skills`/`load_skill`/`list_mcp`/`mcp_tools`, no arg or one `name`;
@@ -230,8 +232,8 @@ doc, never here**:
   files; `tools:`/`user_only` frontmatter removed (a parse error, #920)
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [ADR-0194](../docs/adr/archive/0194-skills-are-additive-only.md)/[ADR-0221](../docs/adr/archive/0221-user-slash-commands-are-head-side-prompt-templates.md)/[ADR-0228](../docs/adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)/[ADR-0229](../docs/adr/archive/0229-every-skill-is-model-visible-user-only-removed.md)).
 - **Definitions are data, layered** embedded < user < project (project
-  trusted); the embedder names the user layer (`layers::UserLayer`);
-  `skutter`'s managed files are advisory-locked and live-reloaded
+  trusted); `skutter` discovers agent and skill files (#932) — the library
+  takes a built `AgentCatalog` and `SkillRegistry`; `skutter`'s managed files are advisory-locked and live-reloaded
   ([agents & permissions](../docs/architecture/agents-and-permissions.md), [heads §6c](../docs/architecture/heads/keys-and-aux-models.md), [ADR-0047](../docs/adr/archive/0047-local-trust-boundary.md)/[ADR-0084](../docs/adr/archive/0084-runtime-live-reload-and-managed-file-locking.md)).
 - **Plans** — `propose_plan` (only in `plan` mode) is file-backed; approval
   switches the session's mode in place, to the approver's choice

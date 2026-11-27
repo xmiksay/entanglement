@@ -3,8 +3,11 @@
 The **embeddable runtime library** of
 [entanglement](https://github.com/xmiksay/entanglement) — the runtime half of
 the engine seam: the `Tool` trait + `ToolRegistry`, tool execution,
-permission dispatch + approval, sub-agents and event-sourced persistence. Hold a `Holly`, call `send()` / `subscribe()`, and
-wire the executor around it. No binary and no CLI/TUI/web-server deps: the
+permission dispatch + approval, sub-agents and the event-sourcing persistence
+tap (you bring the sink). Hold a `Holly`, call `send()` / `subscribe()`, and
+wire the executor around it. It stores no session log, loads no agent or
+skill file, runs no aux model and keeps no global MCP roster: those are the
+CLI's. No binary and no CLI/TUI/web-server deps: the
 `skutter` coding CLI (stdio `run`/`pipe`, the TUI, the WebSocket `serve`
 head) is a separate, unpublished crate in the same repository, built on this
 library's public API.
@@ -19,7 +22,8 @@ file, search, shell and fetch tools (with their containment, escape-root
 check and bubblewrap sandbox) are the worked example. The library's own
 routes are the sandboxed `rhai` scripting tool, `poll`, the orchestration
 and discovery tools and the `mcp` tool. External **MCP servers** attach
-their tools as `mcp__<server>__<tool>`.
+their tools as `mcp__<server>__<tool>`; credentials come only through a
+`TokenStore`.
 The session's permission **mode** (`research` | `plan` | `build` | `auto`;
 `Allow | Ask | Deny` per tool, capability class, or argument-scoped rule) plus
 "always allow" grants, a ceiling and the embedder's `PermissionResolver`
@@ -50,12 +54,12 @@ provider/model list is YAML data — see
 
 | Feature | Adds |
 | --- | --- |
-| `provider` | the aux-LLM helpers that drain an `entanglement-provider` stream (session titles, the action narrator, the throttle relay) |
-| `mcp-http` | the streamable-HTTP MCP transport + its OAuth flow |
+| `provider` | the throttle relay, which polls the `entanglement-provider` endpoint pool |
+| `mcp-http` | the streamable-HTTP MCP transport + its OAuth token refresh |
 | `rhai` | the sandboxed `rhai` scripting tool |
 
 All three are default. With `--no-default-features` the crate is the **lean
-library** — tool execution, permission dispatch, spawn, persistence. No feature
+library** — tool execution, permission dispatch, spawn, the persistence tap. No feature
 set pulls a CLI, TUI or web-server crate.
 
 ## Docs

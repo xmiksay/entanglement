@@ -60,18 +60,22 @@ both dispatch and model-advertised schemas with no engine restart.
   directly; a `From<McpServerSpec>` conversion happens runtime-side. Answered
   by `OutEvent::McpList { correlation_id, servers: Vec<McpServerStatus> }` /
   `McpChanged { name, action: McpAction }` — no `seq`, point-in-time.
-- **`mcp::spawn_mcp_responder`** subscribes to `Holly::subscribe_inbound()` and
-  answers these three, mirroring `history::spawn_history_responder`'s answer
-  to `ReplayFrom`: the runtime, not core, owns the state involved, so a
-  runtime-side service is the sole answerer rather than the core supervisor
-  (unlike `ListSessions`, which the supervisor answers directly from its own
-  live-session directory). Two `Holly::emit_mcp_list`/`emit_mcp_changed`
-  helpers mirror `emit_history`.
-- **`mcp::live`** holds the runtime state: `ActiveServers` (what is currently
-  connected — `name → { client: Arc<McpClient>, tools, transport }`) and the
-  wider `ServerConfigs` (every *configured* server, including a `disabled` or
-  failed-to-connect one — the full set a persist write must round-trip).
-  `mcp_add` upserts (drops any prior tools/connection under the same name
+- **`skutter::mcp::spawn_mcp_responder`** subscribes to `Holly::subscribe_inbound()` and
+  answers these three (and `McpAuth`), mirroring
+  `skutter::history::spawn_history_responder`'s answer to `ReplayFrom`: the
+  head, not core, owns the global roster, so a head-side service is the sole
+  answerer rather than the core supervisor (unlike `ListSessions`, which the
+  supervisor answers directly from its own live-session directory). Two
+  `Holly::emit_mcp_list`/`emit_mcp_changed` helpers mirror `emit_history`.
+  The library carries none of this (#932): an embedder with per-user servers
+  uses `McpScopes` instead.
+- **What is connected** is the library's `mcp::active`: `ActiveServers`
+  (`name → { client: Arc<McpClient>, tools, transport }`), changed only
+  through `install_server`/`drop_server`, which swap exactly the tools a
+  connection registered; `mcp_list` snapshots it. **What is configured** is
+  `skutter::mcp::live`'s wider `ServerConfigs` (every *configured* server,
+  including a `disabled` or failed-to-connect one — the full set a persist
+  write must round-trip). `mcp_add` upserts (drops any prior tools/connection under the same name
   first, so re-adding cleanly replaces a broken server) and never holds the
   registry's write lock across the connect/`tools/list` awaits. `mcp_remove`
   drops the tracked `Arc<McpClient>`, which is what actually kills the

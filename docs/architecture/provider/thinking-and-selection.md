@@ -139,9 +139,8 @@ reachable only through the embedder library API. Per-user **aux-model** pins
 take no runtime module at all (#635,
 [ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md), conforming
 to [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)): the embedder
-builds a per-user `AuxLlmRegistry` from `AuxModelStore::in_memory` + a
-resolver closure bound to its user — see the [heads & persistence
-doc](../heads/keys-and-aux-models.md)'s §6d.
+resolves its own aux calls' per-user pins through its multi-user resolver —
+see the [heads & persistence doc](../heads/keys-and-aux-models.md)'s §6d.
 
 ---
 

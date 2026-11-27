@@ -100,11 +100,13 @@ The code is in `host/web_fetch/html.rs`.
 `write`, `edit` and `apply_patch` — and therefore the `rhai` `write`/`edit`
 bindings, which run those same registry tools — back up what they replace
 when built `with_backups(FileBackups)` (`skutter::host::host_tools_with` +
-`HostToolOptions::backups`; `skutter` always wires it — an embedder's own
-file tools record into the library's `FileBackups` the same way). Only a session's run
-(`run_for_session`) is recorded; a bare `run` is not.
+`HostToolOptions::backups`; `skutter` always wires it). The backups are
+`skutter`'s (`skutter::file_backup`, #932); the library only puts each
+dispatched call's `ToolExec` seq in scope (`exec_scope`), which a change
+reads to name its log record. Only a session's run (`run_for_session`) is
+recorded; a bare `run` is not.
 
-- **Storage** (`file_backup.rs`): under the root session's
+- **Storage** (`skutter/src/file_backup.rs`): under the root session's
   `SessionStore::backups_dir` — `<store>/backups/<root_id>/` — a
   content-addressed `blobs/<sha256>` (write-then-rename, deduped per root) and
   an append-only `manifest.jsonl`: one `change` line per mutation

@@ -35,8 +35,9 @@ default = ["provider", "mcp-http", "rhai"]
 # `skutter` (#932).
 provider = ["dep:entanglement-provider"]
 # Streamable-HTTP MCP transport (#312, ADR-0080): remote MCP servers over
-# `POST /mcp` with per-server headers/auth, plus the OAuth flow that authenticates
-# them (ADR-0153). Since ADR-0153 the transport and the OAuth mechanism live in
+# `POST /mcp` with per-server headers/auth and an OAuth bearer from the
+# `TokenStore` (ADR-0153; the interactive flows are skutter's, #932). Since
+# ADR-0153 the transport and the OAuth mechanism live in
 # `entanglement-provider` and are reached through core's re-export, so this gate
 # no longer pulls `reqwest`/`futures` as direct runtime deps — it now only decides
 # whether the lean library compiles the HTTP-MCP code paths in at all. stdio MCP

@@ -243,8 +243,8 @@ pub struct EngineConfig {
     pub mode_ladder: Vec<String>,
     /// Performs an [`InMsg::RevertFiles`][crate::protocol::InMsg::RevertFiles]
     /// (#731, ADR-0212): restores the files a session's tracked edits touched
-    /// after a turn, from the runtime's per-write backups. Core does no file
-    /// I/O, so this is the runtime's seam; the session only calls it when it
+    /// after a turn, from the embedder's per-write backups (`skutter`'s). Core
+    /// does no file I/O, so this is the embedder's seam; the session only calls it when it
     /// applies the request (idle, never mid-turn) and never on replay. `None`
     /// (the default) answers every `RevertFiles` with a recoverable `Error`.
     pub file_reverter: Option<FileReverter>,

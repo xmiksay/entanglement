@@ -4,11 +4,13 @@
 
 ## 3. Custom persistence: tap → sink → lazy `resume`
 
-The reference persistence layer
+The persistence layer
 (`entanglement-runtime/src/persistence.rs`,
-[ADR-0020](../adr/archive/0020-event-sourced-session-persistence.md)) is already split
-into a fixed *tap* and a pluggable *sink* (#313), so a DB-backed embedder swaps
-one trait impl instead of forking the subscriber:
+[ADR-0020](../adr/archive/0020-event-sourced-session-persistence.md)) is split
+into a fixed *tap* and a pluggable *sink* (#313), so a DB-backed embedder
+implements one trait instead of forking the subscriber. The library ships no
+sink and stores nothing on disk (#932); `skutter`'s JSONL `FileSink` and
+`SessionStore` are one example:
 
 ```rust
 pub trait RecordSink: Send + Sync {
@@ -30,7 +32,7 @@ compaction moves a live sub-agent under the successor, your sink also gets a
 `LogPayload::Adopted { from }` row for the successor's root, naming the root
 whose stream holds the sub-agent's history. To resume that root with its
 moved sub-agents, prepend the named root's records for that sub-tree, as
-`SessionStore::read_tree` does for files. `RecordSink::touch(from)` is called
+`skutter`'s `SessionStore::read_tree` does for files. `RecordSink::touch(from)` is called
 alongside, so a sink with time-based retention can keep the named root
 ([ADR-0234](../adr/archive/0234-live-sub-agents-survive-compaction.md)).
 

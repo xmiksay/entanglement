@@ -126,7 +126,7 @@ default limits.
 
 `Catalog::effective_concurrency(provider, model)` is a plain `Option<usize>`
 snapshot (the model's own cap, else its provider's) for a caller that isn't
-building a live client — the runtime's `AuxLlmRegistry` uses it to decide
+building a live client — `skutter`'s `AuxLlmRegistry` uses it to decide
 whether firing an aux call alongside a primary-model call risks contending for
 the same permit (see the *Per-purpose auxiliary models* section of the [heads
 & persistence doc](../heads-and-persistence.md),

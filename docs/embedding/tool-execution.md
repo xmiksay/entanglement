@@ -47,39 +47,21 @@ head that wants `Always` approvals to outlive the process implements
 file-backed `state::FileGrantStore` (the managed `grants.yml`) from the
 `state::Stores` it builds at boot. The same holds for MCP state: `AvailableMcp` keeps OAuth
 credentials and last-seen tool names in memory unless the head passes
-`.with_token_store(..)` / `.with_tool_cache(..)`, and a live `/mcp
-add|remove` changes only the in-memory `ServerConfigs` — persist it on
-`OutEvent::McpChanged` if you want it to survive a restart.
+`.with_token_store(..)` / `.with_tool_cache(..)`. The global server roster
+answering `McpList`/`McpAdd`/`McpRemove`/`McpAuth`, live add/remove and the
+OAuth browser/device flows are `skutter`'s (`skutter::mcp`, #932); an
+embedder connects through `AvailableMcp` or `McpScopes`, and a head that
+manages servers live builds on `mcp::connect_client` and
+`install_server`/`drop_server`.
 
-**Undo/rewind is opt-in too** ([ADR-0212](../adr/archive/0212-undo-rewind-via-per-write-file-backups.md)).
-Have your file tools record each write in a `FileBackups`
-(`record_stamped`, stamped before the write — `skutter`'s `host` tools are
-the worked example) and hand core the matching reverter, all from the
-`SessionStore` your persistence tap writes (a revert reads its turns from
-that log):
-
-```rust,ignore
-let backups = FileBackups::new(store.clone());
-cfg.file_reverter = Some(backups.reverter());         // before Holly::spawn
-let tools = my_file_tools(root, backups.clone());      // your tools record into it
-let holly = Holly::spawn(cfg);
-backups.track_roots(&holly);                          // lineage, write ancestry + busy sessions
-backups.set_busy_probe(detached_work_probe(jobs, scripts)); // refuse while detached work runs
-```
-
-`track_roots` also installs the probe that stamps each backed-up write
-with the live tree it was made in, so a compaction successor's `/rewind`
-reaches its moved sub-agents' writes
-([ADR-0236](../adr/archive/0236-rewind-follows-adopted-sub-agents.md)); without it,
-changes fall back to the logs' latest parent edges.
-
-`FileBackups::new` uses the default caps (8 MiB per file, 256 MiB per root
-session). For your own, build it with
-`FileBackups::with_backup_limits(store, BackupLimits { enabled, max_file_bytes,
-max_root_bytes })` — your own values; the library reads no config file
-(`skutter` maps its `config.yml` `undo:` block onto it) — and call `backups.set_limits(..)` on any clone to
-change them live; the next recorded write sees the new limits, and backups
-already taken stay restorable even with `enabled: false`.
+**Undo/rewind is the head's** ([ADR-0212](../adr/archive/0212-undo-rewind-via-per-write-file-backups.md)).
+The library only scopes each dispatched call with its `ToolExec` seq
+(`exec_scope::current_exec_scope`), so an embedder's file tools can tie a
+change to its log record. `skutter`'s per-write backups (`skutter::file_backup`,
+#932) are the worked example: its host tools record each write before it
+lands, and it hands core the matching `EngineConfig::file_reverter`, which
+answers `InMsg::RevertFiles`; with no reverter every `RevertFiles` is a
+recoverable `Error`.
 
 **Session working directories are opt-in too** ([ADR-0224](../adr/archive/0224-session-working-directory.md)).
 Give core a `workdir_resolver` (the `/cd` validator — `skutter`'s is

@@ -5,7 +5,7 @@
 **File revert — `InMsg::RevertFiles` (`session/revert.rs`, #731,
 [ADR-0212](../../adr/archive/0212-undo-rewind-via-per-write-file-backups.md)).** Deferred
 exactly like `SetModel`/`Oneshot` (stashed while a turn is live), so a revert never races the turn's own tool writes. At idle the
-session awaits the runtime's `EngineConfig::file_reverter` seam (core does no
+session awaits the embedder's `EngineConfig::file_reverter` seam (`skutter`'s backups; core does no
 file I/O; `None` → a recoverable `Error`), emits the seq-bearing
 `FilesReverted` and — only when something was restored — appends a
 user-role note to `Context` (`revert_note`: what was restored/skipped, that
@@ -109,13 +109,13 @@ is untouched. Model resolution and pricing mirror the turn loop: `s.model` →
 
 **Auxiliary models — the `aux_llm_resolver` seam** (Issue 5,
 [ADR-0154](../../adr/archive/0154-per-purpose-auxiliary-models.md)). A side
-transformation (compaction is core's only consumer today; the runtime's
+transformation (compaction is core's only consumer today; `skutter`'s
 session-title generator runs outside core entirely) may run on a
 cheaper/faster model than the session's own. `EngineConfig.aux_llm_resolver:
 Option<AuxLlmResolver>` (`Arc<dyn Fn(&str) -> Option<ResolvedModel>>`,
 shaped like `generation_resolver`) resolves a **purpose string** to the
 provider/model pinned for it — core knows only the string
-(`session/summarize.rs::AUX_PURPOSE_SUMMARIZE`), never the runtime's
+(`session/summarize.rs::AUX_PURPOSE_SUMMARIZE`), never `skutter`'s
 `AuxLlmRegistry` or the managed `aux-models.yml` behind the closure (see the
 heads/persistence doc §6d). Reusing `ResolvedModel` is deliberate: the
 one-shot client is built from the same `llm_factory` a `SetModel` switch

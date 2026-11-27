@@ -4,16 +4,22 @@
 
 ## 6b. Session persistence & resume — [ADR-0020](../../adr/archive/0020-event-sourced-session-persistence.md) (`persistence` + `session_store`)
 
-Sessions are event-sourced to disk, one JSONL file per **root** session under
-`<data_dir>/entanglement/sessions/<safe-cwd>/<root_id>.jsonl` (`session_store`).
-That directory is a `SessionStore` value handed to every reader/writer — the
-persistence tap, the `ReplayFrom` responder, the startup prune, resume and the
-TUI resume modal — rather than re-resolved from the data dir at each call
-(#747): `skutter` builds `SessionStore::for_cwd(<data_dir>/entanglement/sessions,
-cwd)` (the layout above; `user_dirs::session_store`, the library resolves no
-data dir, #967), an embedder or test pins `SessionStore::at(dir)` or its own
-base. Under `cfg(test)` skutter's data-dir resolution panics, so a unit test
-can never read, write or prune the developer's real logs. `spawn_persistence_subscriber` (`persistence`) taps **both** directions of the
+The library's persistence tap (`entanglement_runtime::persistence`) hands
+every record to a `RecordSink`; the record types and the pure resume helpers
+(`LogRecord`, `LogPayload`, `pair_records`, `integrity_gap`,
+`resumable_prefix`) are the library's `session_store`. Everything on disk is
+`skutter`'s (#932): sessions are event-sourced to one JSONL file per **root**
+session under `<data_dir>/entanglement/sessions/<safe-cwd>/<root_id>.jsonl`
+(`skutter::session_store`). That directory is a `SessionStore` value handed to
+every reader/writer — the file sink, the `ReplayFrom` responder
+(`skutter::history`), the startup prune, resume and the TUI resume modal —
+rather than re-resolved from the data dir at each call (#747): `skutter`
+builds `SessionStore::for_cwd(<data_dir>/entanglement/sessions, cwd)` (the
+layout above; `user_dirs::session_store`), a test pins `SessionStore::at(dir)`.
+Under `cfg(test)` skutter's data-dir resolution panics, so a unit test can
+never read, write or prune the developer's real logs.
+`skutter::persistence::spawn_persistence_subscriber(holly, store)` runs the
+library's tap over a `FileSink`; the tap taps **both** directions of the
 ABI — `holly.subscribe()` for `OutEvent`s and `holly.subscribe_inbound()` for
 `InMsg`s — and appends each frame as a `LogRecord { ts, session, payload }` where
 `payload` is `LogPayload::In(InMsg) | Out(OutEvent) | Gap { dropped } | Retired { kind }`
@@ -23,7 +29,7 @@ the logged `InMsg::Prompt` records, so without them a resumed context holds only
 assistant/tool messages and the model appears to forget the conversation.
 
 - **Inbound is biased ahead of outbound** so a prompt lands on disk before the
-  events it produces (`pair_records`, `session_store/pairing.rs`, queues the
+  events it produces (`pair_records`, the library's `session_store/pairing.rs`, queues the
   `Prompt`/`Stop` records replay reads first-in first-out and pairs each with a
   following `Out`, so a prompt logged just before a `ToolResult` is not lost).
   `InMsg::Resume` is skipped (it carries the whole prior log → recursion/bloat).
@@ -192,16 +198,17 @@ assistant/tool messages and the model appears to forget the conversation.
   persist*: it appends every finished `LogRecord` through a
   `RecordSink { fn append(&self, root: &SessionId, record: &LogRecord) }`, and an
   embedder swaps in any target without forking the subscriber (and so tracks
-  upstream gap/lag fixes for free). The default `FileSink` is the JSONL store
-  above; `spawn_persistence_subscriber(holly, store)` is just
+  upstream gap/lag fixes for free). The library ships no sink (#932);
+  `skutter`'s `FileSink` is the JSONL store above, and its
+  `spawn_persistence_subscriber(holly, store)` is just
   `spawn_persistence_subscriber_with_sink(holly, Arc::new(FileSink::new(store)))`.
-  `append` is **synchronous** — the file sink is one `writeln!`. A sink whose
+  `append` is **synchronous** — `skutter`'s file sink is one `writeln!`. A sink whose
   store can block (DB, network) must **not** block the tap: that starves the
   broadcast receiver and manufactures the very `Gap` tombstones the tap exists to
   avoid. Such a sink puts a bounded channel + writer task behind `append` and
   returns immediately, surfacing back-pressure as an `Err` (dropped past the
-  bound) rather than awaiting. `SessionStore::read`/`pair_records` stay the
-  file-side read helpers; resume already accepts records from anywhere
+  bound) rather than awaiting. `skutter`'s `SessionStore::read` and the
+  library's `pair_records` are the read helpers; resume already accepts records from anywhere
   (`Holly::resume(root, records)`), so no read-side trait is needed.
 - **One-shot flush**: a `run` invocation ends the moment the turn does, so `main`
   aborts the tool executor and drops its `Holly` handle to close the broadcast
@@ -302,7 +309,7 @@ assistant/tool messages and the model appears to forget the conversation.
   nothing is (an explicit `--mode` disables forcing, so it always cascades).
   On that replay path a non-forced session's model sees `[mode: X]` with no
   "changed from" transition, an accepted trade-off.
-  The logic is the pure `session_store::check_for_resume`, which also
+  The logic is the pure `skutter::session_store::check_for_resume`, which also
   refuses a gap; `SessionStore::load_for_resume` and `resume_with_mode` wrap it for the
   heads. `load_for_resume` also refuses a compacted-away root, one a later
   root log's own `SessionStarted` names as its predecessor

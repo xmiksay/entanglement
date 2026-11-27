@@ -114,10 +114,11 @@ seam implementations over it. Per seam:
   reach another's session (`Session` scope stays per-session — a session
   belongs to exactly one user).
 - **Aux-model pins** — no module either
-  ([ADR-0183](../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md)): snapshot
-  the user's pins via `AuxModelStore::in_memory` and close your multi-user
-  `ModelResolver` over the user before constructing a plain
-  `AuxLlmRegistry`.
+  ([ADR-0183](../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md)): the
+  library has no aux-model registry (#932); resolve your own aux calls'
+  per-user pins through your multi-user `ModelResolver` with the user.
+  `EngineConfig::aux_llm_resolver` (compaction's `summarize`) is
+  engine-wide.
 - **MCP OAuth credentials** — implement
   `entanglement_provider::oauth::UserTokenStore` over your storage;
   `user_scoped(store, user)` presents one user's slice as the plain

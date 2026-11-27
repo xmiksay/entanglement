@@ -4,7 +4,8 @@
 
 - **System-prompt assembly (✅ #113, [ADR-0035](../../adr/archive/0035-deterministic-system-prompt-assembly.md)):**
   the definition body is *not* stored as the raw `system_prompt`. As each profile
-  is loaded, `entanglement_runtime::system_prompt::assemble` composes up to five
+  is loaded, `skutter::system_prompt::assemble` (#932; the library composes
+  no prompt) composes up to five
   ordered, optional parts — **shared preamble** (safety/tool-use/output invariants
   applied to *every* agent) + **agent body** + **project brief** (the standard
   `AGENTS.md` / `.agents/AGENTS.md` / `.claude/CLAUDE.md` / `CLAUDE.md`, first
@@ -14,9 +15,9 @@
   `system_prompt::TOOL_CONVENTIONS`: call the advertised tools directly, MCP
   through `mcp(server, tool, args)`, `rhai` for anything else — the skill
   roster that used to sit here moved to `list_skills`, [ADR-0226](../../adr/archive/0226-one-advertised-surface-mcp-envelope-registered-is-available.md)) + **preloaded skill bodies** (frontmatter
-  `skills: [name, …]`, ✅ #117, below). Inputs come from `PromptContext::load_with(root, &sessions)`
+  `skills: [name, …]`, ✅ #117, below). Inputs come from `PromptContext::load_with(root, scratch)`
   (preamble overridable via `ENTANGLEMENT_PREAMBLE_FILE`; brief via
-  `ENTANGLEMENT_BRIEF_FILE`). A **subagent** gets `preamble + body (+ brief)` +
+  `ENTANGLEMENT_BRIEF_FILE` — `skutter` reads both, the library neither). A **subagent** gets `preamble + body (+ brief)` +
   any preloaded bodies — and never the parent's assembled
   prompt (each agent is composed from *its own* body + `include_brief` flag).
   Composition is a pure, unit-tested harness function baked into
@@ -49,8 +50,9 @@
 - **Skill discovery + registry (✅ #114, [ADR-0036](../../adr/archive/0036-skill-discovery-and-registry.md)):**
   tier 1 of progressive disclosure. A **skill** is a directory with a `SKILL.md`
   (YAML frontmatter + markdown body) plus optional supporting files
-  (`references/*.md`, `scripts/*`). The **runtime**
-  (`entanglement_runtime::skills::load_registry_in`) discovers them into a
+  (`references/*.md`, `scripts/*`). **`skutter`**
+  (`skutter::skills::load_registry_in`, #932; the library's
+  `SkillRegistry` takes `SkillMeta`s built in code) discovers them into a
   `SkillRegistry` — three layers, later wins on a `name` collision: embedded stock
   skills (single-file, `include_str!` `SKILL.md`, parsed through the *same* loader)
   < user (the embedder's `layers::UserLayer`: `Home { home, config }` gives

@@ -51,12 +51,12 @@ the code, never as a description of current behaviour — that is
 | [0017](0017-stop-cancels-turn-not-session.md) | `InMsg::Stop` cancels the turn, not the session | current; amended by 0208 (itself removed by #921) | — |
 | [0018](0018-turn-loop-stash-discipline.md) | Turn-loop command stash discipline | current | — |
 | 0019 | _(number skipped, no record)_ | — | — |
-| [0020](0020-event-sourced-session-persistence.md) | Event-sourced session persistence | current | — |
+| [0020](0020-event-sourced-session-persistence.md) | Event-sourced session persistence | current; changed by #932 | — |
 | [0021](0021-hierarchical-session-model.md) | Hierarchical session data model | current | — |
 | [0022](0022-subagent-spawn.md) | Sub-agent spawn and parent→child answer relay | current | — |
 | [0023](0023-subagent-spawn-limits.md) | Sub-agent spawn recursion / fan-out limits | current; amended by 0138, 0207 | — |
 | [0024](0024-subagent-permission-gating.md) | Sub-agent spawn permission gating and privilege ceiling | current; amended by 0137, 0138, 0207 | — |
-| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135; changed by #931; changed by #968 | — |
+| [0025](0025-runtime-cargo-feature-gates.md) | `entanglement-runtime` cargo feature gates (`cli`/`tui`) for lean library embedding | current; amended by 0053, 0135; changed by #931; changed by #968; changed by #932 | — |
 | [0026](0026-async-subagent-spawn-and-poll.md) | Non-blocking sub-agent spawn with handle + `agent_poll` | current; partly superseded by 0161 | — |
 | [0027](0027-ask-user-interactive-prompt.md) | `ask_user` tool — model-driven user decision prompt | current; amended by 0127, 0146 | — |
 | [0028](0028-session-lifecycle-enumeration-and-backpressure.md) | Session lifecycle: enumeration, explicit close, non-blocking routing | current | — |
@@ -65,9 +65,9 @@ the code, never as a description of current behaviour — that is
 | [0031](0031-write-host-tool-whole-file.md) | Host tool `write`: whole-file create/overwrite (quartet → quintet) | current; partly superseded by 0054; changed by #968 | — |
 | [0032](0032-yaml-provider-model-catalog.md) | YAML provider/model catalog: embedded defaults + user override | current | — |
 | [0033](0033-agent-tool-family-and-blocking-agent.md) | `agent_*` tool family — rename `spawn_agent` → `agent_spawn`, add blocking `agent` | current; partly superseded by 0161 | — |
-| [0034](0034-file-based-agent-definitions.md) | File-based agent definitions — discovery, frontmatter, registry | current | — |
-| [0035](0035-deterministic-system-prompt-assembly.md) | Deterministic system-prompt assembly | current; partly superseded by 0229 | — |
-| [0036](0036-skill-discovery-and-registry.md) | Skill discovery + registry — SKILL.md frontmatter, tier-1 disclosure | current; partly superseded by 0229 | — |
+| [0034](0034-file-based-agent-definitions.md) | File-based agent definitions — discovery, frontmatter, registry | current; changed by #932 | — |
+| [0035](0035-deterministic-system-prompt-assembly.md) | Deterministic system-prompt assembly | current; partly superseded by 0229; changed by #932 | — |
+| [0036](0036-skill-discovery-and-registry.md) | Skill discovery + registry — SKILL.md frontmatter, tier-1 disclosure | current; partly superseded by 0229; changed by #932 | — |
 | [0037](0037-load-skill-tool-deterministic-resolution.md) | `load_skill` tool — deterministic resolution, path substitution, provenance | current; partly superseded by 0229; amended by 0228, 0249 | — |
 | [0038](0038-physical-per-agent-tool-restriction.md) | Physical per-agent tool restriction (allowlist/denylist mask) | superseded by 0207 | — |
 | [0039](0039-markdown-task-list.md) | Markdown task list (structured `Vec<TaskItem>` → plain snapshot) | current; partly superseded by 0049 | — |
@@ -105,7 +105,7 @@ the code, never as a description of current behaviour — that is
 | [0071](0071-parked-turn-reoffer-timer.md) | In-process parked-turn re-offer timer + executor request_id dedupe | current | — |
 | [0072](0072-protocol-warts-settled-before-serve.md) | Protocol warts settled before `serve` freezes the wire | current; amended by 0139 | — |
 | [0073](0073-managed-env-file-writer-and-key-surfaces.md) | One shared writer for the managed env file, with a CLI and TUI surface | current; changed by #931; changed by #967 | — |
-| [0074](0074-cross-vendor-skill-and-agent-discovery.md) | Cross-vendor skill & agent discovery (`~/.claude`, `.claude/`, `.agents/`) | current; partly superseded by 0229; changed by #967 | — |
+| [0074](0074-cross-vendor-skill-and-agent-discovery.md) | Cross-vendor skill & agent discovery (`~/.claude`, `.claude/`, `.agents/`) | current; partly superseded by 0229; changed by #967; changed by #932 | — |
 | [0075](0075-provider-side-web-search-mvp.md) | Provider-side web search MVP — opt-in config, results on the reasoning channel | current; amended by 0131, 0171; removed by #919 | — |
 | [0076](0076-per-session-dynamic-tool-specs.md) | Per-session dynamic tool specs (`EngineConfig.tool_spec_resolver`) | current; amended by 0190, 0204 | — |
 | [0077](0077-session-hibernation-evictable-resumable.md) | Session hibernation — evict in-memory state without tombstoning, resumable later | current; amended by 0168, 0208 (itself removed by #921), 0210 | — |
@@ -117,7 +117,7 @@ the code, never as a description of current behaviour — that is
 | [0083](0083-in-app-tool-allowlist-editing-as-user-layer-materialization.md) | In-app tool-allowlist editing materializes a user-layer override | superseded by 0207 (README still marked it amended) | — |
 | [0084](0084-runtime-live-reload-and-managed-file-locking.md) | Runtime-side live reload (inotify) and advisory locking for managed files | current; changed by #966; changed by #967 | — |
 | [0085](0085-gemini-native-wire-and-opaque-provider-meta.md) | Native Gemini wire + opaque `provider_meta` on `ToolCall` | current | — |
-| [0086](0086-recordsink-pluggable-persistence-append-target.md) | `RecordSink` — pluggable persistence append target | current | — |
+| [0086](0086-recordsink-pluggable-persistence-append-target.md) | `RecordSink` — pluggable persistence append target | current; changed by #932 | — |
 | [0087](0087-two-stage-ctrl-c.md) | Two-stage Ctrl+C: clear inputs first, then quit | current | — |
 | [0088](0088-session-aware-tool-execution.md) | Session-aware tool execution: thread `SessionId` through `ToolRegistry::execute`/`Tool::run` | current | — |
 | [0089](0089-user-configurable-max-turns.md) | User-configurable `max_turns` | current | — |
@@ -128,7 +128,7 @@ the code, never as a description of current behaviour — that is
 | [0094](0094-reasoning-effort-and-per-profile-generation-persistence.md) | `reasoning_effort` model + per-profile generation persistence | current; changed by #967 | — |
 | [0095](0095-tui-set-show-generation-persist-on-confirmation.md) | TUI `/set`/`/show` for generation parameters + persist-on-confirmation | current | — |
 | [0096](0096-dynamic-toolregistry-sharedregistry.md) | Dynamic `ToolRegistry`: `SharedRegistry` replaces value-ownership in the executor | current | — |
-| [0097](0097-live-mcp-server-management.md) | Live MCP server management: wire ops, engine-global routing, config persistence | current; amended by 0124; changed by #966 | — |
+| [0097](0097-live-mcp-server-management.md) | Live MCP server management: wire ops, engine-global routing, config persistence | current; amended by 0124; changed by #966; changed by #932 | — |
 | [0098](0098-rhai-json-yaml-loader-and-read-raw.md) | `rhai` JSON/YAML loader (`parse_json`/`to_json`/`parse_yaml`/`to_yaml`) and the `read_raw` binding | current; amended by 0227; changed by #968 | — |
 | [0099](0099-glob-grep-exclude-and-default-git-exclusion.md) | `glob`/`grep`: default `.git` exclusion + caller `exclude` patterns | current | — |
 | [0100](0100-tui-mcp-command.md) | TUI `/mcp` command — list, add, remove | current | — |
@@ -184,8 +184,8 @@ the code, never as a description of current behaviour — that is
 | [0150](0150-search-tool-cli-ergonomics.md) | Search-tool CLI ergonomics: directory auto-expansion, brace sets, and no silent empty results | current | — |
 | [0151](0151-settable-session-metadata.md) | Settable session display metadata (name + action) | current; amended by 0154, 0183 | — |
 | [0152](0152-provider-bundled-mcp-servers-three-state-enablement.md) | Provider-bundled MCP servers and the three-state enablement model | current; partly superseded by 0226; removed by #915 | — |
-| [0153](0153-mcp-server-oauth.md) | MCP server OAuth, and moving the MCP client mechanism into the provider crate | current; amended by 0157, 0182, 0184, 0187; changed by #966 | — |
-| [0154](0154-per-purpose-auxiliary-models.md) | Per-purpose auxiliary models for side transformations | current; amended by 0158, 0183; changed by #967 | — |
+| [0153](0153-mcp-server-oauth.md) | MCP server OAuth, and moving the MCP client mechanism into the provider crate | current; amended by 0157, 0182, 0184, 0187; changed by #966; changed by #932 | — |
+| [0154](0154-per-purpose-auxiliary-models.md) | Per-purpose auxiliary models for side transformations | current; amended by 0158, 0183; changed by #967; changed by #932 | — |
 | [0155](0155-errored-subagent-turn-parks-for-steering.md) | An errored sub-agent turn parks the parent for steering, not unblocks it | current | — |
 | [0156](0156-normalize-and-stabilize-the-endpoint-pool-key.md) | Normalize and stabilize the endpoint pool key | current | — |
 | [0157](0157-mcp-http-transport-shares-the-endpoint-pool.md) | The MCP HTTP transport shares the LLM endpoint pool | current; amended by 0169; changed by #915 | — |
@@ -214,7 +214,7 @@ the code, never as a description of current behaviour — that is
 | [0180](0180-build-speed-trims-round-2.md) | Build-speed trims round 2: dependency cuts and integration-test consolidation | current | — |
 | [0181](0181-userid-leaves-the-runtime-crate.md) | `UserId` leaves the runtime crate — multi-user seams are embedder-side and session-keyed | current | — |
 | [0182](0182-mcp-oauth-device-code-flow-and-closed-refresh-race.md) | MCP OAuth: device-code flow, and closing the cross-process refresh race | current; amended by 0153, 0187; changed by #966 | — |
-| [0183](0183-narrate-purpose-and-per-user-aux-pins.md) | A `narrate` aux purpose; per-user aux pins stay embedder-side | current | — |
+| [0183](0183-narrate-purpose-and-per-user-aux-pins.md) | A `narrate` aux purpose; per-user aux pins stay embedder-side | current; changed by #932 | — |
 | [0184](0184-provider-hosted-multi-user-seams.md) | Provider-hosted multi-user seams: per-user token store + relocated provider context | current; changed by #918; changed by #919 | — |
 | [0185](0185-rhai-joins-background-and-poll.md) | `rhai` joins `background`/`poll` — cooperative kill, own handle kind | current; amended by 0228 | — |
 | [0186](0186-exit-code-joins-the-structured-tool-result-side-channel.md) | `exit_code` joins the structured tool-result side channel | current; changed by #916 | — |
@@ -243,7 +243,7 @@ the code, never as a description of current behaviour — that is
 | [0209](0209-auto-mode-defaults-to-prompt-not-deny.md) | `auto` defaults to `prompt`, not `deny` | current; amended by 0228, 0247; changed by #924 | — |
 | [0210](0210-unknown-session-policy.md) | Unknown-session policy: `SpawnBlank` \| `Refuse` \| `Resume(loader)` | current; amended by 0246; changed by #923; changed by #927 (`Refuse` removed) | — |
 | [0211](0211-idgen-context-and-tenant-prefix-inheritance.md) | `IdGen` receives a lineage context; children and successors keep the tenant prefix | current; changed by #928 (no `IdGen`/`IdContext`; `mint_id` keeps the prefix) | — |
-| [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236; changed by #967 | — |
+| [0212](0212-undo-rewind-via-per-write-file-backups.md) | Undo/rewind of file edits via per-write backups | current; amended by 0236; changed by #967; changed by #932 | — |
 | [0213](0213-prune-env-vars-and-catalog-knobs.md) | Prune redundant env vars and catalog knobs | current; changed by #917; changed by #918; changed by #919; changed by #920; changed by #967 | — |
 | [0214](0214-retired-agent-logs-resume-as-general.md) | Logs naming a retired agent resume as `general` | current; amended by 0215 | — |
 | [0215](0215-resume-fallback-per-session-and-read-only-narrowing.md) | Resume fallback per session, with read-only narrowing | current; amended by 0216 | — |

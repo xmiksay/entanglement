@@ -277,7 +277,8 @@ the key writer are `skutter`'s now (`skutter::config`, `skutter::watch`,
   and `${config_dir}/entanglement/<kind>`. The library reads none of
   `ENTANGLEMENT_CONFIG_FILE`, `ENTANGLEMENT_ENV_FILE`,
   `ENTANGLEMENT_STATE_DIR`, `ENTANGLEMENT_*_DIR`. It still reads the process
-  env for `ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE` (#975) and
+  env for `ENTANGLEMENT_PREAMBLE_FILE`/`ENTANGLEMENT_BRIEF_FILE` (#975; no
+  longer since #932, which moved the prompt assembly to `skutter`) and
   an `http_auth` entry's `${VAR}` secrets (#976); each is a follow-up.
   (`ENTANGLEMENT_SANDBOX*` left with the sandbox, #968.)
 - **Changed behaviour (`skutter`):** every file, env var and reload works as
@@ -358,9 +359,9 @@ names no host tool. Site and nexial use none of the moved items; nexial's
   call never raises or records a `read#outside-root` grant). `post_tool_use` runs
   inside `skutter`'s own tools, before their result returns, a script's
   calls included; an MCP tool's still fires from the event stream.
-- **Left for #932:** `Mode::sandbox` and `Mode::sandbox_network` stay on
+- **Left open (#978):** `Mode::sandbox` and `Mode::sandbox_network` stay on
   the library's `Mode`, though only `skutter` (`host::sandbox`, `inspect`)
-  reads them.
+  reads them; #932 did not decide them.
 - **Instead:** register your own tools (the library ships none); confine
   them in the tool or in a `PermissionResolver` wrapper that returns
   `Grade::ask_keyed(..)`, as `skutter`'s `EscapeResolver` does; pass

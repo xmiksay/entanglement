@@ -39,12 +39,13 @@ model is displayed as `echo mode (no provider)`. `Ctrl+C` quits. The other
 heads never onboard: with nothing configured, `select_provider` prints the hint
 and exits 2.
 
-## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../../adr/archive/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md) (`aux_llm` + `config::aux_models` + `session_title` + `narrate`)
+## 6d. Per-purpose auxiliary models & auto session titles — [ADR-0154](../../adr/archive/0154-per-purpose-auxiliary-models.md)/[ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md) (`skutter`: `aux_llm` + `config::aux_models` + `session_title` + `narrate`)
 
 Side transformations (a compaction summary, an auto session title) can run on
-a cheaper/faster model than the session's own. The pins are the library's
-in-memory `aux_llm::AuxModelStore` (with the `Purpose` enum); `skutter`
-persists them in a managed `<state dir>/aux-models.yml`
+a cheaper/faster model than the session's own. All of this is `skutter`'s
+(#932); the library keeps only core's `EngineConfig::aux_llm_resolver` seam.
+The pins are the in-memory `skutter::aux_llm::AuxModelStore` (with the
+`Purpose` enum); `skutter` persists them in a managed `<state dir>/aux-models.yml`
 (`skutter::config::aux_models::AuxModelsPath`, #967) (`ENTANGLEMENT_STATE_DIR`, [ADR-0213](../../adr/archive/0213-prune-env-vars-and-catalog-knobs.md), sibling
 of `agent-models.yml`, same
 `with_locked_file`+`atomic_write` discipline) mapping a closed `Purpose` enum
@@ -58,8 +59,7 @@ model's `LlmFactory`** when a purpose is unset or its pin no longer resolves
 (unknown to the catalog, missing key — logged at debug, never wedging the
 transformation). Three consumers reach it by deliberately different routes:
 
-- **The session-title generator** (`session_title.rs`, behind the `provider`
-  feature): a background task off `holly.subscribe_inbound()` that, on the
+- **The session-title generator** (`skutter::session_title`): a background task off `holly.subscribe_inbound()` that, on the
   **first `Prompt` of an unnamed session**, spawns a detached one-shot call to
   the `session_title` aux LLM (prompt capped ~2k chars, output capped 80) and
   sets the result via an `InMsg::SetSessionMeta` with **`if_unset: true`**
@@ -89,8 +89,7 @@ transformation). Three consumers reach it by deliberately different routes:
   (see the engine doc's *Auxiliary models* section): there `None` means "use
   the session's own backend" — strictly better than a fixed primary, since a
   live `/model` switch keeps applying to compaction.
-- **The action narrator** (`narrate.rs`, #635/ADR-0181, behind the `provider`
-  feature): a background task off `holly.subscribe()` that, on **every
+- **The action narrator** (`skutter::narrate`, #635/ADR-0181): a background task off `holly.subscribe()` that, on **every
   `OutEvent::ToolCall`** (display-only, emitted before execution for every
   tool call), spawns a tracked call to the `narrate` aux LLM (input capped
   ~500 chars, output capped 60) turning `tool(input)` into a short
@@ -140,22 +139,16 @@ unpinned.
 
 **Per-user aux pins** (#635/[ADR-0183](../../adr/archive/0183-narrate-purpose-and-per-user-aux-pins.md),
 conforming to [ADR-0181](../../adr/archive/0181-userid-leaves-the-runtime-crate.md)):
-the runtime holds **no per-user module** — a multi-user embedder builds a
-per-user registry itself from two public pieces. It looks the user's pins up
-in its own storage (it owns the session→user mapping) and wraps them via
-`AuxModelStore::in_memory`; and it closes its multi-user `ModelResolver` over the right user
-in a small adapter closure *before* constructing an ordinary, unmodified
-`AuxLlmRegistry` — the registry carries no user notion and always passes
-`None` to its injected resolver, so the closure substitutes the captured
-user. That wrap also fixes a real failure mode: `resolve`/`resolve_pin`
-always call the resolver with a hardcoded `None` user, and a multi-user
-`ModelResolver` ([ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md))
-treats a missing user as a hard error — unwrapped, every aux call would be
-rejected regardless of the pins. A per-user registry is typically built once
-at session start and cached by the embedder; `AuxLlmRegistry` re-reads its
-wrapped `AuxModelStore` on every `resolve`/`resolve_pin` call. `skutter`'s
-own heads keep the one process-global `AuxModelStore`/`AuxLlmRegistry`,
-byte-identical.
+the library holds **no aux-model module** (#932). A multi-user embedder runs
+its own aux calls (titles, narration) per user: it looks the user's pin up in
+its own storage (it owns the session→user mapping) and resolves it through
+its multi-user `ModelResolver` with that user — never `None`, which such a
+resolver treats as a hard error
+([ADR-0147](../../adr/archive/0147-multi-user-mode-embedder-api.md)). Core's
+`EngineConfig::aux_llm_resolver` (compaction's `summarize`) takes only the
+purpose, so it is engine-wide.
+`skutter`'s own heads keep the one process-global
+`AuxModelStore`/`AuxLlmRegistry`.
 
 ---
 
