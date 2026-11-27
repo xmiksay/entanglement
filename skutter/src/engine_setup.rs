@@ -9,10 +9,8 @@ use entanglement_core::{AgentCatalog, EngineConfig};
 use entanglement_provider::{Catalog, HttpClient, ModelInfo};
 
 use crate::factories::build_model_resolver;
-use crate::host::{GlobJsonTool, GrepJsonTool, ReadRawTool};
 use crate::mode::ModeTable;
 use crate::providers::select_provider;
-use crate::skills::LoadSkillTool;
 use crate::tool_runner::EscapeRoot;
 
 mod default_tools;
@@ -20,7 +18,7 @@ use crate::{
     config, extra_roots, file_backup, host, jobs, mcp, path_grading, retained_output, script_ops,
     session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
-use default_tools::{register_default_tools, DefaultTools};
+use default_tools::{register_default_tools, register_session_tools, DefaultTools};
 
 /// Pick a provider and build the engine config.
 ///
@@ -203,9 +201,7 @@ pub(crate) async fn build_config(
             }
         );
     }
-    // `load_skill` is tier-2 progressive disclosure (#115): a registry tool,
-    // `Capability::Control` like the other discovery tools (ADR-0226).
-    tools.register(LoadSkillTool::new(skills));
+    register_session_tools(&mut tools, root.clone(), skills, workdirs.clone());
     // External MCP tool servers (#198): the roster of the user `mcp:` map.
     // Registered = available and nothing connects here (ADR-0226): the first `mcp_tools`
     // or `mcp(...)` on a server connects it, so a down server never delays
@@ -216,13 +212,6 @@ pub(crate) async fn build_config(
             .with_tool_cache(mcp::McpToolCache::managed()),
     );
     let mcp_active: mcp::ActiveServers = Arc::new(Mutex::new(HashMap::new()));
-    // `read_raw` and the script-facing search variants (rhai-only — see
-    // `script.rs`'s `parse_json`/`parse_yaml` and the `glob_json`/`grep_json`
-    // bindings, ADR-0206): present in `tools` for execution (the rhai bridge
-    // routes through the same `ToolRegistry`), never advertised.
-    tools.register(ReadRawTool::new(root.clone()));
-    tools.register(GlobJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
-    tools.register(GrepJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
     // The one advertised surface (ADR-0226): the registered tools that set
     // `Tool::advertised` plus the runtime-owned pseudo-tools (`agent`/
     // `agent_send`, `update_tasks`, `ask_user`, `propose_plan`,

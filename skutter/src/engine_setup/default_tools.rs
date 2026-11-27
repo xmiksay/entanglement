@@ -1,9 +1,11 @@
 //! The default tool registry (split out of `engine_setup.rs` at the file
 //! cap): the root-contained sextet plus the always-registered `bash`.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::host::BashTool;
+use crate::path_grading::SessionWorkdirs;
+use crate::skills::{LoadSkillTool, SkillRegistry};
 use crate::{host, ToolRegistry};
 
 /// What [`register_default_tools`] wires into the host tools.
@@ -52,9 +54,30 @@ pub(crate) fn register_default_tools(root: std::path::PathBuf, opts: DefaultTool
     tools
 }
 
+/// The registry tools `build_config` adds on top of [`register_default_tools`]
+/// — one helper so the #965 surface proof below registers exactly what
+/// startup does.
+pub(crate) fn register_session_tools(
+    tools: &mut ToolRegistry,
+    root: std::path::PathBuf,
+    skills: Arc<RwLock<Arc<SkillRegistry>>>,
+    workdirs: SessionWorkdirs,
+) {
+    // `load_skill` is tier-2 progressive disclosure (#115): a registry tool,
+    // `Capability::Control` like the other discovery tools (ADR-0226).
+    tools.register(LoadSkillTool::new(skills));
+    // `read_raw` and the script-facing search variants (rhai-only — see
+    // `script.rs`'s `parse_json`/`parse_yaml` and the `glob_json`/`grep_json`
+    // bindings, ADR-0206): present in `tools` for execution (the rhai bridge
+    // routes through the same `ToolRegistry`), never advertised.
+    tools.register(host::ReadRawTool::new(root.clone()));
+    tools.register(host::GlobJsonTool::new(root.clone()).with_workdirs(workdirs.clone()));
+    tools.register(host::GrepJsonTool::new(root).with_workdirs(workdirs));
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{register_default_tools, DefaultTools};
+    use super::{register_default_tools, register_session_tools, DefaultTools};
     use crate::host::SandboxPolicy;
 
     /// The advertised roster `register_default_tools` produces with no env var
@@ -106,20 +129,20 @@ mod tests {
         "mcp",
     ];
 
-    /// #965: skutter's default registry (what `build_config` registers before
-    /// any MCP server connects) advertises the byte-identical first-request
-    /// surface the `KERNEL` name filter produced.
+    /// #965: skutter's startup registry (the same two helpers `build_config`
+    /// calls, before any MCP server connects) advertises the byte-identical
+    /// first-request surface the `KERNEL` name filter produced.
     #[test]
     fn the_flag_surface_is_byte_identical_to_the_former_kernel() {
-        let root = std::env::temp_dir();
         let mut registry = default_registry();
-        let skills = std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(
-            crate::skills::SkillRegistry::default(),
-        )));
-        registry.register(crate::skills::LoadSkillTool::new(skills));
-        registry.register(crate::host::ReadRawTool::new(root.clone()));
-        registry.register(crate::host::GlobJsonTool::new(root.clone()));
-        registry.register(crate::host::GrepJsonTool::new(root));
+        register_session_tools(
+            &mut registry,
+            std::env::temp_dir(),
+            std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(
+                crate::skills::SkillRegistry::default(),
+            ))),
+            crate::path_grading::SessionWorkdirs::default(),
+        );
 
         let mut former: Vec<_> = registry
             .specs()
