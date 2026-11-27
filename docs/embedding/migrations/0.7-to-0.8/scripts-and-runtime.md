@@ -1,4 +1,4 @@
-# Migration notes — 0.7 → 0.8: scripts & runtime (#926–#929)
+# Migration notes — 0.7 → 0.8: scripts & runtime (#926–#930)
 
 > Part of the [0.7 → 0.8 migration notes](../0.7-to-0.8.md) of the [embedding guide](../../../embedding.md).
 
@@ -92,3 +92,42 @@ verified, one is cut and one changes its default:
   on one key, build the client with
   `HttpClient::with_shared_state(SharedStateLocation::from_env(), config)`
   (what `skutter` does) or a `SharedStateLocation::Dir(path)` of your own.
+
+## Generic helpers out of `host`, path grading on the tools (#930)
+
+Split prep for moving the host tools into their own crate: the permission
+pipeline, the executor, the script gate and the rhai core no longer import
+`host`, `file_backup`, `workdir` or the sandbox. No behaviour change.
+Nexial uses none of these items; site (0.6) names only
+`policy::SandboxConfig::none()`. What changes:
+
+- **Moved (path only):** `host::{MAX_OUTPUT_BYTES, DEFAULT_TAIL,
+  truncate_output, truncate_head_tail, tail_lines, bounded_result}` →
+  `output::…`; the `host::exec` module → `exec`; the `host::jobs` module and
+  `host::JobRegistry` → `jobs` / `jobs::JobRegistry`; `host::HttpTool`
+  (`host::http`) → `http_tool::HttpTool`; `policy::{SandboxResolver,
+  ModeSandboxResolver, SandboxConfig}` → `host::sandbox::…` (also
+  `host::SandboxResolver`, `host::SandboxConfig`);
+  `file_backup::with_exec_seq` → `exec_scope::with_exec_seq`;
+  `workdir::SessionWorkdirs` → `path_grading::SessionWorkdirs`;
+  `host::{resolve_under_root, escaping_path}` →
+  `path_grading::{resolve_under_root, escaping_path}`.
+- **Removed API:** `Mode::sandbox_policy()` — call
+  `host::sandbox::mode_policy(&mode)`; `permission::escape_root_target` —
+  the escape-root target is now the tool's own answer (below).
+- **New trait methods (defaulted):** `Tool::join_workdir(args, base)` (which
+  relative path arguments join onto a session workdir, ADR-0224) and
+  `Tool::escape_target(input)` (the path the escape-root gate checks,
+  ADR-0109). The host tools implement both; an embedder tool keeps the
+  defaults (no path arguments). The pipeline asks the *registered* tool, so
+  an embedder tool that reuses a host name (`read`, `bash`, …) no longer
+  inherits that host tool's rewrite or escape check by name — implement the
+  two methods if it takes a filesystem path. The argument a scoped
+  `tool(pattern)` rule matches is still chosen by tool name (`read(src/*)`
+  grades `path`, root-relative), so such a tool keeps that grading.
+- **Instead:** update the `use` paths above. Site's
+  `policy::SandboxConfig::none()` argument to the 0.6
+  `spawn_tool_executor_with_policy` has no 0.8 counterpart — no executor
+  API takes a `SandboxConfig`, so drop it. Only an embedder that builds a
+  `BashTool` resolver through `SandboxConfig::resolver()` keeps it, at
+  `host::SandboxConfig`.

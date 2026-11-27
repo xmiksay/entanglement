@@ -44,7 +44,7 @@ ADR-0066's model.
   stdin and given `ENTANGLEMENT_HOOK_EVENT` / `ENTANGLEMENT_SESSION_ID` /
   `ENTANGLEMENT_TOOL_NAME` (tool hooks and an approval `notification`) env vars. It runs under `timeout_secs`
   (default 30) in its **own process group**, reusing the exec tools' containment
-  (`host::exec`, §8/#168) so a hook that spawns children can't orphan them. A
+  (`exec`, §8/#168) so a hook that spawns children can't orphan them. A
   timeout or a spawn failure counts as a **failure**, so a `pre_tool_use` hook
   that can't launch **fails closed** (vetoes the tool) rather than letting it
   through.

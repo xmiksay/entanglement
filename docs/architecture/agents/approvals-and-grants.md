@@ -93,7 +93,7 @@
 - **Escape-root access via approval (✅ #escape-root, [ADR-0109](../../adr/archive/0109-escape-root-access-via-approval.md)):**
   root containment (ADR-0054) is no longer absolute. A `read`/`edit`/`write`/`apply_patch`
   path, a `rhai` script `path` or a `bash` `workdir` that resolves **outside** root is detected in
-  the executor (`permission::escape_root_target` + `host::escaping_path`) and
+  the executor (the tool's `Tool::escape_target` + `path_grading::escaping_path`) and
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
   still wins). The approval is recorded in a **separate** store from the
   permission grants above — `runtime::extra_roots::ExtraRootStore`, managed file

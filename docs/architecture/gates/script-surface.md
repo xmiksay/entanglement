@@ -70,7 +70,7 @@ entry and lists it as `no rhai name (collides with <winner>)`.
 `mcp {…}` call line, then the schema.
 
 **`http(method, url, #{headers?, body?})`** — the registered, never-advertised
-`http` tool (`host::http`, `Capability::Exec`). Permission argument
+`http` tool (`http_tool`, beside its `http_gate`; `Capability::Exec`). Permission argument
 `"{METHOD} {url}"` (normalized as sent): `http(GET https://api.github.com/*)`
 allows reads only, `http(* https://api.github.com/*)` every method. Rides
 `web_fetch`'s SSRF-guarded client (`WebFetcher::request`); every redirect hop

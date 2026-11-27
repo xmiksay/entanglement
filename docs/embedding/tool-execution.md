@@ -96,7 +96,7 @@ let tools = host_tools_with(root, HostToolOptions {
 ToolExecutor::builder(&holly, tools.shared()).workdirs(workdirs) /* … */;
 ```
 
-Wrap your own call dispatch in `file_backup::with_exec_seq(tool_exec.seq, ..)`
+Wrap your own call dispatch in `exec_scope::with_exec_seq(tool_exec.seq, ..)`
 if you don't use `ToolExecutor` — that is what places a change in its turn
 when request ids repeat.
 

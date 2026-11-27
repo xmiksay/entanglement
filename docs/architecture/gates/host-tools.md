@@ -96,7 +96,8 @@ guessing again:
 - **Approval-gated escape (ADR-0109):** containment is no longer absolute — a
   `read`/`edit`/`write`/`apply_patch` path, a `rhai` script `path` (ADR-0228) or a `bash` `workdir` that resolves *outside*
   root can be reached after the user explicitly approves it. The executor detects
-  the out-of-root target (`permission::escape_root_target` + `host::escaping_path`),
+  the out-of-root target (the tool's `Tool::escape_target`, asked through
+  `path_grading::escape_target`, + `path_grading::escaping_path`),
   forces an approval prompt even when the profile would `Allow` (a `Deny` floor
   still wins), and records the grant in a shared `ExtraRootStore`
   (`extra_roots.rs`; managed `extra-roots.yml` in the managed-state dir,
@@ -117,8 +118,8 @@ guessing again:
   through a distinct, narrower mechanism** (#482,
   [ADR-0132](../../adr/archive/0132-glob-grep-escape-root-search-via-durable-grant.md)
   amending ADR-0109): unlike the six-tool path above, a search never forces
-  its own `Ask` — the executor's `escape_root_target` still returns `None` for
-  `glob`/`grep`, so it never trips the gate at all. Instead
+  its own `Ask` — `glob`/`grep` declare no `escape_target`, so a search
+  never trips the gate at all. Instead
   `list_files_with_extra_roots` widens its containment check per match: a
   match whose canonical path escapes root is admitted anyway when it (or an
   ancestor of it) already carries a **durable** (`Session`/`Always`) `read`
@@ -142,12 +143,17 @@ guessing again:
   privileges **by default** — unsandboxed unless opted in (ADR-0009); the
   permission mode gates whether it runs at all.
 - **Session working directory** (#764,
-  [ADR-0224](../../adr/archive/0224-session-working-directory.md), `workdir.rs`): a
+  [ADR-0224](../../adr/archive/0224-session-working-directory.md), `workdir.rs` +
+  `path_grading.rs`): a
   session's `/cd` directory (core's `ToolExec.workdir`) is the default cwd of
   `bash`/`rhai` exec and the base of relative path arguments. The
   executor applies it as a **rewrite of the call's input** on each `ToolExec`,
   before grading, hooks, the escape-root gate and execution
-  (`workdir::rewrite`; a rhai binding on the script bridge before it enters the seam):
+  (`path_grading::rewrite`; a rhai binding on the script bridge before it
+  enters the seam). Which argument is a path is the tool's own answer —
+  `Tool::join_workdir`, a defaulted trait method the host tools implement
+  (#930), so the executor names no host tool; `rhai`'s script `path` is
+  answered in `path_grading` itself:
   `read`/`read_raw`/`edit`/`write`/`apply_patch` and `rhai`'s script `path`
   ([ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)) join a relative `path`;
   `glob`/`grep` (+ `_json`) join `path` or default it to the workdir;
@@ -157,7 +163,8 @@ guessing again:
   containment is re-checked at every use (a workdir later swapped for a
   symlink out of the root trips the escape-root gate). `glob`/`grep` list
   matches relative to the workdir (absolute outside it) via the shared
-  `SessionWorkdirs` view the executor fills from each `ToolExec`. The
+  `path_grading::SessionWorkdirs` view the executor fills from each
+  `ToolExec`. The
   runtime's `workdir::resolver` (core's `workdir_resolver` seam) canonicalizes
   a `/cd` target, requires a directory inside the root, or — outside it — a
   durable `bash` grant in the `ExtraRootStore`, which a
@@ -189,7 +196,7 @@ guessing again:
   prefer it over `/tmp`.
 - **The trust boundary for exec, stated plainly:** root containment applies to
   a `bash` invocation's **`workdir` only, never its command body** —
-  `escape_root_target` inspects no command line, so `bash: allow` hands the model the engine
+  `bash`'s `escape_target` is its `workdir`, never its command line, so `bash: allow` hands the model the engine
   process's full local privileges: it can read/write any path the process can, outside root
   included. The layers that actually bound an exec tool are the session's
   permission mode (whether/what it may run), the config ceiling (#172), and
@@ -220,9 +227,11 @@ guessing again:
   once it does — there is no more
   per-spawn override or ancestor-walk clamp to compute, since every session
   under one mode already gets the identical policy. `BashTool`
-  still holds a `sandbox_resolver: Arc<dyn policy::SandboxResolver>` rather
+  still holds a `sandbox_resolver: Arc<dyn host::SandboxResolver>` rather
   than a fixed `SandboxPolicy`, but it now resolves a session's *mode* (via
-  `Mode::sandbox_policy`) instead of its agent profile; `ENTANGLEMENT_SANDBOX`/
+  `host::sandbox::mode_policy`) instead of its agent profile; only `bash`
+  reads it, so the resolver lives in `host::sandbox`, not the permission
+  pipeline (#930); `ENTANGLEMENT_SANDBOX`/
   `ENTANGLEMENT_SANDBOX_NETWORK` layer on top via `SandboxPolicy::most_confined`
   — env may only *tighten* what the mode declares, never loosen it, since
   `most_confined` always picks the more-confined of the two. The existing

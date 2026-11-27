@@ -165,7 +165,8 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   "undo disabled" instead of an empty report. `skutter inspect config` shows
   the effective block and its winning layer.
 - **Turns**: the executor runs each permission-graded/`rhai` call task under
-  `file_backup::with_exec_seq(ToolExec.seq)`, so a change records the exact
+  `exec_scope::with_exec_seq(ToolExec.seq)` — a task-local the backups
+  read, so the executor never names them (#930) — so a change records the exact
   `(session, seq)` of its call and belongs to the turn of the session's last
   user `Prompt` logged before that record. Request ids are never the key
   (Gemini's `name#ordinal` repeats every turn). Without a seq (a tool run
@@ -173,7 +174,7 @@ when built `with_backups(FileBackups)` (`host::host_tools_with` + `HostToolOptio
   call logged no later than the change (`<id>:rhai:<tool>` → outer call),
   then timestamps. A background script's call after it switched to its
   session's compaction successor runs with the launch seq masked and its
-  change marked `adopted` (`file_backup::without_exec_seq`): the launch's
+  change marked `adopted` (`exec_scope::without_exec_seq`): the launch's
   seq and request id belong to the predecessor's log, so it is placed by
   timestamp alone
   ([ADR-0243](../../adr/archive/0243-running-script-reads-mode-and-overlay-epochs.md)).
