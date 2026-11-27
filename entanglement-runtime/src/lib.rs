@@ -109,6 +109,8 @@ pub mod narrate;
 // no-handle model surface and `InMsg::ListOperations`'s head surface.
 pub mod operations;
 pub mod output;
+// Path grading: workdir rewrite, escape-root target, root containment.
+pub mod path_grading;
 pub mod pending;
 pub mod permission;
 mod permission_arg;

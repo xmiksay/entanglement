@@ -215,24 +215,6 @@ pub(crate) fn takes_workdir_scope(tool: &str) -> bool {
     tool == "bash"
 }
 
-/// The **filesystem path** a call would touch, for the escape-root gate
-/// (ADR-0109) — distinct from [`permission_arg`] (which yields the *command* for
-/// `bash`). It's the `path` for `read`/`edit`/`write`/`apply_patch`
-/// (and `rhai`'s script `path`, ADR-0228) and the `workdir` for
-/// `bash` (absent → the tool defaults to root, never an escape), the
-/// same value [`permission_workdir`] extracts for permission scoping. `None` for any other tool or on malformed input, so those never
-/// trip the gate.
-pub fn escape_root_target(tool: &str, input: &str) -> Option<String> {
-    match tool {
-        "read" | "edit" | "write" | "apply_patch" | "rhai" => {
-            let value: serde_json::Value = serde_json::from_str(input).ok()?;
-            value.get("path")?.as_str().map(String::from)
-        }
-        "bash" => permission_workdir(tool, input),
-        _ => None,
-    }
-}
-
 /// The least-privileged of two permissions, ordered `Deny < Ask < Allow`.
 pub(crate) fn min_permission(a: Permission, b: Permission) -> Permission {
     if rank(a) <= rank(b) {
@@ -573,18 +555,20 @@ mod tests {
     /// ADR-0228: a `path` run is graded and escape-checked on its path; an
     /// inline script has no argument, so only a bare `rhai` rule matches it.
     #[test]
-    fn rhai_path_is_its_permission_argument_and_escape_root_target() {
+    fn rhai_path_is_its_permission_argument_and_escape_target() {
+        use crate::path_grading::escape_target;
+        let none = crate::tools::ToolRegistry::new();
         let path = r#"{"path":"scripts/x.rhai","args":{"n":1}}"#;
         assert_eq!(
             permission_arg("rhai", path).as_deref(),
             Some("scripts/x.rhai")
         );
         assert_eq!(
-            escape_root_target("rhai", path).as_deref(),
+            escape_target("rhai", &none, path).as_deref(),
             Some("scripts/x.rhai")
         );
         let inline = r#"{"script":"read(\"/etc/x\")"}"#;
-        assert_eq!(escape_root_target("rhai", inline), None);
+        assert_eq!(escape_target("rhai", &none, inline), None);
         assert_eq!(permission_arg("rhai", inline), None);
     }
 

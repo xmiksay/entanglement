@@ -25,12 +25,18 @@ pub struct EscapeRoot {
 
 impl EscapeRoot {
     /// The absolute out-of-root path a call to `tool` with `input` would touch,
-    /// or `None` when it stays contained (or the tool has no path argument).
+    /// or `None` when it stays contained (or the tool has no path argument —
+    /// [`crate::path_grading::escape_target`] asks the tool in `tools`).
     /// `pub(crate)`: also called from [`crate::script`], whose bindings route
     /// through this same gate (#446).
-    pub(crate) fn escaping(&self, tool: &str, input: &str) -> Option<std::path::PathBuf> {
-        let rel = crate::permission::escape_root_target(tool, input)?;
-        crate::host::escaping_path(&self.root, &rel)
+    pub(crate) fn escaping(
+        &self,
+        tools: &crate::tools::ToolRegistry,
+        tool: &str,
+        input: &str,
+    ) -> Option<std::path::PathBuf> {
+        let rel = crate::path_grading::escape_target(tool, tools, input)?;
+        crate::path_grading::escaping_path(&self.root, &rel)
     }
 }
 

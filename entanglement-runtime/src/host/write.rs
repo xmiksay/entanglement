@@ -76,6 +76,18 @@ fn count_lines(s: &str) -> usize {
 
 #[async_trait]
 impl Tool for WriteTool {
+    fn join_workdir(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        base: &str,
+    ) -> bool {
+        crate::path_grading::join(args, "path", base)
+    }
+
+    fn escape_target(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "path")
+    }
+
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("write")
     }

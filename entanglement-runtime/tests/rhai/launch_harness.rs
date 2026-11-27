@@ -18,6 +18,7 @@ use entanglement_runtime::hooks::Hooks;
 use entanglement_runtime::host::{host_tools_with, HostToolOptions};
 use entanglement_runtime::http_gate::HttpGate;
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
+use entanglement_runtime::path_grading::SessionWorkdirs;
 use entanglement_runtime::policy::{
     DefaultGrantStore, GrantStore, ModeResolver, PermissionResolver,
 };
@@ -25,7 +26,7 @@ use entanglement_runtime::rhai_trust::TrustedFolders;
 use entanglement_runtime::skills::{LoadSkillTool, SkillRegistry};
 use entanglement_runtime::tool_names::RHAI_TOOL;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
-use entanglement_runtime::workdir::{self, SessionWorkdirs};
+use entanglement_runtime::workdir;
 
 use super::ScriptedLlm;
 

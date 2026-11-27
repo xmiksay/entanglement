@@ -35,7 +35,7 @@ pub fn permission_arg(tool: &str, input: &str) -> Option<String> {
             // exactly as the tool resolves it, so an argument-scoped rule or
             // grant like `glob(src/**)` sees the same string the walk uses.
             let base = value.get("path").and_then(|p| p.as_str());
-            Some(crate::host::glob::joined_pattern(base, pattern))
+            Some(joined_pattern(base, pattern))
         }
         // #736: the URL *as it will be fetched* (WHATWG-normalized), so a
         // `web_fetch(https://pastebin.com/*)` rule can't be dodged by
@@ -91,6 +91,17 @@ pub(crate) fn takes_permission_arg(tool: &str) -> bool {
     arg_source(tool).is_some()
 }
 
+/// Resolve the optional `path` base directory onto `pattern` — the same string
+/// the permission layer grades (ADR-0150). An empty/blank base is ignored
+/// rather than joined: a leading `/` would re-root the walk at the filesystem
+/// root via `Path::join`.
+pub(crate) fn joined_pattern(base: Option<&str>, pattern: &str) -> String {
+    match base.map(|b| b.trim_end_matches('/')) {
+        Some(b) if !b.is_empty() => format!("{b}/{pattern}"),
+        _ => pattern.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +144,18 @@ mod tests {
                  or exempt it here if it truly takes no argument"
             );
         }
+    }
+
+    #[test]
+    fn joined_pattern_prefixes_base_dir() {
+        assert_eq!(joined_pattern(Some("src"), "**/*.rs"), "src/**/*.rs");
+        assert_eq!(joined_pattern(Some("src/"), "*.rs"), "src/*.rs");
+    }
+
+    #[test]
+    fn joined_pattern_ignores_blank_base() {
+        assert_eq!(joined_pattern(None, "**/*.rs"), "**/*.rs");
+        assert_eq!(joined_pattern(Some(""), "**/*.rs"), "**/*.rs");
+        assert_eq!(joined_pattern(Some("/"), "**/*.rs"), "**/*.rs");
     }
 }

@@ -57,7 +57,7 @@ impl ToolExecutor {
             mcp_scopes: None,
             catalog: None,
             discovery: DiscoverySurface::default(),
-            workdirs: crate::workdir::SessionWorkdirs::default(),
+            workdirs: crate::path_grading::SessionWorkdirs::default(),
             http_gate: None,
             rhai_trusted: Default::default(),
             skill_dirs: Vec::new(),
@@ -91,7 +91,7 @@ pub struct ToolExecutorBuilder {
     pub(super) mcp_scopes: Option<Arc<McpScopes>>,
     pub(super) catalog: Option<Arc<entanglement_core::Catalog>>,
     pub(super) discovery: DiscoverySurface,
-    pub(super) workdirs: crate::workdir::SessionWorkdirs,
+    pub(super) workdirs: crate::path_grading::SessionWorkdirs,
     pub(super) http_gate: Option<Arc<crate::http_gate::HttpGate>>,
     pub(super) rhai_trusted: crate::rhai_trust::TrustedFolders,
     pub(super) skill_dirs: Vec<std::path::PathBuf>,
@@ -103,7 +103,7 @@ impl ToolExecutorBuilder {
     /// The per-session workdir view (#764, ADR-0224) this executor writes
     /// from each `ToolExec` — share it with the `glob`/`grep` tools so they
     /// print paths relative to the session's workdir. Default: private.
-    pub fn workdirs(mut self, workdirs: crate::workdir::SessionWorkdirs) -> Self {
+    pub fn workdirs(mut self, workdirs: crate::path_grading::SessionWorkdirs) -> Self {
         self.workdirs = workdirs;
         self
     }

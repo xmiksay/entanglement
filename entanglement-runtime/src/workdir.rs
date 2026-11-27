@@ -4,29 +4,19 @@
 //!
 //! Core carries a session's workdir as an opaque absolute path: it stores,
 //! replays and stamps it on every `ToolExec`, but does no file I/O. This
-//! module owns everything that touches the disk:
-//!
-//! - [`resolver`] is the `EngineConfig::workdir_resolver` seam — canonicalize,
-//!   require a directory, require it inside the project root or under an
-//!   escape-root grant (ADR-0109), recording that grant when the trusted
-//!   sender approved it.
-//! - [`SessionWorkdirs`] is the executor's per-session view, fed from each
-//!   `ToolExec`, which `glob`/`grep` read to print paths relative to it.
-//! - [`rewrite`] turns a call's relative path arguments into root-relative
-//!   ones *before* anything grades it, so permission rules, grants, the
-//!   escape-root gate and every host tool's own containment check see exactly
-//!   what they saw before workdirs existed (ADR-0125 is unchanged).
+//! module is the `/cd` side that touches the disk: [`resolver`] is the
+//! `EngineConfig::workdir_resolver` seam — canonicalize, require a
+//! directory, require it inside the project root or under an escape-root
+//! grant (ADR-0109), recording that grant when the trusted sender approved
+//! it. The executor's per-session view and the rewrite of relative path
+//! arguments live in [`crate::path_grading`].
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use entanglement_core::{ApprovalScope, SessionId, WorkdirResolver};
+use entanglement_core::{ApprovalScope, WorkdirResolver};
 
 use crate::extra_roots::ExtraRootStore;
-
-mod rewrite;
-pub(crate) use rewrite::rewrite;
 
 /// The exec tool whose default cwd an out-of-root workdir becomes — the
 /// escape-root grant `/cd` records is keyed on it. File tools keep their
@@ -94,47 +84,6 @@ pub fn resolve(
             canon.display(),
             root.display()
         )),
-    }
-}
-
-/// Each session's working directory as the executor last saw it on a
-/// `ToolExec` — the call carries it, so this is always current for the call
-/// being run. Shared with the search tools, which print paths relative to it.
-#[derive(Clone, Default)]
-pub struct SessionWorkdirs(Arc<RwLock<HashMap<SessionId, PathBuf>>>);
-
-impl SessionWorkdirs {
-    /// Record the workdir a `ToolExec` carried (`None`: the project root).
-    pub(crate) fn observe(&self, session: &SessionId, workdir: Option<&str>) {
-        let mut map = self.0.write().expect("session-workdir lock poisoned");
-        match workdir {
-            Some(dir) => map.insert(session.clone(), PathBuf::from(dir)),
-            None => map.remove(session),
-        };
-    }
-
-    /// The session's workdir, `None` for the project root.
-    pub(crate) fn get(&self, session: &SessionId) -> Option<PathBuf> {
-        self.0
-            .read()
-            .expect("session-workdir lock poisoned")
-            .get(session)
-            .cloned()
-    }
-
-    pub(crate) fn forget(&self, session: &SessionId) {
-        self.0
-            .write()
-            .expect("session-workdir lock poisoned")
-            .remove(session);
-    }
-
-    /// The directory a search tool prints paths relative to: the session's
-    /// workdir, else `root`. A path outside it prints absolute, which the
-    /// tools accept back unchanged.
-    pub(crate) fn display_root(this: Option<&Self>, session: &SessionId, root: &Path) -> PathBuf {
-        this.and_then(|w| w.get(session))
-            .unwrap_or_else(|| root.to_path_buf())
     }
 }
 

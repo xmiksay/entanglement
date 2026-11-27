@@ -20,6 +20,9 @@ use entanglement_core::{ContentPart, SessionId, ToolCall, ToolSpec};
 
 use crate::capability::Capability;
 
+mod closest;
+pub(crate) use closest::closest_name;
+
 /// A single capability the engine can execute on the host.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -116,6 +119,26 @@ pub trait Tool: Send + Sync {
     /// Default is `None` — the tool grades under its own name and
     /// capabilities, unchanged.
     fn call_grading(&self, _input: &str) -> Option<CallGrading> {
+        None
+    }
+
+    /// Path grading (ADR-0224): join this tool's relative path arguments in
+    /// `args` onto `base` — the session workdir, root-relative (absolute
+    /// outside the root) — before anything grades the call; `true` when one
+    /// changed. Use [`crate::path_grading::join`]/`join_or_default`.
+    /// Default: no path arguments.
+    fn join_workdir(
+        &self,
+        _args: &mut serde_json::Map<String, serde_json::Value>,
+        _base: &str,
+    ) -> bool {
+        false
+    }
+
+    /// Path grading (ADR-0109): the filesystem path a call would touch, for
+    /// the escape-root gate — an out-of-root one forces approval. Default:
+    /// none, so the call never trips the gate.
+    fn escape_target(&self, _input: &str) -> Option<String> {
         None
     }
 }
@@ -361,37 +384,6 @@ impl ToolRegistry {
         }
         msg
     }
-}
-
-/// Levenshtein edit distance between two strings.
-fn levenshtein(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut curr = vec![0; b.len() + 1];
-    for i in 1..=a.len() {
-        curr[0] = i;
-        for (j, &bc) in b.iter().enumerate() {
-            let cost = usize::from(a[i - 1] != bc);
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[b.len()]
-}
-
-/// The closest registered name to `name` by edit distance, capped so a wildly
-/// different name (or an empty/tiny registry) doesn't surface a useless hint.
-/// `pub(crate)`: also reused by `arg_validate` for its "did you mean" hint
-/// over a schema's property names.
-pub(crate) fn closest_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
-    let max_distance = (name.chars().count() / 2).max(2);
-    candidates
-        .iter()
-        .map(|&c| (c, levenshtein(name, c)))
-        .filter(|(_, d)| *d <= max_distance)
-        .min_by_key(|(_, d)| *d)
-        .map(|(c, _)| c)
 }
 
 #[cfg(test)]

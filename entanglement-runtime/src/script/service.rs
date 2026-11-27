@@ -37,7 +37,10 @@ pub(super) async fn service_bindings(
     );
     while let Some(call) = rx.recv().await {
         let input = workdir
-            .and_then(|(root, wd)| crate::workdir::rewrite(root, Some(wd), &call.tool, &call.input))
+            .and_then(|(root, wd)| {
+                let tools = &dispatcher.tools;
+                crate::path_grading::rewrite(tools, root, Some(wd), &call.tool, &call.input)
+            })
             .unwrap_or(call.input);
         // Between calls, never mid-call: one already graded as the
         // predecessor finishes as it began (ADR-0238 moves its card).

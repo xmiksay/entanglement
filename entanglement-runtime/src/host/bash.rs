@@ -5,8 +5,7 @@
 //! always closed, not inherited from the engine (#389); use
 //! shell-native `< file` redirection if a command needs input.
 
-use super::sandbox::SandboxResolver;
-use super::sandbox::{self, SandboxPolicy};
+use super::sandbox::{self, SandboxPolicy, SandboxResolver};
 use crate::capability::Capability;
 use crate::exec::{own_process_group, wait_or_kill_group, with_io_warning, ExecOutcome};
 use crate::jobs::JobRegistry;
@@ -175,6 +174,18 @@ fn default_tail() -> u32 {
 
 #[async_trait]
 impl Tool for BashTool {
+    fn join_workdir(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        base: &str,
+    ) -> bool {
+        crate::path_grading::join_or_default(args, "workdir", base)
+    }
+
+    fn escape_target(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "workdir")
+    }
+
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("bash")
     }

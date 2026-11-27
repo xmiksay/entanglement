@@ -106,23 +106,3 @@ fn the_resolver_seam_returns_the_absolute_path() {
     let got = seam(None, "sub", None).expect("inside");
     assert_eq!(got, f.root.join("sub").to_string_lossy());
 }
-
-#[test]
-fn session_workdirs_track_and_forget() {
-    let w = SessionWorkdirs::default();
-    let s = SessionId::new("s1");
-    let root = Path::new("/p");
-    assert_eq!(SessionWorkdirs::display_root(Some(&w), &s, root), root);
-    w.observe(&s, Some("/p/sub"));
-    assert_eq!(w.get(&s), Some(PathBuf::from("/p/sub")));
-    assert_eq!(
-        SessionWorkdirs::display_root(Some(&w), &s, root),
-        PathBuf::from("/p/sub")
-    );
-    w.observe(&s, None);
-    assert_eq!(w.get(&s), None);
-    w.observe(&s, Some("/p/sub"));
-    w.forget(&s);
-    assert_eq!(w.get(&s), None);
-    assert_eq!(SessionWorkdirs::display_root(None, &s, root), root);
-}

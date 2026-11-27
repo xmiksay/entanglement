@@ -6,8 +6,8 @@ use super::list_files_with_extra_roots;
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
+use crate::path_grading::SessionWorkdirs;
 use crate::tools::Tool;
-use crate::workdir::SessionWorkdirs;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
@@ -62,6 +62,14 @@ struct GlobInput {
 
 #[async_trait]
 impl Tool for GlobTool {
+    fn join_workdir(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        base: &str,
+    ) -> bool {
+        join_workdir(args, base)
+    }
+
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("glob")
     }
@@ -115,7 +123,8 @@ impl GlobTool {
     fn search(&self, input: &str, shown: &std::path::Path) -> Result<String> {
         let parsed: GlobInput = serde_json::from_str(input)
             .context("invalid input to glob: expected {\"pattern\": string, ...}")?;
-        let pattern = joined_pattern(parsed.path.as_deref(), &parsed.pattern);
+        let pattern =
+            crate::permission_arg::joined_pattern(parsed.path.as_deref(), &parsed.pattern);
         tracing::debug!(pattern = %pattern, root = %self.root.display(), "glob tool executing");
         let list = list_files_with_extra_roots(
             &self.root,
@@ -187,15 +196,21 @@ impl GlobTool {
     }
 }
 
-/// Resolve the optional `path` base directory onto `pattern` — the same string
-/// the permission layer grades (ADR-0150). An empty/blank base is ignored
-/// rather than joined: a leading `/` would re-root the walk at the filesystem
-/// root via `Path::join`.
-pub(crate) fn joined_pattern(base: Option<&str>, pattern: &str) -> String {
-    match base.map(|b| b.trim_end_matches('/')) {
-        Some(b) if !b.is_empty() => format!("{b}/{pattern}"),
-        _ => pattern.to_string(),
+/// `glob`'s path grading (ADR-0224), shared by `glob_json`: a relative
+/// `path` joins onto the workdir, an absent one becomes it — unless an
+/// absolute `pattern` already names where to search.
+pub(crate) fn join_workdir(
+    args: &mut serde_json::Map<String, serde_json::Value>,
+    base: &str,
+) -> bool {
+    let absolute_pattern = args
+        .get("pattern")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|p| std::path::Path::new(p).is_absolute());
+    if absolute_pattern && !args.contains_key("path") {
+        return false;
     }
+    crate::path_grading::join_or_default(args, "path", base)
 }
 
 /// Suggest a pattern that will actually match files when the user-supplied one
@@ -212,7 +227,7 @@ pub(crate) fn suggest_files_pattern(pattern: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{joined_pattern, suggest_files_pattern, GlobTool};
+    use super::{suggest_files_pattern, GlobTool};
     use crate::capability::Capability;
     use crate::tools::Tool;
 
@@ -238,18 +253,5 @@ mod tests {
     fn suggest_leaves_existing_glob_alone() {
         assert_eq!(suggest_files_pattern("**/*"), "**/*");
         assert_eq!(suggest_files_pattern("src/**/*"), "src/**/*");
-    }
-
-    #[test]
-    fn joined_pattern_prefixes_base_dir() {
-        assert_eq!(joined_pattern(Some("src"), "**/*.rs"), "src/**/*.rs");
-        assert_eq!(joined_pattern(Some("src/"), "*.rs"), "src/*.rs");
-    }
-
-    #[test]
-    fn joined_pattern_ignores_blank_base() {
-        assert_eq!(joined_pattern(None, "**/*.rs"), "**/*.rs");
-        assert_eq!(joined_pattern(Some(""), "**/*.rs"), "**/*.rs");
-        assert_eq!(joined_pattern(Some("/"), "**/*.rs"), "**/*.rs");
     }
 }

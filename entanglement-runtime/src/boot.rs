@@ -37,7 +37,7 @@ pub(crate) struct Engine {
     pub(crate) retained: retained_output::RetainedOutputRegistry,
     pub(crate) scripts: script_ops::ScriptRegistry,
     pub(crate) file_backups: file_backup::FileBackups,
-    pub(crate) workdirs: crate::workdir::SessionWorkdirs,
+    pub(crate) workdirs: crate::path_grading::SessionWorkdirs,
     pub(crate) live_skills: Arc<RwLock<Arc<skills::SkillRegistry>>>,
     pub(crate) live_profiles: Arc<RwLock<AgentCatalog>>,
     pub(crate) live_agent_models: Arc<Mutex<config::agent_models::AgentModelStore>>,

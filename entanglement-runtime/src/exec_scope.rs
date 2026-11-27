@@ -19,7 +19,7 @@ pub(crate) enum ExecScope {
 
 tokio::task_local! {
     /// Set by the executor around each dispatched call ([`with_exec_seq`]),
-    /// read when a file tool records a change ([`crate::file_backup`]).
+    /// read when a file tool records a change (the per-write backups).
     static EXEC_SCOPE: ExecScope;
 }
 

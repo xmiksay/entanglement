@@ -7,8 +7,8 @@ use crate::extra_roots::ExtraRootStore;
 use crate::host::grep::{compile_regex, scan_matches};
 use crate::host::walk::MAX_RESULTS;
 use crate::host::{glob, list_files_with_extra_roots, FileList};
+use crate::path_grading::SessionWorkdirs;
 use crate::tools::Tool;
-use crate::workdir::SessionWorkdirs;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
@@ -62,6 +62,14 @@ impl GrepJsonTool {
 
 #[async_trait]
 impl Tool for GrepJsonTool {
+    fn join_workdir(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        base: &str,
+    ) -> bool {
+        crate::path_grading::join_or_default(args, "path", base)
+    }
+
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("grep_json")
     }

@@ -9,8 +9,8 @@ use super::{list_files_with_extra_roots, FileList};
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
+use crate::path_grading::SessionWorkdirs;
 use crate::tools::Tool;
-use crate::workdir::SessionWorkdirs;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use entanglement_core::{ContentPart, SessionId};
@@ -232,6 +232,14 @@ struct GrepInput {
 
 #[async_trait]
 impl Tool for GrepTool {
+    fn join_workdir(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        base: &str,
+    ) -> bool {
+        crate::path_grading::join_or_default(args, "path", base)
+    }
+
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("grep")
     }

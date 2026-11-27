@@ -301,8 +301,14 @@ pub(super) async fn run(
                 // rewritten root-relative before any route grades them.
                 ctx.workdirs.observe(&session, workdir.as_deref());
                 let wd = workdir.as_deref().map(std::path::Path::new);
-                let input =
-                    crate::workdir::rewrite(&ctx.plan_root, wd, &tool, &input).unwrap_or(input);
+                let rewritten = crate::path_grading::rewrite(
+                    &ctx.tools.read().expect("tool registry lock poisoned"),
+                    &ctx.plan_root,
+                    wd,
+                    &tool,
+                    &input,
+                );
+                let input = rewritten.unwrap_or(input);
                 let route = Intercept::classify(&tool);
                 tracing::trace!(
                     %tool,

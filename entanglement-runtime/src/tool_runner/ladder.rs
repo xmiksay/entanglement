@@ -173,7 +173,7 @@ pub(super) struct LadderCtx {
     /// panicking.
     pub catalog: Option<Arc<Catalog>>,
     /// Each session's workdir as its latest `ToolExec` carried it (#764).
-    pub workdirs: crate::workdir::SessionWorkdirs,
+    pub workdirs: crate::path_grading::SessionWorkdirs,
     /// The credentialed-`http()` gate (ADR-0227).
     pub http_gate: Arc<crate::http_gate::HttpGate>,
     /// `rhai.trusted` folders and skill dirs (ADR-0228), canonical.

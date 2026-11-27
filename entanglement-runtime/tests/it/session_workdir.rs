@@ -15,8 +15,9 @@ use entanglement_core::{
 use entanglement_runtime::extra_roots::ExtraRootStore;
 use entanglement_runtime::host::{host_tools_with, BashTool, HostToolOptions};
 use entanglement_runtime::mode::{Limits, Mode, ModeTable, Rules};
+use entanglement_runtime::path_grading::SessionWorkdirs;
 use entanglement_runtime::tool_runner::{EscapeRoot, ToolExecutor};
-use entanglement_runtime::workdir::{self, SessionWorkdirs};
+use entanglement_runtime::workdir;
 use tokio::sync::broadcast::Receiver;
 
 use crate::mode_support::{allow_all_table, perm_modes};

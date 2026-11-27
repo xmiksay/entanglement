@@ -17,8 +17,8 @@ use crate::tool_runner::EscapeRoot;
 
 mod default_tools;
 use crate::{
-    config, extra_roots, file_backup, host, jobs, mcp, retained_output, script_ops, session_store,
-    skills, subagent, tool_advertising, workdir, SharedRegistry,
+    config, extra_roots, file_backup, host, jobs, mcp, path_grading, retained_output, script_ops,
+    session_store, skills, subagent, tool_advertising, workdir, SharedRegistry,
 };
 use default_tools::{register_default_tools, DefaultTools};
 
@@ -79,7 +79,7 @@ pub(crate) async fn build_config(
     jobs::JobRegistry,
     retained_output::RetainedOutputRegistry,
     script_ops::ScriptRegistry,
-    workdir::SessionWorkdirs,
+    path_grading::SessionWorkdirs,
 ) {
     let (mut cfg, model_info, provider_name) = select_provider(catalog, http_client, user_config);
     // Realtime model/provider switch (#218): give the engine a resolver so a
@@ -154,7 +154,7 @@ pub(crate) async fn build_config(
         root.clone(),
         Some(extra_root_store.clone()),
     ));
-    let workdirs = workdir::SessionWorkdirs::default();
+    let workdirs = path_grading::SessionWorkdirs::default();
     // The one `JobRegistry` for this process's whole lifetime (#605): shared by
     // `bash` (registered at startup alongside every other built-in, ADR-0195)
     // and `poll`'s job-handle path, so a background job is always pollable

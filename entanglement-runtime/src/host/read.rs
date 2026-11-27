@@ -3,10 +3,11 @@
 //! (detected by extension) comes back as a base64 image **content block** the
 //! provider renders to its native image format (#221).
 
-use super::{resolve_under_root, resolve_under_root_or_grant};
+use super::resolve_under_root_or_grant;
 use crate::capability::Capability;
 use crate::extra_roots::ExtraRootStore;
 use crate::output::truncate_output;
+use crate::path_grading::resolve_under_root;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -80,6 +81,18 @@ struct ReadInput {
 
 #[async_trait]
 impl Tool for ReadTool {
+    fn join_workdir(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        base: &str,
+    ) -> bool {
+        crate::path_grading::join(args, "path", base)
+    }
+
+    fn escape_target(&self, input: &str) -> Option<String> {
+        crate::path_grading::str_arg(input, "path")
+    }
+
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read")
     }
@@ -224,6 +237,14 @@ impl ReadRawTool {
 /// isn't valid JSON/YAML.
 #[async_trait]
 impl Tool for ReadRawTool {
+    fn join_workdir(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        base: &str,
+    ) -> bool {
+        crate::path_grading::join(args, "path", base)
+    }
+
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed("read_raw")
     }

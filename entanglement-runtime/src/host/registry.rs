@@ -8,8 +8,8 @@ use std::sync::Arc;
 use super::{ApplyPatchTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use crate::extra_roots::ExtraRootStore;
 use crate::file_backup::FileBackups;
+use crate::path_grading::SessionWorkdirs;
 use crate::tools::ToolRegistry;
-use crate::workdir::SessionWorkdirs;
 
 /// The optional wiring for [`host_tools_with`]; `Default` is the strict,
 /// backup-free, root-relative sextet.

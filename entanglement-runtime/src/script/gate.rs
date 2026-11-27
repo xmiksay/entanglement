@@ -80,7 +80,7 @@ pub(super) async fn gate(
         Source::Path(_) => d
             .escape_root
             .as_ref()
-            .and_then(|er| er.escaping(RHAI_TOOL, input)),
+            .and_then(|er| er.escaping(&d.tools, RHAI_TOOL, input)),
         Source::Inline(_) => None,
     };
     let (source, trusted) = match &parsed.source {
@@ -236,7 +236,7 @@ fn resolve_path(
     if let Some(abs) = escape {
         return Ok(abs.clone());
     }
-    crate::host::resolve_under_root(launch_root(dispatcher, launch), path)
+    crate::path_grading::resolve_under_root(launch_root(dispatcher, launch), path)
         .map_err(|e| format!("rhai: cannot run {path:?}: {e}"))
 }
 

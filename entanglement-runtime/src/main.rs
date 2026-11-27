@@ -32,10 +32,10 @@ mod tui;
 
 use entanglement_runtime::{
     agents, arg_validate, aux_llm, capability, config, discover, exec, extra_roots, file_backup,
-    history, host, inspect, jobs, layers, logging, mcp, mode, narrate, persistence, plan_files,
-    plan_watch, policy, retained_output, script_ops, session_store, session_title, skills,
-    slash_commands, subagent, system_prompt, system_prompt_mode, throttle, tool_advertising,
-    tool_names, tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
+    history, host, inspect, jobs, layers, logging, mcp, mode, narrate, path_grading, persistence,
+    plan_files, plan_watch, policy, retained_output, script_ops, session_store, session_title,
+    skills, slash_commands, subagent, system_prompt, system_prompt_mode, throttle,
+    tool_advertising, tool_names, tool_runner, watch, workdir, SharedRegistry, ToolRegistry,
 };
 
 use anyhow::{Context, Result};

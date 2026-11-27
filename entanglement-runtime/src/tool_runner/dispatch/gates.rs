@@ -89,7 +89,7 @@ impl Dispatcher {
         let escape = self
             .escape_root
             .as_ref()
-            .and_then(|er| er.escaping(&call.tool, &call.input))
+            .and_then(|er| er.escaping(tools, &call.tool, &call.input))
             .filter(|abs| {
                 self.escape_root
                     .as_ref()
