@@ -5,6 +5,7 @@
 //! the same events. Offline (a scripted LLM); the live variant is
 //! `tests/live_tool_surface.rs` (`make test-live`).
 
+pub mod deep_tools;
 pub mod fixture;
 
 use std::sync::{Arc, Mutex};

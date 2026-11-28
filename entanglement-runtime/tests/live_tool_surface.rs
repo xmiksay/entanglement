@@ -8,7 +8,10 @@
 //! when the provider's key (`ZAI_API_KEY` / `ANTHROPIC_API_KEY`) is unset.
 //! `<NAME>_MODEL` / `<NAME>_API_BASE` override the catalog's model and base.
 
-// Shared with the offline guard, which uses every item of it.
+// Shared with the offline guard, which uses every item of them.
+#[allow(dead_code)]
+#[path = "it/tool_surface_guard/deep_tools.rs"]
+mod deep_tools;
 #[allow(dead_code)]
 #[path = "it/tool_surface_guard/fixture.rs"]
 mod fixture;
