@@ -65,11 +65,13 @@ impl Dispatcher {
     /// approval park. `None` when a `Stop` unwound the park.
     async fn clear(&self, tools: &ToolRegistry, call: &Call, via: Via<'_>) -> Option<Cleared> {
         let (grade, arg) = self.grade(tools, &call.tool, &call.input).await;
+        // A refusal names what was graded (ADR-0249), as the card does.
+        let graded = graded_name(tools, &call.tool, &call.input);
         // ADR-0207 §4: absolute, no prompt — names the way out, or gives
         // the resolver's own reason (#964).
         let (perm, reason) = match grade {
             Grade::Deny(reason) => {
-                return Some(Cleared::Refused(deny_text(&call.tool, &self.mode, reason)))
+                return Some(Cleared::Refused(deny_text(&graded, &self.mode, reason)))
             }
             Grade::Allow => (Permission::Allow, None),
             Grade::Ask(reason) => (Permission::Ask, reason),
@@ -101,10 +103,10 @@ impl Dispatcher {
                         Cleared::Run
                     } else {
                         Cleared::Refused(format!(
-                            "tool `{}` refused — an authenticated call to {host} needs approval \
-                             and mode `{}` is unattended; an explicit `http(...)` allow rule \
-                             permits it",
-                            call.tool, self.mode
+                            "tool `{graded}` refused — an authenticated call to {host} needs \
+                             approval and mode `{}` is unattended; an explicit `http(...)` allow \
+                             rule permits it",
+                            self.mode
                         ))
                     },
                 );
@@ -134,9 +136,9 @@ impl Dispatcher {
                     .as_ref()
                     .map_or_else(String::new, |w| format!(" ({})", w.text));
                 return Some(Cleared::Refused(format!(
-                    "tool `{}` denied{why} — mode `{}` is unattended (question_timeout {}s, \
+                    "tool `{graded}` denied{why} — mode `{}` is unattended (question_timeout {}s, \
                      no one to prompt); call it again to request a one-time approval",
-                    call.tool, self.mode, self.limits.question_timeout
+                    self.mode, self.limits.question_timeout
                 )));
             }
         }

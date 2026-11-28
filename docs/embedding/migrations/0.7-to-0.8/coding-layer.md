@@ -137,8 +137,11 @@ compiled into their build and reachable (see the library behaviour below).
   script's nested call — and the card's reason says ``mode `<m>` grades
   `<target>` Ask``. 0.7 showed the envelope tool (`invoke`, a host
   namespace's backing tool) while grading, grants and `Always` approvals
-  already keyed on the target. Request ids, `NestedCall.tool` and a
-  rejection's error text still name the envelope tool.
+  already keyed on the target. The refusal text the model reads (a mode
+  deny, an unattended collapse, a timed-out or rejected card) names the
+  target too, since the model never saw the envelope behind a script
+  function. Request ids and `NestedCall.tool` (a head-only record of the
+  binding call the script made) still name the envelope tool.
 - **Changed behaviour (`skutter`):** a nested `glob_json`/`grep_json` card
   reads `glob (rhai)`/`grep (rhai)`, and an in-root `read_raw` card
   `read (rhai)` — the names they grade and grant under.

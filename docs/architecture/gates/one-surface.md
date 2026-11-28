@@ -32,8 +32,9 @@ the surface is exactly the flagged tools plus the executor's routes.
 leave the first provider request byte-identical to a registry with none,
 under a hard budget on its serialized tool schemas (16 KiB); a turn reaches
 a deep tool through `list_skills` → `load_skill` → one `rhai` script, graded
-(and carded) under the deep tool's own name; one script calls several, each
-graded; the same scripted transcript yields the same `OutEvent` sequence.
+(and carded) under the deep tool's own name — as is a model's direct call
+to the envelope tool, card, pending listing and refusal alike; one script
+calls several, each graded; the same scripted transcript yields the same `OutEvent` sequence.
 The live variant (`tests/live_tool_surface.rs`, `make test-live`) runs the
 scenario against z.ai and Anthropic and reports the first request's tokens.
 

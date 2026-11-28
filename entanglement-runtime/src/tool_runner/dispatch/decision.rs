@@ -80,9 +80,10 @@ impl Dispatcher {
         floored: bool,
     ) -> Option<Cleared> {
         let body = &call.input;
-        // The card names what was graded (ADR-0249): an envelope tool's
-        // target, never the envelope, so the approver sees what an `Always`
-        // grant will be recorded under.
+        // The card and its refusals name what was graded (ADR-0249): an
+        // envelope tool's target, never the envelope, so the approver sees
+        // what an `Always` grant will be recorded under and the model reads
+        // the name it called, not a backing tool it never saw.
         let graded = graded_name(&self.tools, &call.tool, &call.input);
         let (shown, reason) = card_text(&prompt, body, floored, &self.mode, &graded);
         // A script's nested call is carded as such; the script source rode
@@ -125,8 +126,8 @@ impl Dispatcher {
             // Silence is never consent (ADR-0207 §11).
             set_state(AgentState::Thinking);
             return Some(Cleared::Refused(format!(
-                "tool `{}` denied: no response within {secs}s (mode `{}`)",
-                call.tool, self.mode
+                "tool `{graded}` denied: no response within {secs}s (mode `{}`)",
+                self.mode
             )));
         };
         match decision.into_approval() {
@@ -157,8 +158,7 @@ impl Dispatcher {
             ApprovalDecision::Reject { reason } => {
                 set_state(AgentState::Thinking);
                 Some(Cleared::Refused(format!(
-                    "tool `{}` rejected: {}",
-                    call.tool,
+                    "tool `{graded}` rejected: {}",
                     reason.as_deref().unwrap_or("user")
                 )))
             }

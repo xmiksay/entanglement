@@ -7,6 +7,7 @@
 
 pub mod deep_tools;
 pub mod fixture;
+mod model_card;
 
 use std::sync::{Arc, Mutex};
 
@@ -200,7 +201,17 @@ async fn a_denied_deep_tool_never_runs() {
         SYSTEM,
     );
     let events = reach_stock_level(&s).await;
-    let out = output_of(&events, RHAI_TOOL);
+    let (_, out, is_error) = outputs(&events)
+        .into_iter()
+        .find(|(t, ..)| t == RHAI_TOOL)
+        .unwrap_or_else(|| panic!("no {RHAI_TOOL} output: {events:#?}"));
+    // The script failed because of the denial, named as the deep tool —
+    // not for some unrelated reason.
+    assert!(is_error, "{out}");
+    assert!(
+        out.contains("tool `inventory_get_stock_level` denied by mode `build`"),
+        "{out}"
+    );
     assert!(!out.contains("on_hand"), "{out}");
     assert!(s.calls.lock().unwrap().is_empty());
 }
