@@ -49,7 +49,7 @@ make sessions      # list past (resumable) sessions
 make inspect       # resolved state, no engine (ARGS='prompt --agent general' | agents | 'skills --disclosures' | config | aux-models | mcp-tokens | mcp | 'session <id>')
 make test          # unit + integration (also test-unit / test-integration), HOME/XDG-sandboxed (#747)
 make test-live     # live z.ai discovery/cache probes + the #934 tool-surface guard on z.ai/Anthropic (sources ~/.config/entanglement/live.env; skips without keys)
-make test-live-matrix # live z.ai tool-use matrix (#826): every GLM model × call encodings × discovery shapes; results under scratch/
+make test-live-matrix # live z.ai tool-use matrix (#826): every GLM model × call encodings × discovery shapes; results under scratch/ (sources live.env too)
 make lint          # clippy, warnings = errors
 make fmt | check-fmt
 make verify        # check-fmt + tree + check-lean + file-cap + doc-cap + userid + lint + test  (CI-equivalent gate)
