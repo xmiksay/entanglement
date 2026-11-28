@@ -80,16 +80,16 @@ impl Dispatcher {
         floored: bool,
     ) -> Option<Cleared> {
         let body = &call.input;
-        let (shown, reason) = card_text(&prompt, body, floored, &self.mode, &call.tool);
+        // The card names what was graded (ADR-0249): an envelope tool's
+        // target, never the envelope, so the approver sees what an `Always`
+        // grant will be recorded under.
+        let graded = graded_name(&self.tools, &call.tool, &call.input);
+        let (shown, reason) = card_text(&prompt, body, floored, &self.mode, &graded);
         // A script's nested call is carded as such; the script source rode
         // the outer `rhai` launch card.
         let (kind, card_tool, detached) = match via {
-            Via::Model => (ApprovalKind::Tool, call.tool.clone(), false),
-            Via::Script(sc) => (
-                ApprovalKind::Rhai,
-                format!("{} (rhai)", call.tool),
-                sc.detached,
-            ),
+            Via::Model => (ApprovalKind::Tool, graded.clone(), false),
+            Via::Script(sc) => (ApprovalKind::Rhai, format!("{graded} (rhai)"), sc.detached),
         };
         let req = crate::pending::approval(
             &self.session,
@@ -143,7 +143,6 @@ impl Dispatcher {
                     sc.approve(&call.tool, &call.input);
                 }
                 if scope != ApprovalScope::Once && !floored {
-                    let graded = graded_name(&self.tools, &call.tool, &call.input);
                     let why = match &prompt {
                         Prompt::Grade(why) => why.as_ref(),
                         Prompt::Host(_) => None,

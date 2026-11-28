@@ -127,3 +127,23 @@ compiled into their build and reachable (see the library behaviour below).
 - **Instead:** to give scripts a file or command function, implement
   `script_binding` on the tool that does the work; for a per-session
   function set, register a host namespace (ADR-0249).
+
+## Approval cards name the graded target (#934)
+
+- **Changed behaviour (library):** a call whose tool returns a
+  `Tool::call_grading` target is now carded under that target, as ADR-0249
+  documents: `OutEvent::ToolRequest.tool` (and the pending listings) carry
+  the graded name — `<target>` for a model call, `<target> (rhai)` for a
+  script's nested call — and the card's reason says ``mode `<m>` grades
+  `<target>` Ask``. 0.7 showed the envelope tool (`invoke`, a host
+  namespace's backing tool) while grading, grants and `Always` approvals
+  already keyed on the target. Request ids, `NestedCall.tool` and a
+  rejection's error text still name the envelope tool.
+- **Changed behaviour (`skutter`):** a nested `glob_json`/`grep_json` card
+  reads `glob (rhai)`/`grep (rhai)`, and an in-root `read_raw` card
+  `read (rhai)` — the names they grade and grant under.
+- **If you match on card tool names:** match the target name your
+  `call_grading` returns, not the envelope tool's.
+- **New:** the guard `entanglement-runtime/tests/it/tool_surface_guard.rs`
+  and its live variant `tests/live_tool_surface.rs` (`make test-live`, which
+  now sources `~/.config/entanglement/live.env` when present).
