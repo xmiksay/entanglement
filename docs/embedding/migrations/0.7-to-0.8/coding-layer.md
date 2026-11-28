@@ -114,9 +114,16 @@ compiled into their build and reachable (see the library behaviour below).
   surface you advertise and deny `rhai` in your `PermissionResolver`.
 - **Changed behaviour (`skutter`):** none — `skutter::host::script_bindings`
   declares the 0.7 set, `bash` with its budget-derived `timeout`. The
-  `rhai` spec text the model sees changed once (host bindings listed
-  alphabetically, the intro names "any check the host adds"), which busts
-  the prompt cache on the first session after the upgrade.
+  `rhai` spec text the model sees changed once: the host bindings are listed
+  alphabetically, the intro names "any check the host adds", and the
+  escape-root hint moved from the intro onto the `read`/`read_raw` lines
+  (`read` asks outside the project root; `read_raw` stays root-only and
+  fails with no card). This busts the prompt cache on the first session
+  after the upgrade.
+- **Unchanged:** background scripts (`background: true` + `poll`) and
+  trusted scripts (`rhai.trusted`, with the write floor on trusted scripts
+  and skill files) stay in the library as in 0.7; neither reaches a file or
+  a process without a host binding.
 - **Instead:** to give scripts a file or command function, implement
   `script_binding` on the tool that does the work; for a per-session
   function set, register a host namespace (ADR-0249).

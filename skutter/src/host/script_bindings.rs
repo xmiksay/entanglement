@@ -27,16 +27,18 @@ pub const READ: ScriptBinding = text(
         &[("path", Str)],
         &[("path", Str), ("offset", Int), ("limit", Int)],
     ],
-    // The escape-root note rides on `read`, the first file binding a model
-    // reaches for: the library's intro only says "any check the host adds".
+    // The escape-root note rides on the `read`/`read_raw` lines, the file
+    // bindings a model reaches for first: the library's intro only says "any
+    // check the host adds", since the gate is skutter's (#968).
     r#"read(path) / read(path, offset, limit) -> "{lineno}: {line}" text, NOT parseable as JSON/YAML
-every file binding's path outside the project root passes the escape-root gate (it asks) before it runs"#,
+a path outside the project root asks first (the escape-root gate), as edit/write do"#,
 );
 
-/// Graded as `read` inside the root ([`super::read::ReadRawTool`]).
+/// Graded as `read` inside the root; out of it the call fails with no
+/// escape-root card ([`super::read::ReadRawTool`]).
 pub const READ_RAW: ScriptBinding = text(
     &[&[("path", Str)]],
-    "read_raw(path) -> exact file content, no line prefix; use before parse_json/parse_yaml (graded as `read`)",
+    "read_raw(path) -> exact file content, no line prefix; use before parse_json/parse_yaml (graded as `read`); project root only: a path outside it fails with no escape-root card, use read() there",
 );
 
 pub const GLOB: ScriptBinding = text(

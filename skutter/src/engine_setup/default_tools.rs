@@ -174,7 +174,8 @@ mod tests {
     }
 
     /// #933: the host tools bind exactly the script functions the library
-    /// bound before 0.8, and the `rhai` spec lists each one.
+    /// bound before 0.8, the `rhai` spec lists each one, and the escape-root
+    /// guidance rides on the `read`/`read_raw` doc lines.
     #[test]
     fn the_host_tools_bind_the_former_script_functions() {
         let registry = startup_registry();
@@ -212,9 +213,15 @@ mod tests {
                 "the rhai spec never lists `{name}`"
             );
         }
-        assert!(
-            rhai.description.contains("escape-root gate"),
-            "the escape-root guidance left the rhai spec"
-        );
+        for name in ["read", "read_raw"] {
+            let doc = registry.get(name).unwrap().script_binding().unwrap().doc;
+            assert!(
+                doc.contains("escape-root"),
+                "`{name}`'s binding doc lost the escape-root guidance: {doc}"
+            );
+            for line in doc.lines() {
+                assert!(rhai.description.contains(line), "spec lacks: {line}");
+            }
+        }
     }
 }
