@@ -194,6 +194,8 @@ async fn call_grading_read_target_allowed_write_target_asked() {
         })
         .collect();
     assert_eq!(cards.len(), 1, "only the write target asked: {cards:?}");
+    // Carded under the graded target, not the `invoke` envelope (ADR-0249).
+    assert_eq!(cards[0].0, "write_page (rhai)", "{cards:?}");
     assert!(
         cards[0].1.contains("write_page"),
         "the card is for write_page: {:?}",

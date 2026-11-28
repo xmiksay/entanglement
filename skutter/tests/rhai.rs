@@ -116,6 +116,9 @@ mod session_skills;
 // ADR-0249: per-call tool grading and host script namespaces.
 #[path = "rhai/host_tools.rs"]
 mod host_tools;
+// #934: a script-only read variant is carded under the tool it grades as.
+#[path = "rhai/graded_card.rs"]
+mod graded_card;
 // #838: the shipped `rhai` skill's worked example runs.
 #[path = "rhai/skill_doc.rs"]
 mod skill_doc;
