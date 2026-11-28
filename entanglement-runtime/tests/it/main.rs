@@ -88,5 +88,6 @@ mod stop_abort_inflight_cleanup;
 mod subagent_spawn;
 mod subagent_tenant_prefix;
 mod tool_mask;
+mod tool_surface_guard;
 mod unattended_mode;
 mod unattended_reason;

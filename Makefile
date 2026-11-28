@@ -76,10 +76,15 @@ test-unit: ## unit tests only (HOME/XDG-sandboxed)
 test-integration: ## integration tests only (tests/ dirs, HOME/XDG-sandboxed)
 	@CARGO='$(CARGO)' sh scripts/test-isolated.sh test --workspace --test '*'
 
-# Opt-in live z.ai probes pinning ADR-0226's provider facts (network + a real
-# ZAI_API_KEY; each test skips when it is unset). Kept out of `test`/`verify`.
-test-live: ## live z.ai tool-discovery/cache probes (skip without ZAI_API_KEY)
-	$(CARGO) test -p entanglement-provider --test live_tool_discovery -- --ignored --nocapture --test-threads=1
+# Opt-in live probes (network + real keys; each test skips when its key is
+# unset): the z.ai probes pinning ADR-0226's provider facts, and the #934
+# tool-surface guard against z.ai and Anthropic. LIVE_ENV (ZAI_API_KEY,
+# ANTHROPIC_API_KEY), when present, is sourced first. Kept out of `test`/`verify`.
+LIVE_ENV ?= $(HOME)/.config/entanglement/live.env
+test-live: ## live z.ai discovery/cache probes + the #934 tool-surface guard on z.ai/Anthropic (sources LIVE_ENV; skip without keys)
+	@set -a; if [ -f '$(LIVE_ENV)' ]; then . '$(LIVE_ENV)'; fi; set +a; \
+	$(CARGO) test -p entanglement-provider --test live_tool_discovery -- --ignored --nocapture --test-threads=1 && \
+	$(CARGO) test -p entanglement-runtime --test live_tool_surface -- --ignored --nocapture --test-threads=1
 
 test-live-matrix: ## live z.ai tool-use matrix: every GLM model × call encodings × discovery shapes × tasks (#826); JSONL + markdown under scratch/
 	$(CARGO) test -p entanglement-provider --test live_tool_matrix -- --ignored --nocapture --test-threads=1

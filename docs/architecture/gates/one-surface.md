@@ -27,6 +27,16 @@ ADR-0226's interim `endpoint__*`/`skill__*` additions are gone
 [ADR-0228](../../adr/archive/0228-rhai-path-and-args-skill-tools-frontmatter-removed.md)):
 the surface is exactly the flagged tools plus the executor's routes.
 
+**Guarded** (#934, `entanglement-runtime/tests/it/tool_surface_guard.rs`):
+300 registered tools in six host namespaces behind six code-built skills
+leave the first provider request byte-identical to a registry with none,
+under a hard budget on its serialized tool schemas (16 KiB); a turn reaches
+a deep tool through `list_skills` → `load_skill` → one `rhai` script, graded
+(and carded) under the deep tool's own name; one script calls several, each
+graded; the same scripted transcript yields the same `OutEvent` sequence.
+The live variant (`tests/live_tool_surface.rs`, `make test-live`) runs the
+scenario against z.ai and Anthropic and reports the first request's tokens.
+
 **The six discovery tools** — each with no argument or one `name`, all
 `Capability::Control` and non-maskable — the `poll` pattern: a Control
 tool other than `agent`/`agent_send` is never graded ([ADR-0207](../../adr/archive/0207-permission-modes-replace-agent-borne-authority.md) §3;

@@ -28,6 +28,13 @@ name = "mcp_http"
 path = "examples/mcp_http.rs"
 required-features = ["mcp-http"]
 
+# The live #934 tool-surface guard builds real provider clients
+# (`make test-live`), so it needs the provider crate.
+[[test]]
+name = "live_tool_surface"
+path = "tests/live_tool_surface.rs"
+required-features = ["provider"]
+
 [features]
 default = ["provider", "mcp-http"]
 # The throttle relay: it polls `entanglement-provider`'s `HttpClient`
